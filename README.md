@@ -1,11 +1,6 @@
-# pbv
+# PBV - Proxmox Backup Validation tool
 
-<<<<<<< HEAD
-Proxmox Backup Verify
-=======
-# Proxmox Backup Validation tool
-
-> Trust but verify
+> "Trust but verify"
 --Ronald Reagan
 
 > ## *Verification - In scientific methodology, verification involves gathering empirical data, performing research, or conducting experiments to demonstrate the truth of a hypothesis or model.*
@@ -15,4 +10,3 @@ Proxmox Backup Verify
 >Proxmox Backup Server has made backups incredibly accessible, reliable, efficient, and stable. The validation of the backup snapshot written to disk is, however, not a validation that we will have a working product after a restore. 
 >
 >That's where PBV steps in. We are going to <i>trust</i> the backup existing verification, but we are going to <i>validate</i> that our backups will support our disaster recovery plans. 
->>>>>>> 88dce8f9f4caf85718e99439d0674d971aecc071
