@@ -3,7 +3,7 @@
 > "Trust but verify"
 --Ronald Reagan
 
-> ## *Verification - In scientific methodology, verification involves gathering empirical data, performing research, or conducting experiments to demonstrate the truth of a hypothesis or model.*
+> ## *Validation - the act of proving, verifying, or substantiating that something is true, correct, or officially acceptable. It confirms that a claim, process, or product meets specified requirements, functions as intended, and operates within expected parameters.*
 >
 > In the context of backups, we all understand the fact that an untested backup <b>is not</b> a backup at all. As we gain experience, we put into place practices which speak to this reality. 
 >
