@@ -17,7 +17,7 @@ async fn main() {
         .with(SystemdLayer::stdout())
         .init();
 
-    info!("PBV Daemon started successfully")
+    info!("PBV Daemon started successfully");
     //println!("Daemon started successfully");
     
     // Create a cancellation token or track select loop
@@ -26,14 +26,14 @@ async fn main() {
             loop {
                 // Check for any pbv related actions to perform 
                 // todo: Add scheduling based on config file
-                println!("Executing pbv check for newly unverified backups");
+                info!("Executing pbv check for newly unverified backups");
                 sleep(Duration::from_secs(10)).await;
             }
         } => {},
         
         // Intercept standard termination signals for graceful shutdown
         _ = signal::ctrl_c() => {
-            println!("Termination signal received. Shutting down cleanly...");
+            info!("Termination signal received. PBV Daemon shutting down cleanly...");
         }
     }
 }
