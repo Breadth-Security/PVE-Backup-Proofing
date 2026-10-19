@@ -1,0 +1,61 @@
+package pve
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"time"
+
+	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+)
+
+type contentEntry struct {
+	VolID     string   `json:"volid"`
+	VMID      flexInt  `json:"vmid"`
+	Subtype   string   `json:"subtype"`
+	CTime     flexInt  `json:"ctime"`
+	Size      flexInt  `json:"size"`
+	Notes     string   `json:"notes"`
+	Protected flexBool `json:"protected"`
+	Encrypted flexBool `json:"encrypted"`
+}
+
+// ListBackups returns all backup volumes on a storage.
+func (c *Client) ListBackups(ctx context.Context, node, storage string) ([]model.Backup, error) {
+	var entries []contentEntry
+	path := "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content"
+	if err := c.do(ctx, http.MethodGet, path, url.Values{"content": {"backup"}}, nil, &entries); err != nil {
+		return nil, err
+	}
+	out := make([]model.Backup, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, model.Backup{
+			Storage:   storage,
+			VolID:     e.VolID,
+			Notes:     e.Notes,
+			Key:       model.GuestKey{Kind: model.GuestKind(e.Subtype), VMID: int(e.VMID)},
+			Time:      time.Unix(int64(e.CTime), 0).UTC(),
+			Size:      int64(e.Size),
+			Protected: bool(e.Protected),
+			Encrypted: bool(e.Encrypted),
+		})
+	}
+	return out, nil
+}
+
+// SetVolumeAttrs updates notes and/or protected on a backup volume; nil fields are left untouched.
+func (c *Client) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
+	form := url.Values{}
+	if notes != nil {
+		form.Set("notes", *notes)
+	}
+	if protected != nil {
+		if *protected {
+			form.Set("protected", "1")
+		} else {
+			form.Set("protected", "0")
+		}
+	}
+	path := "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content/" + url.PathEscape(volid)
+	return c.do(ctx, http.MethodPut, path, nil, form, nil)
+}
