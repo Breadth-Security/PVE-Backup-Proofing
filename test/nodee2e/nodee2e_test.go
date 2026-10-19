@@ -470,7 +470,7 @@ func TestAttackerSameKey(t *testing.T) {
 		// -t without a terminal on stdin requests no pty: an interactive
 		// login, which reaches the helper with no SSH_ORIGINAL_COMMAND.
 		{"login no command", []string{"-t", "127.0.0.1"}, refusedExit, "no request"},
-		// -tt forces the pty request; no-pty denies it and ssh gives up.
+		// -tt forces the pty request; restrict denies it and ssh gives up.
 		{"forced pty no command", []string{"-tt", "127.0.0.1"}, sshExit, "PTY allocation request failed"},
 		{"forced pty id", []string{"-tt", "127.0.0.1", "id"}, sshExit, "PTY allocation request failed"},
 		{"stdio forward", []string{"-W", "127.0.0.1:22", "127.0.0.1"}, sshExit, "prohibited"},
@@ -616,6 +616,35 @@ func TestSudoOnlyHelper(t *testing.T) {
 	out, err = dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=bash"}, "pbp", "sudo", "-n", "/usr/bin/pbp", "node")
 	if err == nil || !strings.Contains(out, "refused: bad-request") {
 		t.Errorf("helper via sudo with SSH_ORIGINAL_COMMAND=bash: %v, %q; want a bad-request refusal", err, out)
+	}
+}
+
+// TestAuthorizedKeysRootOwned: the key file and its directory belong to root
+// (README Node setup step 4), so the pbp user cannot rewrite its own forced
+// command, and sshd still accepts the key (every other test logs in with it).
+func TestAuthorizedKeysRootOwned(t *testing.T) {
+	out, err := dockerOut("stat", "-c", "%U:%G %a %n", "/var/lib/pbp/.ssh", "/var/lib/pbp/.ssh/authorized_keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "root:root 755 /var/lib/pbp/.ssh\nroot:root 644 /var/lib/pbp/.ssh/authorized_keys"
+	if got := strings.TrimSpace(out); got != want {
+		t.Errorf("ownership:\n%s\nwant:\n%s", got, want)
+	}
+	keys, err := dockerOut("cat", "/var/lib/pbp/.ssh/authorized_keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(keys, `restrict,command="sudo /usr/bin/pbp node" `) || strings.Count(keys, "\n") != 1 {
+		t.Errorf("authorized_keys = %q, want one restrict,command=... line", keys)
+	}
+	for _, argv := range [][]string{
+		{"sh", "-c", "echo x >> /var/lib/pbp/.ssh/authorized_keys"},
+		{"touch", "/var/lib/pbp/.ssh/new"},
+	} {
+		if out, err := dockerAs("pbp", argv...); err == nil {
+			t.Errorf("%q as pbp succeeded (%q); want permission denied", argv, out)
+		}
 	}
 }
 

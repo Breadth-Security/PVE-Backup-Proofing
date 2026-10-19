@@ -26,8 +26,8 @@ type execCall struct {
 	Stdin string
 }
 
-// fakeSystem records calls. Guests maps VMID to its `pct config`; a VMID not
-// in the map behaves like a VM or a missing guest (PctConfig fails).
+// fakeSystem records calls. Guests maps VMID to its container config; a VMID
+// not in the map behaves like a VM or a missing guest (CTConfig fails).
 type fakeSystem struct {
 	mu        sync.Mutex
 	Guests    map[int]map[string]string

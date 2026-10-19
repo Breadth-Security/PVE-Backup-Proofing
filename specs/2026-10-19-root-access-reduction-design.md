@@ -115,7 +115,10 @@ request that prints the helper's range and bridge) and fails on any mismatch.
    the README says so. Debian's default `UsePAM yes` lets this locked system account log in by key;
    the troubleshooting section mentions it.
 4. `authorized_keys` for `pbp`, one line, forced command and no forwarding:
-   `command="sudo /usr/bin/pbp node",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc <PBP public key>`
+   `restrict,command="sudo /usr/bin/pbp node" <PBP public key>` (`restrict` disables every
+   forwarding, the pty and `~/.ssh/rc`, including options a later OpenSSH adds). `/var/lib/pbp/.ssh`
+   (0755) and `authorized_keys` (0644) are owned by root, so the `pbp` user cannot rewrite its own
+   forced command; sshd's StrictModes accepts root-owned key files.
 5. `/etc/sudoers.d/pbp` (mode 0440, checked with `visudo -cf`):
    `pbp ALL=(root) NOPASSWD: /usr/bin/pbp node` and `Defaults:pbp env_keep += "SSH_ORIGINAL_COMMAND"`
 6. Install the notification templates once (previously done by PBP at runtime):

@@ -23,20 +23,23 @@ RUN install -m 0640 -o root -g pbp /tmp/node.yaml /etc/pbp/node.yaml && rm /tmp/
 RUN usermod -s /bin/sh pbp \
     && test "$(stat -c '%a %U' /var/lib/pbp)" = "700 pbp"
 
-# Step 4: authorized_keys, one line, forced command and no forwarding.
+# Step 4: authorized_keys, one line, restrict plus the forced command, owned
+# by root so pbp cannot rewrite it.
 ARG PBP_PUBKEY
 RUN test -n "$PBP_PUBKEY" \
-    && install -d -m 0700 -o pbp -g pbp /var/lib/pbp/.ssh \
-    && printf 'command="sudo /usr/bin/pbp node",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc %s\n' "$PBP_PUBKEY" \
+    && install -d -m 0755 -o root -g root /var/lib/pbp/.ssh \
+    && printf 'restrict,command="sudo /usr/bin/pbp node" %s\n' "$PBP_PUBKEY" \
         > /var/lib/pbp/.ssh/authorized_keys \
-    && chown pbp:pbp /var/lib/pbp/.ssh/authorized_keys \
-    && chmod 0600 /var/lib/pbp/.ssh/authorized_keys
+    && chown root:root /var/lib/pbp/.ssh/authorized_keys \
+    && chmod 0644 /var/lib/pbp/.ssh/authorized_keys
 
 # Step 5: the one sudo rule, checked with visudo before it is installed.
-COPY node/sudoers /tmp/sudoers-pbp
-RUN visudo -cf /tmp/sudoers-pbp \
-    && install -m 0440 -o root -g root /tmp/sudoers-pbp /etc/sudoers.d/pbp \
-    && rm /tmp/sudoers-pbp \
+# (README writes it through mktemp; a build has no other users, so the copied
+# file is staged in /root.)
+COPY node/sudoers /root/sudoers-pbp
+RUN visudo -cf /root/sudoers-pbp \
+    && install -m 0440 -o root -g root /root/sudoers-pbp /etc/sudoers.d/pbp \
+    && rm /root/sudoers-pbp \
     && visudo -c
 
 # Stub Proxmox: container configs, pct, ovs-vsctl, and perl standing in for

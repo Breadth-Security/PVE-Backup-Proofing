@@ -21,3 +21,5 @@ Behaviour changes:
 2. Set `target.ssh.user: pbp` (or remove the line).
 3. Upgrade the daemon to 0.2 and run `pbp check`.
 4. Remove PBP's public key from `/root/.ssh/authorized_keys` on the node.
+
+If you tested a 0.2.0 release candidate, redo README "Node setup" step 4: the `authorized_keys` line is now `restrict,command="sudo /usr/bin/pbp node" <key>`, and `/var/lib/pbp/.ssh` (`0755`) and `authorized_keys` (`0644`) are owned by root so the `pbp` user cannot rewrite its forced command. An optional `maxlogins` cap for `pbp` is documented there too.

@@ -154,7 +154,7 @@ Guests PBP cannot proof with this token (each ends `ERROR`, never started; the b
 - **Privileged containers**: restoring one needs `Sys.Modify` on `/`.
 - **Containers with raw `lxc.*` keys, `devN` passthrough or a hookscript**, and **VMs with non-mapped (raw) PCI or USB passthrough**: changing those keys is reserved to `root@pam`. VMs with *mapped* devices need `Mapping.Use` on the mapping as well.
 
-Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token change node-wide settings; weigh that before doing it.
+Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token change node-wide settings; weigh that before doing it. Proofing privileged containers also weakens what a stolen PBP SSH key can do: the helper runs `pct exec` in PBP's tagged containers, and in a privileged container that command runs as real root (uid 0 on the node), held back only by the container's namespaces and AppArmor profile instead of an unprivileged uid mapping. If that matters more to you than proofing those backups, leave privileged containers out (see [The ignore list](#the-ignore-list)).
 
 Put the token secret in a file (see Secrets below).
 
@@ -205,22 +205,26 @@ Done once, as root on the PVE node, by you. PBP never does it for you, because t
 4. **Authorize the key, forced to the helper**, in `/var/lib/pbp/.ssh/authorized_keys`, as one line:
 
    ```
-   install -d -m 0700 -o pbp -g pbp /var/lib/pbp/.ssh
-   printf 'command="sudo /usr/bin/pbp node",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc %s\n' '<PBP public key>' > /var/lib/pbp/.ssh/authorized_keys
-   chown pbp:pbp /var/lib/pbp/.ssh/authorized_keys && chmod 0600 /var/lib/pbp/.ssh/authorized_keys
+   install -d -m 0755 -o root -g root /var/lib/pbp/.ssh
+   printf 'restrict,command="sudo /usr/bin/pbp node" %s\n' '<PBP public key>' > /var/lib/pbp/.ssh/authorized_keys
+   chown root:root /var/lib/pbp/.ssh/authorized_keys && chmod 0644 /var/lib/pbp/.ssh/authorized_keys
    ```
+
+   `restrict` turns off port, agent and X11 forwarding, the pty and `~/.ssh/rc`, and whatever a later OpenSSH adds to that list. The directory and the file belong to root, so the `pbp` user cannot rewrite its own forced command; sshd accepts a key file owned by root.
 
 5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp`. Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
 
    ```
-   cat > /tmp/sudoers-pbp <<'EOF'
+   f=$(mktemp)
+   cat > "$f" <<'EOF'
    Defaults:pbp env_reset
    Defaults:pbp env_keep = "SSH_ORIGINAL_COMMAND SSH_CONNECTION"
    pbp ALL=(root) NOPASSWD: /usr/bin/pbp node
    EOF
-   visudo -cf /tmp/sudoers-pbp \
-       && install -m 0440 -o root -g root /tmp/sudoers-pbp /etc/sudoers.d/pbp \
-       && rm /tmp/sudoers-pbp && visudo -c
+   visudo -cf "$f" \
+       && install -m 0440 -o root -g root "$f" /etc/sudoers.d/pbp \
+       && visudo -c
+   rm -f "$f"
    ```
 
    `env_reset` with exactly that `env_keep` list is part of the design: the helper takes the request from `SSH_ORIGINAL_COMMAND` and nothing else from the environment. Do not widen it.
@@ -233,7 +237,7 @@ Done once, as root on the PVE node, by you. PBP never does it for you, because t
 
    It writes `pbp-subject.txt.hbs` and `pbp-body.txt.hbs` into `/etc/pve/notification-templates/default/` and prints the paths. It runs only interactively as root: over SSH, and through the sudo rule, it is refused. Run it again after upgrading PBP if `pbp check` says the templates are outdated.
 
-7. **Point PBP at it.** In `config.yaml` use `target.ssh.user: pbp` (the default), with the key and `known_hosts` from step 4. `root` is rejected. Then run `pbp check`:
+7. **Point PBP at it.** In `config.yaml` use `target.ssh.user: pbp` (the default), with the key and `known_hosts` from [Setup step 4](#4-create-the-ssh-key). `root` is rejected. Then run `pbp check`:
 
    ```
    node helper version: ok (0.2.0)
@@ -245,6 +249,14 @@ Done once, as root on the PVE node, by you. PBP never does it for you, because t
    Each failure ends with `see README "Node setup"` and names what differs: an unreachable helper, an incompatible version, a differing `vmid_range` or bridge, a `request_timeout` below the probe timeout (a warning), or a helper that did not refuse an out-of-range exec.
 
 The `UsePAM yes` that Debian ships in `sshd_config` is what lets this locked system account log in by key; if you have turned `UsePAM` off, see Troubleshooting.
+
+**Optional: cap concurrent logins.** To bound how many sessions a stolen key can hold open at once, add a `maxlogins` limit for `pbp`:
+
+```
+echo 'pbp hard maxlogins 8' > /etc/security/limits.d/pbp.conf
+```
+
+`pam_limits` applies it, so it needs `UsePAM yes` (Debian's default) and the `session required pam_limits.so` line Debian ships in `/etc/pam.d/sshd`. On a node with systemd-logind the count includes the session of `pbp`'s own systemd user manager, so `8` allows 7 concurrent requests. Keep it well above `workers` plus two (a `pbp check` or `pbp run` next to the daemon). A login over the limit is cut off by sshd with `There were too many logins for 'pbp'` and exit code 254 before the helper runs, so PBP cannot tell it from a guest command that failed: a cap that is too low shows up as wrongly failed checks.
 
 ### 6. Configure and start
 
@@ -401,7 +413,7 @@ When a failed unit can be traced to one of these (for example a `.mount` unit fo
 | Symptom | Cause and fix |
 |---------|---------------|
 | `target.ssh.user: root is no longer supported` | PBP refuses root. Set up the helper (Node setup) and use `user: pbp`. |
-| `the pbp node helper is not reachable`, or `Permission denied (publickey)` | The key is not in `/var/lib/pbp/.ssh/authorized_keys` of the `pbp` user (step 4), or the file or `.ssh` directory has the wrong owner or mode. The log of sshd on the node says which. |
+| `the pbp node helper is not reachable`, or `Permission denied (publickey)` | The key is not in `/var/lib/pbp/.ssh/authorized_keys` of the `pbp` user (Node setup step 4), or the file or `.ssh` directory has the wrong owner or mode (both owned by root, `.ssh` `0755`, the file `0644`). The log of sshd on the node says which. With the optional `maxlogins` cap, `There were too many logins for 'pbp'` means the cap is too low. |
 | Login works but nothing runs, or `This account is currently not available` | The `pbp` user still has the `nologin` shell. Run `usermod -s /bin/sh pbp` (step 3). Also check that `UsePAM yes` is set in `sshd_config` (Debian's default); with `UsePAM no`, sshd refuses key logins for a locked account such as this one. |
 | `sudo: a password is required`, or `sudo: no tty present` | The sudoers rule is missing or does not match `/usr/bin/pbp node` exactly (step 5). Check `/etc/sudoers.d/pbp` with `visudo -cf`, and that `/usr/bin/pbp` is the binary installed by the package. |
 | `pbp-node: refused: bad-request` / `no request` | The helper ran without a valid request. Something other than PBP used the key, or the `env_keep` of `SSH_ORIGINAL_COMMAND` is missing from the sudoers rule. |
@@ -411,16 +423,18 @@ When a failed unit can be traced to one of these (for example a `.mount` unit fo
 | `helper 0.2.0 is not compatible with daemon dev` (or the reverse) | One side is a `dev` build: a binary from a plain `go build`, or an image built with `--build-arg VERSION=dev`. A `dev` build is compatible only with a `dev` build. Rebuild the image without the build argument (it then takes its version from the `VERSION` file) or with `--build-arg VERSION=<release>`, and install the matching `.deb` on the node. |
 | `notification templates on the node: ... run "pbp node install-templates" as root on the node` | Install or refresh the templates (step 6). |
 | `pbp-node: timeout` on long probe commands | `request_timeout` in `node.yaml` is below what the command needs; keep it at or above `restore.probe_timeout`. |
-| Access stopped working after a node cleanup | `apt purge pbp` on the node deletes the `pbp` user and its `authorized_keys`. Reinstall and redo steps 3 and 4. |
+| Access stopped working after a node cleanup | `apt purge pbp` on the node deletes the `pbp` user and its `authorized_keys`. Reinstall and redo Node setup steps 3 and 4. |
 
 ## Upgrading from 0.1 to 0.2
 
 Version 0.2.0 is a breaking change: PBP no longer uses root SSH. A 0.2 daemon refuses `ssh.user: root` and refuses to run until the node has the helper. To migrate:
 
 1. Do [Node setup](#5-node-setup) on the node: install the 0.2 `.deb`, write `/etc/pbp/node.yaml` with the same range and bridge as your `config.yaml`, give `pbp` a shell, install the forced-command key and the sudoers rule, and run `pbp node install-templates` (PBP no longer installs the templates itself).
-2. Switch `target.ssh.user` to `pbp` (or remove the line; `pbp` is the default). The existing key pair can be reused: put its public key in the `pbp` user's `authorized_keys` line from step 4.
+2. Switch `target.ssh.user` to `pbp` (or remove the line; `pbp` is the default). The existing key pair can be reused: put its public key in the `pbp` user's `authorized_keys` line from Node setup step 4.
 3. Upgrade the daemon to 0.2 and run `pbp check`. Fix what it reports.
 4. Remove the PBP public key from `/root/.ssh/authorized_keys` on the node. Until you do, the old key still gives root access.
+
+If you set up a node for a 0.2.0 release candidate, redo Node setup steps 4 and 5: the `authorized_keys` line now starts with `restrict`, the `.ssh` directory and the file are owned by root (so `pbp` cannot change its own forced command), and the sudoers file is written through `mktemp`. Running step 4 again fixes the owner and mode of an existing `.ssh`.
 
 ## Configuration
 
