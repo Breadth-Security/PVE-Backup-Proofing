@@ -291,3 +291,24 @@ func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 		}
 	}
 }
+
+// PVE::Notify reports per-target failures (including a template that does
+// not render) as "ERROR:" lines on stderr and still exits 0; that run sent
+// nothing, so Send must fail. INFO lines are not errors.
+func TestSendFailsOnNotifyErrorLines(t *testing.T) {
+	stderr := "ERROR: failed to render override template 'pbp-body.txt.hbs': could not render notification template\n" +
+		"ERROR: could not notify via target `mail-to-root`: failed to render notification template\n"
+	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
+		return sshx.Result{Stderr: stderr}, nil
+	}}
+	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
+	if err == nil || !strings.Contains(err.Error(), "could not notify via target `mail-to-root`") {
+		t.Fatal(err)
+	}
+	f.Handler = func(string, []byte) (sshx.Result, error) {
+		return sshx.Result{Stderr: "INFO: skipping disabled matcher 'x'\n"}, nil
+	}
+	if err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary()); err != nil {
+		t.Fatal(err)
+	}
+}

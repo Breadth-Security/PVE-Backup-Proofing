@@ -76,6 +76,17 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	if res.ExitCode != 0 {
 		return fmt.Errorf("report: send notification: exit %d: %s", res.ExitCode, trimStderr(res.Stderr))
 	}
+	// PVE::Notify logs a target it could not notify (including a template
+	// that failed to render) as an "ERROR:" line and still exits 0.
+	var errs []string
+	for _, line := range strings.Split(res.Stderr, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "ERROR:") {
+			errs = append(errs, strings.TrimSpace(line))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("report: send notification: %s", trimStderr(strings.Join(errs, "; ")))
+	}
 	return nil
 }
 
