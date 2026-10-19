@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestTemplateData(t *testing.T) {
 		},
 	}
 	d := TemplateData(s, "pve1")
-	if d["node"] != "pve1" || d["run-id"] != "r1" || d["started"] != "2026-10-19T02:00:00Z" || d["duration"] != "1h2m3s" {
+	if d["node"] != "pve1" || d["run-id"] != "r1" || d["started"] != "2026-10-19T02:00:00Z" || d["elapsed"] != "1h2m3s" {
 		t.Fatal(d)
 	}
 	if n := len(d["booted"].([]map[string]any)); n != 1 {
@@ -224,5 +225,69 @@ func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	}
 	if len(f.Calls) != 2 {
 		t.Fatal(f.Calls)
+	}
+}
+
+// notifyHelpers are the helpers PVE's proxmox-notify registers (plus the
+// handlebars built-ins). A data key with one of these names is parsed as a
+// helper call: on PVE 9.2, {{duration}} failed to render with "Helper/Decorator
+// duration param at index 0 required but not found", so no notification was
+// sent at all.
+var notifyHelpers = []string{
+	"duration", "timestamp", "human-bytes", "table", "object", "relative-percentage",
+	"heading-1", "heading-2", "verbatim", "verbatim-monospaced", "url", "json",
+	"if", "unless", "each", "with", "lookup", "raw", "log",
+	"eq", "ne", "gt", "gte", "lt", "lte", "and", "or", "not", "len",
+}
+
+func TestTemplateDataKeysAreNotNotifyHelpers(t *testing.T) {
+	d := TemplateData(failedSummary(), "pve1")
+	keys := []string{}
+	for k := range d {
+		keys = append(keys, k)
+	}
+	for _, g := range d["guests"].([]map[string]any) {
+		for k := range g {
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range keys {
+		for _, h := range notifyHelpers {
+			if k == h {
+				t.Errorf("template data key %q is a proxmox-notify helper name", k)
+			}
+		}
+	}
+}
+
+var reMustache = regexp.MustCompile(`{{\s*([#/]?)([\w-]+)(?:\s+([\w-]+))?\s*}}`)
+
+// Every variable a template uses must be provided by TemplateData (top level,
+// or per guest inside #each guests/booted), so nothing renders empty.
+func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
+	d := TemplateData(failedSummary(), "pve1")
+	guest := d["guests"].([]map[string]any)[0]
+	for _, name := range templateFiles {
+		b, err := templateFS.ReadFile("templates/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range reMustache.FindAllStringSubmatch(string(b), -1) {
+			sigil, word, arg := m[1], m[2], m[3]
+			switch {
+			case sigil == "/":
+			case sigil == "#":
+				if _, ok := d[arg]; !ok {
+					t.Errorf("%s: block %s %s: no such key", name, word, arg)
+				}
+			case word == "this":
+			default:
+				_, top := d[word]
+				_, inGuest := guest[word]
+				if !top && !inGuest {
+					t.Errorf("%s: {{%s}}: no such key", name, word)
+				}
+			}
+		}
 	}
 }
