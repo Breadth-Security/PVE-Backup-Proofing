@@ -145,6 +145,25 @@ func TestOpenRC(t *testing.T) {
 	}
 }
 
+func TestOpenRCExitError(t *testing.T) {
+	ex := probetest.Scripted{"rc-status --crashed": probe.ExecResult{ExitCode: 1}}
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Failed || o.Reason != "probe error: rc-status exited 1" {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+func TestUnexpectedSystemState(t *testing.T) {
+	for _, s := range []string{"initializing", "unknown", ""} {
+		ex := healthy()
+		ex[sysState] = out(s + "\n")
+		o := run(ex, config.Checks{})
+		if o.Verdict != model.Failed || o.Reason != "system state: "+s {
+			t.Fatalf("%q: %+v", s, o)
+		}
+	}
+}
+
 func TestNoInitTools(t *testing.T) {
 	o := run(probetest.Scripted{}, config.Checks{})
 	if o.Verdict != model.Booted || o.Reason != "init answering, service state unknown" {

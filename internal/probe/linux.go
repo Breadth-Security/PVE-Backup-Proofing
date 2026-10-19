@@ -75,7 +75,8 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 		return r.runOpenRC(ctx)
 	}
 	switch state := strings.TrimSpace(res.Stdout); state {
-	case "maintenance", "emergency", "starting", "stopping", "offline":
+	case "running", "degraded":
+	default:
 		return r.fail(ctx, "system state: "+state)
 	}
 
@@ -98,21 +99,8 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-units exited %d", res.ExitCode))
 	}
-	var realFailed []string
-	for _, u := range firstFields(res.Stdout) {
-		if matchAny(in.Checks.IgnoreUnits, u) {
-			r.out.IgnoredUnits = append(r.out.IgnoredUnits, u)
-		} else {
-			realFailed = append(realFailed, u)
-		}
-	}
-	if len(realFailed) > 0 {
-		r.out.FailedUnits = realFailed
-		covered, untraced := traceMissing(ctx, ex, realFailed, in.Missing)
-		r.out.NotCovered = covered
-		if len(untraced) > 0 {
-			return r.fail(ctx, "failed: "+strings.Join(untraced, ", "))
-		}
+	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+		return o
 	}
 
 	res, err = r.exec(ctx, "systemctl", "list-unit-files", "--state=enabled", "--no-legend", "--plain")
@@ -153,21 +141,34 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 	if res.ExitCode == 127 {
 		return r.booted("init answering, service state unknown")
 	}
+	if res.ExitCode != 0 {
+		return r.fail(ctx, fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+	}
+	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+		return o
+	}
+	return r.finish(ctx)
+}
+
+// triage splits failed units into ignored and real, traces real ones against
+// the missing pieces, and reports a FAILED outcome when any stay unexplained.
+func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) {
 	var real []string
-	for _, u := range firstFields(res.Stdout) {
+	for _, u := range failed {
 		if matchAny(r.in.Checks.IgnoreUnits, u) {
 			r.out.IgnoredUnits = append(r.out.IgnoredUnits, u)
 		} else {
 			real = append(real, u)
 		}
 	}
-	if len(real) > 0 {
-		r.out.FailedUnits = real
-		covered, untraced := traceMissing(ctx, r.ex, real, r.in.Missing)
-		r.out.NotCovered = covered
-		if len(untraced) > 0 {
-			return r.fail(ctx, "failed: "+strings.Join(untraced, ", "))
-		}
+	if len(real) == 0 {
+		return Outcome{}, false
 	}
-	return r.finish(ctx)
+	r.out.FailedUnits = real
+	covered, untraced := traceMissing(ctx, r.ex, real, r.in.Missing)
+	r.out.NotCovered = covered
+	if len(untraced) > 0 {
+		return r.fail(ctx, "failed: "+strings.Join(untraced, ", ")), true
+	}
+	return Outcome{}, false
 }

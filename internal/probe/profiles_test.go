@@ -29,14 +29,17 @@ func TestPortParsing(t *testing.T) {
 }
 
 func TestMalformedGlobNeverMatches(t *testing.T) {
-	ex := healthy()
 	ck := config.Checks{
-		IgnoreUnits: []string{"[bad"},
-		Profiles:    []config.Profile{{Name: "x", Unit: "[bad", CheckSet: config.CheckSet{Commands: []string{"false"}}}},
+		Profiles: []config.Profile{{Name: "x", Unit: "[bad", CheckSet: config.CheckSet{Commands: []string{"false"}}}},
 	}
+	o := run(healthy(), ck)
+	if o.Verdict != model.Proven || len(o.Checks) != 1 || o.Checks[0].Name != "nginx:ports:80,443" {
+		t.Fatalf("malformed profile unit must match nothing: %+v", o)
+	}
+	ex := healthy()
 	ex[failedC] = out("a.service loaded failed failed A\n")
-	o := run(ex, ck)
-	if o.Verdict != model.Failed || o.Reason != "failed: a.service" {
+	o = run(ex, config.Checks{IgnoreUnits: []string{"[bad"}})
+	if o.Verdict != model.Failed || o.Reason != "failed: a.service" || len(o.IgnoredUnits) != 0 {
 		t.Fatalf("got %+v", o)
 	}
 }
