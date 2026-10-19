@@ -275,6 +275,8 @@ func TestMalformedRepliesAreHelperErrors(t *testing.T) {
 		`{"name":"vmbr9","ovs":false,"addrs":[],"members":[]}`,                                 // no disable_ipv6
 		`{"name":"","ovs":false,"disable_ipv6":"1","addrs":[],"members":[]}`,                   // empty name
 		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":[],"members":[],"extra":true}`, // unknown field
+		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":null,"members":[]}`,            // null addrs
+		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","members":[]}`,                         // no addrs
 	}
 	for _, out := range bridges {
 		if _, err := replyStdout(t, out).Bridge(ctx); !errors.Is(err, sshx.ErrHelper) {

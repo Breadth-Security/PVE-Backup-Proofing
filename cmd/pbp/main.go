@@ -127,7 +127,9 @@ func assemble(cfg config.Config, api pve.API, apiErr error, ssh sshx.Runner, ssh
 		ssh = downRunner{sshErr}
 	}
 	helper := sshx.Helper{R: ssh}
-	w.target = target.NewExistingNode(cfg, api, helper)
+	existing := target.NewExistingNode(cfg, api, helper)
+	existing.SetDaemonVersion(version)
+	w.target = existing
 	if err := w.setupErr(); err != nil {
 		w.target = unreachable{Target: w.target, err: err}
 	}
@@ -148,7 +150,8 @@ type unreachable struct {
 	err error
 }
 
-func (u unreachable) Prepare(context.Context) error { return u.err }
+func (u unreachable) CheckNode(context.Context) error { return u.err }
+func (u unreachable) Prepare(context.Context) error   { return u.err }
 
 func (a *app) main(ctx context.Context, args []string) int {
 	if len(args) == 0 {
@@ -338,9 +341,23 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 	if !ok {
 		return exitFail
 	}
+	if st, isStepper := w.target.(target.NodeStepper); isStepper {
+		for _, s := range st.CheckNodeSteps(ctx) {
+			if s.Err != nil {
+				line(s.Name, s.Err)
+			} else if s.Detail != "" {
+				fprintf(a.stdout, "%s: ok (%s)\n", s.Name, s.Detail)
+			} else {
+				line(s.Name, nil)
+			}
+		}
+		if !ok {
+			return exitFail
+		}
+	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store,
 		Log: report.NewLogger(a.stderr, nil), Now: a.now, Notifier: w.notifier}
-	line("preflight (node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
+	line("preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
 		run.Preflight(ctx, d))
 	if !ok {
 		return exitFail

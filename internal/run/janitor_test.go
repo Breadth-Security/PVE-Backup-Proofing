@@ -30,6 +30,10 @@ type destroyLog struct {
 	calls []int
 }
 
+// CheckNode passes: these tests exercise the janitor and range checks on the
+// real target, not the node helper (see target's CheckNode tests).
+func (t *destroyLog) CheckNode(context.Context) error { return nil }
+
 func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.mu.Lock()
 	t.calls = append(t.calls, vmid)

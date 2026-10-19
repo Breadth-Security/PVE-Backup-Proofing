@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 )
@@ -491,5 +492,23 @@ func TestServeVersion(t *testing.T) {
 	r := serve(t, newFake(), req(t, nodeproto.Request{Op: "version"}), "")
 	if r.exit != 0 || r.stdout != "0.2.0\n" || r.stderr != "" {
 		t.Errorf("got %+v", r)
+	}
+}
+
+func TestMarkerLineBoundsTheReason(t *testing.T) {
+	// 'é' is two bytes, so a 2048-byte cut would fall mid-rune.
+	for _, reason := range []string{strings.Repeat("x", 100000), "x" + strings.Repeat("é", 5000)} {
+		line := MarkerLine("error", "", reason)
+		const prefix = "pbp-node: error: "
+		got := strings.TrimPrefix(line, prefix)
+		if len(got) > 2048 || len(got) < 2040 {
+			t.Errorf("reason length = %d, want about 2048", len(got))
+		}
+		if !utf8.ValidString(line) {
+			t.Error("line is not valid UTF-8")
+		}
+	}
+	if got := MarkerLine("error", "", "short"); got != "pbp-node: error: short" {
+		t.Errorf("short reason = %q", got)
 	}
 }

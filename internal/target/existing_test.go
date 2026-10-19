@@ -215,7 +215,7 @@ func TestPrepareLiveIsolation(t *testing.T) {
 		{name: "ipv6 enabled", mod: func(st *nodeproto.BridgeState) { st.DisableIPv6 = "0" },
 			wantErr: true, isolated: true, text: "IPv6"},
 		{name: "ipv6 state unreadable", reply: fail("bridge pbpiso0: read disable_ipv6: open /proc/sys/net/ipv6/conf/pbpiso0/disable_ipv6: No such file or directory"),
-			wantErr: true, isolated: true, text: "No such file"},
+			wantErr: true, isolated: true, text: "cannot be verified"},
 		{name: "link-local address", mod: addrs(`[{"ifname":"` + bridge + `","addr_info":[{"family":"inet6","local":"fe80::1","prefixlen":64,"scope":"link"}]}]`),
 			wantErr: true, isolated: true, text: "fe80::1"},
 		{name: "ipv4 address", mod: addrs(`[{"ifname":"` + bridge + `","addr_info":[{"family":"inet","local":"10.9.9.1","prefixlen":24}]}]`),
@@ -231,7 +231,7 @@ func TestPrepareLiveIsolation(t *testing.T) {
 		{name: "unparseable member list", reply: fail("bridge pbpiso0: parse ip link output: invalid character 'g' looking for beginning of value"),
 			wantErr: true, isolated: true},
 		{name: "ip fails", reply: fail("bridge pbpiso0: /usr/bin/ip -j addr show dev pbpiso0 exited 1: Device does not exist"),
-			wantErr: true, isolated: true, text: "Device does not exist"},
+			wantErr: true, isolated: true, text: "cannot be verified"},
 		{name: "ssh transport error", sshErr: errors.New("ssh: connection lost"), wantErr: true, text: "connection lost"},
 		{name: "ovs isolated", ovs: true},
 		// On OVS, PVE plugs a NIC with firewall=1 in as the internal port

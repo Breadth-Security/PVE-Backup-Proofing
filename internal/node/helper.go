@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
@@ -120,11 +121,26 @@ func ServeCoded(ctx context.Context, cfg Config, sys System, version string, req
 	return nodeproto.ExitRefused, f.code
 }
 
+// maxReason bounds the reason in a marker line; notify passes the notifier's
+// stderr through, which is otherwise unbounded.
+const maxReason = 2048
+
+// truncateUTF8 cuts s to at most n bytes, on a rune boundary.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 // MarkerLine renders the helper's final stderr line (without newline) for a
 // failure of the given kind. With an empty nonce it is the plain
 // `pbp-node: <kind>: <reason>` form.
 func MarkerLine(kind, nonce, reason string) string {
-	reason = singleLine(reason)
+	reason = truncateUTF8(singleLine(reason), maxReason)
 	if reason == "" {
 		reason = "unspecified"
 	}

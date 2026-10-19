@@ -481,6 +481,32 @@ func TestWaitBootedLXCRefused(t *testing.T) {
 	}
 }
 
+// A definitive helper refusal ends the wait at once: polling on until the
+// boot timeout would only delay the same answer.
+func TestWaitBootedLXCRefusalReturnsImmediately(t *testing.T) {
+	for code, want := range map[string]error{"untagged": ErrNotOwned, "not-container": ErrNotOwned, "out-of-range": ErrOutOfRange} {
+		t.Run(code, func(t *testing.T) {
+			f := healthyFake()
+			f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
+			f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
+			ssh := &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+				return helperfake.Refuse(req, code, "detail"), nil
+			}}
+			start := time.Now()
+			_, err := newTarget(t, f, f, ssh).WaitBooted(context.Background(), model.KindLXC, 990001, 30*time.Second)
+			if !errors.Is(err, want) || errors.Is(err, ErrBootFailed) {
+				t.Errorf("err = %v, want %v", err, want)
+			}
+			if n := len(ssh.Requests()); n != 1 {
+				t.Errorf("helper requests = %d, want 1", n)
+			}
+			if d := time.Since(start); d > 5*time.Second {
+				t.Errorf("took %s", d)
+			}
+		})
+	}
+}
+
 // Agent-exec polling honours its context, so the probe's per-command and
 // whole-probe timeouts can cut a stuck command short.
 func TestVMExecutorHonoursContext(t *testing.T) {

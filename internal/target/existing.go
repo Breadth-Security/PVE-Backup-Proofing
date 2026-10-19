@@ -28,6 +28,12 @@ type ExistingNode struct {
 	store  string
 	lo, hi int
 
+	// probeTimeout is restore.probe_timeout, which the helper's
+	// request_timeout should cover.
+	probeTimeout time.Duration
+	// daemonVersion is what CheckNode requires the helper to match.
+	daemonVersion string
+
 	// Poll intervals; fields so tests can shorten them.
 	statusPoll  time.Duration // GuestStatus while waiting for "running"
 	agentPoll   time.Duration // AgentPing while waiting for the agent
@@ -41,19 +47,24 @@ var _ Target = (*ExistingNode)(nil)
 // the node's helper.
 func NewExistingNode(cfg config.Config, api pve.API, helper sshx.Helper) *ExistingNode {
 	return &ExistingNode{
-		api:         api,
-		helper:      helper,
-		node:        cfg.Target.Node,
-		bridge:      cfg.Target.Bridge,
-		store:       cfg.Restore.Storage,
-		lo:          cfg.Target.VMIDRange[0],
-		hi:          cfg.Target.VMIDRange[1],
-		statusPoll:  time.Second,
-		agentPoll:   3 * time.Second,
-		lxcExecPoll: 2 * time.Second,
-		execPoll:    500 * time.Millisecond,
+		api:          api,
+		helper:       helper,
+		node:         cfg.Target.Node,
+		bridge:       cfg.Target.Bridge,
+		store:        cfg.Restore.Storage,
+		lo:           cfg.Target.VMIDRange[0],
+		hi:           cfg.Target.VMIDRange[1],
+		probeTimeout: cfg.Restore.ProbeTimeout,
+		statusPoll:   time.Second,
+		agentPoll:    3 * time.Second,
+		lxcExecPoll:  2 * time.Second,
+		execPoll:     500 * time.Millisecond,
 	}
 }
+
+// SetDaemonVersion sets the daemon version CheckNode requires the helper to
+// be compatible with.
+func (n *ExistingNode) SetDaemonVersion(v string) { n.daemonVersion = v }
 
 func (n *ExistingNode) inRange(vmid int) bool { return vmid >= n.lo && vmid <= n.hi }
 

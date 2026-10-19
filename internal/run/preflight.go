@@ -5,13 +5,17 @@ import (
 	"fmt"
 )
 
-// Preflight checks the target node, checks the notification templates,
+// Preflight checks the node's helper first, so nothing on the node is
+// touched if it is wrong, then checks the target node, checks the notification templates,
 // cleans up after any crashed run (design section 6 step 1) and then checks
 // that no foreign guest sits in the VMID range. The range check comes last:
 // the janitor first removes the untagged leftovers of recorded restores,
 // which only Target.Destroy, given the record, accepts as PBP's (design
 // section 11.2). Any failure aborts the run.
 func Preflight(ctx context.Context, d Deps) error {
+	if err := d.Target.CheckNode(ctx); err != nil {
+		return fmt.Errorf("node helper: %w", err)
+	}
 	if err := d.Target.Prepare(ctx); err != nil {
 		return fmt.Errorf("target: %w", err)
 	}

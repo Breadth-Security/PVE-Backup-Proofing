@@ -276,7 +276,7 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	f.assertRefusedAndKept(t, 990000, target.ErrNotOwned)
 }
 
-// Preflight runs Prepare, the templates, the janitor and then the range
+// Preflight runs CheckNode, Prepare, the templates, the janitor and then the range
 // check, stopping at the first failure.
 func TestPreflightOrder(t *testing.T) {
 	ctx := context.Background()
@@ -285,8 +285,19 @@ func TestPreflightOrder(t *testing.T) {
 		if err := Preflight(ctx, f.d); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := f.tgt.CallLog(), []string{"Prepare", "Owned", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.checked != 1 {
+		if got, want := f.tgt.CallLog(), []string{"CheckNode", "Prepare", "Owned", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.checked != 1 {
 			t.Errorf("calls %q (want %q), templates checked %d", got, want, f.notif.checked)
+		}
+	})
+	t.Run("node helper fails", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.tgt.NodeErr = errors.New("helper wrong")
+		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "node helper: ") || !strings.Contains(err.Error(), "helper wrong") {
+			t.Errorf("err = %v", err)
+		}
+		// Nothing on the node was touched: no Prepare, no janitor.
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode"}) || f.notif.checked != 0 {
+			t.Errorf("calls %q, templates checked %d", got, f.notif.checked)
 		}
 	})
 	t.Run("prepare fails", func(t *testing.T) {
@@ -295,7 +306,7 @@ func TestPreflightOrder(t *testing.T) {
 		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "target: ") {
 			t.Errorf("err = %v", err)
 		}
-		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) || f.notif.checked != 0 {
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode", "Prepare"}) || f.notif.checked != 0 {
 			t.Errorf("calls %q, templates checked %d", got, f.notif.checked)
 		}
 	})
@@ -305,7 +316,7 @@ func TestPreflightOrder(t *testing.T) {
 		if err := Preflight(ctx, f.d); err == nil {
 			t.Error("want error")
 		}
-		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) {
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode", "Prepare"}) {
 			t.Errorf("calls %q: janitor ran", got)
 		}
 	})

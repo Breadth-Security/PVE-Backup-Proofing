@@ -23,6 +23,8 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/targetfake"
@@ -336,6 +338,83 @@ func TestCheck(t *testing.T) {
 
 	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, nil, errors.New("refused")) }
 	if code := e.run("check"); code != exitFail || !strings.Contains(e.out.String(), "ssh : FAIL: ssh : refused") ||
+		strings.Contains(e.out.String(), "preflight") {
+		t.Errorf("exit %d out %q", code, e.out)
+	}
+}
+
+// stepTarget is a fake target that reports its node helper checks step by
+// step, as target.ExistingNode does.
+type stepTarget struct {
+	*targetfake.Fake
+	steps []target.NodeStep
+}
+
+func (s stepTarget) CheckNodeSteps(context.Context) []target.NodeStep { return s.steps }
+
+func TestCheckPrintsNodeHelperSteps(t *testing.T) {
+	e := newEnv(t)
+	st := stepTarget{Fake: e.tgt, steps: []target.NodeStep{
+		{Name: "node helper version", Detail: "0.2.0"},
+		{Name: "node helper config", Detail: "range [990000, 990049], bridge vmbr-pbp"},
+		{Name: "node helper request_timeout", Detail: "15m0s"},
+		{Name: "node helper refusal", Detail: "exec in 990050 refused"},
+	}}
+	e.a.connect = func(config.Config) wiring {
+		return wiring{api: e.api, target: st, notifier: e.notif, close: func() {}}
+	}
+	if code := e.run("check"); code != exitOK {
+		t.Fatalf("exit %d out %q", code, e.out)
+	}
+	for _, want := range []string{"node helper version: ok (0.2.0)\n", "node helper config: ok (range [990000, 990049], bridge vmbr-pbp)\n",
+		"node helper request_timeout: ok (15m0s)\n", "node helper refusal: ok (exec in 990050 refused)\n"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("missing %q in %q", want, e.out)
+		}
+	}
+
+	st.steps = []target.NodeStep{{Name: "node helper version", Detail: "0.2.0"},
+		{Name: "node helper config", Err: errors.New("bridge differs (see README \"Node setup\")")}}
+	e.a.connect = func(config.Config) wiring {
+		return wiring{api: e.api, target: st, notifier: e.notif, close: func() {}}
+	}
+	code := e.run("check")
+	if code != exitFail || !strings.Contains(e.out.String(), `node helper config: FAIL: bridge differs (see README "Node setup")`) ||
+		strings.Contains(e.out.String(), "preflight") {
+		t.Errorf("exit %d out %q", code, e.out)
+	}
+}
+
+// assemble wires the real target with the daemon's own version, and check
+// walks the real helper checks.
+func TestCheckRealNodeHelperUsesDaemonVersion(t *testing.T) {
+	helperVer := func(v string) *helperfake.Fake {
+		return &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+			switch req.Op {
+			case "version":
+				return sshx.Result{Stdout: v + "\n"}, nil
+			case "config":
+				return helperfake.JSON(nodeproto.NodeConfig{VMIDRange: [2]int{990000, 990049}, Bridge: "vmbr-pbp",
+					RequestTimeout: 15 * time.Minute, Version: v}), nil
+			case "exec":
+				return helperfake.Refuse(req, "out-of-range", "outside the range"), nil
+			}
+			return sshx.Result{ExitCode: 127}, nil
+		}}
+	}
+	e := newEnv(t)
+	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, helperVer(version), nil) }
+	e.run("check")
+	for _, want := range []string{"node helper version: ok (" + version + ")", "node helper config: ok", "node helper refusal: ok"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("missing %q in %q", want, e.out)
+		}
+	}
+
+	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, helperVer("9.9.9"), nil) }
+	code := e.run("check")
+	if code != exitFail || !strings.Contains(e.out.String(), "node helper version: FAIL") ||
+		!strings.Contains(e.out.String(), "9.9.9") || !strings.Contains(e.out.String(), "Node setup") ||
 		strings.Contains(e.out.String(), "preflight") {
 		t.Errorf("exit %d out %q", code, e.out)
 	}

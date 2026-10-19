@@ -93,6 +93,10 @@ func (n *ExistingNode) waitLXC(ctx, tctx context.Context, vmid int, timeout time
 		if err == nil && res.ExitCode == 0 {
 			break
 		}
+		if errors.Is(err, ErrNotOwned) || errors.Is(err, ErrOutOfRange) {
+			// A definitive refusal; polling on cannot change it.
+			return BootInfo{}, err
+		}
 		if tctx.Err() == nil {
 			if err != nil {
 				lastErr, lastExit = err, ""
