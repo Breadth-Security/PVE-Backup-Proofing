@@ -26,7 +26,7 @@ type Input struct {
 type Outcome struct {
 	Verdict      model.Verdict
 	Reason       string
-	FailedUnits  []string // non-ignored failed units
+	FailedUnits  []string // non-ignored failed units not traced to a missing piece
 	IgnoredUnits []string
 	NotCovered   []model.NotCovered
 	Checks       []model.CheckResult

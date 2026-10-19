@@ -152,6 +152,7 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 
 // triage splits failed units into ignored and real, traces real ones against
 // the missing pieces, and reports a FAILED outcome when any stay unexplained.
+// FailedUnits lists only untraced failures; covered ones go to NotCovered.
 func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) {
 	var real []string
 	for _, u := range failed {
@@ -164,8 +165,8 @@ func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) 
 	if len(real) == 0 {
 		return Outcome{}, false
 	}
-	r.out.FailedUnits = real
 	covered, untraced := traceMissing(ctx, r.ex, real, r.in.Missing)
+	r.out.FailedUnits = untraced
 	r.out.NotCovered = covered
 	if len(untraced) > 0 {
 		return r.fail(ctx, "failed: "+strings.Join(untraced, ", ")), true
