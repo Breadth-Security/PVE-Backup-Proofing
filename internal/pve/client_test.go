@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -282,5 +283,93 @@ func TestWaitTaskWarningsIsSuccess(t *testing.T) {
 	}))
 	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:2:"); err != nil {
 		t.Fatalf("WARNINGS treated as failure: %v", err)
+	}
+}
+
+// dropConn closes the connection without a response (the client sees EOF).
+func dropConn(t *testing.T, w http.ResponseWriter) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	conn.Close()
+}
+
+// Transient poll failures (5xx, dropped connections) while a task runs must
+// not abandon the task: WaitTask retries them with backoff.
+func TestWaitTaskRetriesTransientErrors(t *testing.T) {
+	var polls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		switch polls {
+		case 1:
+			w.Write([]byte(`{"data":{"status":"running"}}`))
+		case 2, 3:
+			http.Error(w, `{"message":"proxy loop"}`, http.StatusBadGateway)
+		case 4:
+			dropConn(t, w)
+		case 5:
+			w.Write([]byte(`{"data":{"status":"running"}}`))
+		case 6, 7, 8, 9, 10: // five in a row, then success
+			http.Error(w, "", http.StatusServiceUnavailable)
+		default:
+			w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		}
+	}))
+	// Fresh connections only: Go's transport silently retries a GET whose
+	// reused connection drops, which would hide the EOF from WaitTask.
+	c.http.Transport.(*http.Transport).DisableKeepAlives = true
+	var backoffs []int
+	c.retryBackoff = func(n int) time.Duration { backoffs = append(backoffs, n); return time.Millisecond }
+	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:3:"); err != nil {
+		t.Fatal(err)
+	}
+	if polls != 11 {
+		t.Errorf("polls = %d", polls)
+	}
+	if want := []int{1, 2, 3, 1, 2, 3, 4, 5}; !slices.Equal(backoffs, want) {
+		t.Errorf("backoff attempts = %v, want %v (count resets after a good poll)", backoffs, want)
+	}
+}
+
+func TestWaitTaskGivesUpAfterFiveRetries(t *testing.T) {
+	var polls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		http.Error(w, "", http.StatusInternalServerError)
+	}))
+	c.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:4:")
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != 500 {
+		t.Fatalf("err = %v", err)
+	}
+	if polls != 6 {
+		t.Errorf("polls = %d, want 6 (first try + 5 retries)", polls)
+	}
+}
+
+func TestWaitTaskDoesNotRetryClientErrors(t *testing.T) {
+	var polls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		http.Error(w, "", http.StatusForbidden)
+	}))
+	c.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:5:"); err == nil || polls != 1 {
+		t.Fatalf("err = %v polls = %d", err, polls)
+	}
+}
+
+func TestWaitTaskRetryHonoursContext(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "", http.StatusBadGateway)
+	}))
+	c.retryBackoff = func(int) time.Duration { return time.Hour }
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := c.WaitTask(ctx, "pve1", "UPID:x:"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v", err)
 	}
 }

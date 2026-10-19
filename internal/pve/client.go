@@ -25,7 +25,13 @@ const (
 	apiSuffix        = "/api2/json"
 	taskLogTail      = 20
 	defaultPollEvery = 2 * time.Second
+	// maxPollRetries is how many consecutive transient failures polling a
+	// task's status WaitTask retries before giving up.
+	maxPollRetries = 5
 )
+
+// defaultRetryBackoff waits 1s, 2s, 4s, 8s, 16s before retry n (1-based).
+func defaultRetryBackoff(n int) time.Duration { return time.Second << (n - 1) }
 
 // Client talks to one PVE node/cluster endpoint using an API token.
 type Client struct {
@@ -33,6 +39,9 @@ type Client struct {
 	base         string
 	auth         string
 	pollInterval time.Duration
+	// retryBackoff is the wait before the nth consecutive retry of a
+	// transient task-poll failure; a field so tests can shorten it.
+	retryBackoff func(n int) time.Duration
 }
 
 // APIError is returned for any non-2xx response.
@@ -102,6 +111,7 @@ func New(cfg config.API) (*Client, error) {
 		base:         base,
 		auth:         "PVEAPIToken=" + cfg.TokenID + "=" + strings.TrimSpace(string(secret)),
 		pollInterval: defaultPollEvery,
+		retryBackoff: defaultRetryBackoff,
 	}, nil
 }
 
@@ -193,29 +203,56 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return v.Version, nil
 }
 
-// WaitTask polls a task until it stops. Exit status OK or "WARNINGS: n" is success; anything else yields *TaskError.
+// WaitTask polls a task until it stops. Exit status OK or "WARNINGS: n" is
+// success; anything else yields *TaskError. A transient poll failure (a
+// network error or a 5xx) does not mean the task failed: it is retried with
+// backoff, up to maxPollRetries times in a row.
 func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
 	base := "/nodes/" + url.PathEscape(node) + "/tasks/" + url.PathEscape(upid)
+	failures := 0
 	for {
 		var st struct {
 			Status     string `json:"status"`
 			ExitStatus string `json:"exitstatus"`
 		}
+		wait := c.pollInterval
 		if err := c.do(ctx, http.MethodGet, base+"/status", nil, nil, &st); err != nil {
-			return err
-		}
-		if st.Status == "stopped" {
-			if st.ExitStatus == "OK" || strings.HasPrefix(st.ExitStatus, "WARNINGS:") {
-				return nil
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-			return &TaskError{UPID: upid, ExitStatus: st.ExitStatus, Log: c.taskLogTail(ctx, base)}
+			if !transient(err) || failures >= maxPollRetries {
+				return err
+			}
+			failures++
+			wait = c.retryBackoff(failures)
+		} else {
+			failures = 0
+			if st.Status == "stopped" {
+				if st.ExitStatus == "OK" || strings.HasPrefix(st.ExitStatus, "WARNINGS:") {
+					return nil
+				}
+				return &TaskError{UPID: upid, ExitStatus: st.ExitStatus, Log: c.taskLogTail(ctx, base)}
+			}
 		}
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return ctx.Err()
-		case <-time.After(c.pollInterval):
+		case <-t.C:
 		}
 	}
+}
+
+// transient reports whether a request error may go away on retry: a server
+// error (5xx) or a failure below HTTP (connection refused or reset, EOF, a
+// timeout, an undecodable body). A 4xx is a real answer.
+func transient(err error) bool {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Status >= 500
+	}
+	return true
 }
 
 // taskLogTail is best effort: a failure to fetch the log must not mask the task error.
