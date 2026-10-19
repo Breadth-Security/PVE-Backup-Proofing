@@ -9,6 +9,10 @@ name: release
 # instance does not let that token write releases, create a token with the
 # write:repository scope and store it as the repository secret RELEASE_TOKEN;
 # it is used in preference when set.
+#
+# Versions: tag v1.2.0 builds 1.2.0 and v1.2.0-rc1 builds 1.2.0~rc1 (see
+# packaging/debversion.sh). Packages, tarballs and release assets all carry
+# that Debian version; the release itself keeps the tag name.
 
 on:
   push:
@@ -19,8 +23,8 @@ on:
         description: "Version for the dry run (default 0.0.0~dev+<shortsha>)"
         required: false
 
-permissions:
-  contents: write
+# No `permissions:` block: Gitea ignores it. What the job may do is decided by
+# the token it is given (see RELEASE_TOKEN above).
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,16 +51,19 @@ jobs:
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            v="${GITHUB_REF_NAME#v}"
+          # Only a tag push takes its version from the ref; a dispatch never
+          # does, whatever ref it was started on.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v=$(packaging/debversion.sh "$GITHUB_REF_NAME")
           elif [ -n "$INPUT_VERSION" ]; then
-            v="${INPUT_VERSION#v}"
+            v=$(packaging/debversion.sh "$INPUT_VERSION")
           else
             v="0.0.0~dev+$(echo "$GITHUB_SHA" | cut -c1-7)"
           fi
-          echo "$v" | grep -Eq '^[0-9][0-9A-Za-z.+~-]*$' || { echo "not a valid Debian version: $v"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Building version $v"
+      - name: Test version mapping
+        run: packaging/debversion_test.sh
       - name: go vet
         run: |
           go vet ./...
@@ -66,7 +73,7 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update -qq || apt-get update -qq
-          sudo apt-get install -y -qq lintian gettext-base || apt-get install -y -qq lintian gettext-base
+          sudo apt-get install -y -qq lintian gettext-base jq || apt-get install -y -qq lintian gettext-base jq
       - name: Build packages
         run: packaging/build.sh "${{ steps.version.outputs.version }}" dist
       - name: Lintian
@@ -79,7 +86,7 @@ jobs:
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
       - name: Publish release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
@@ -91,7 +98,7 @@ jobs:
           }
           prerelease=false
           case "$TAG" in *-*) prerelease=true ;; esac
-          body=$(printf '{"tag_name":"%s","name":"%s","prerelease":%s}' "$TAG" "$TAG" "$prerelease")
+          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" '{tag_name:$t,name:$t,prerelease:$p}')
           code=$(curl -sS -o release.json -w '%{http_code}' -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$body")
           case "$code" in
@@ -108,11 +115,30 @@ jobs:
               esac ;;
             *) echo "creating the release failed (HTTP $code)"; cat release.json; exit 1 ;;
           esac
-          id=$(grep -o '"id":[0-9]*' release.json | head -1 | cut -d: -f2)
+          id=$(jq -r '.id // empty' release.json)
           [ -n "$id" ] || { echo "no release id in the API response"; cat release.json; exit 1; }
+          # Assets are named with the Debian version (1.2.0~rc1), not the tag.
           for f in dist/*; do
             name=$(basename "$f")
-            code=$(curl -sS -o upload.json -w '%{http_code}' -X POST "$API/releases/$id/assets?name=$name" \
+            # A re-run after a partial upload: replace an asset that is already there.
+            code=$(curl -sS -o assets.json -w '%{http_code}' "$API/releases/$id/assets" \
+              -H "Authorization: token $TOKEN")
+            case "$code" in
+              200) ;;
+              401|403) fail_auth "$code" ;;
+              *) echo "listing assets failed (HTTP $code)"; cat assets.json; exit 1 ;;
+            esac
+            old=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' assets.json)
+            for aid in $old; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/releases/$id/assets/$aid" \
+                -H "Authorization: token $TOKEN")
+              case "$code" in
+                204) echo "deleted existing $name" ;;
+                401|403) fail_auth "$code" ;;
+                *) echo "deleting existing $name failed (HTTP $code)"; exit 1 ;;
+              esac
+            done
+            code=$(curl -sS -o upload.json -w '%{http_code}' -X POST "$API/releases/$id/assets?name=$(jq -rn --arg n "$name" '$n | @uri')" \
               -H "Authorization: token $TOKEN" -F "attachment=@$f")
             case "$code" in
               201) echo "uploaded $name" ;;
