@@ -234,8 +234,33 @@ func userNotes(n string) string {
 // invariants every proofed backup must satisfy afterwards.
 func (e *env) proof(t *testing.T, key model.GuestKey) model.GuestResult {
 	t.Helper()
-	ctx := context.Background()
+	return e.proofCfg(t, e.cfg, key)
+}
+
+// proofThrowaway proofs a backup of a throwaway guest built inside the VMID
+// range. PBP never proofs backups whose VMID is in its range, so the run uses
+// the part of the range on the larger side of that VMID for its temporary
+// guests; the range-empty checks still cover the whole configured range.
+func (e *env) proofThrowaway(t *testing.T, key model.GuestKey) model.GuestResult {
+	t.Helper()
 	cfg := e.cfg
+	lo, hi := cfg.Target.VMIDRange[0], cfg.Target.VMIDRange[1]
+	if key.VMID-lo >= hi-key.VMID {
+		hi = key.VMID - 1
+	} else {
+		lo = key.VMID + 1
+	}
+	if lo > hi {
+		t.Fatalf("no room in the range [%d, %d] beside VMID %d", cfg.Target.VMIDRange[0], cfg.Target.VMIDRange[1], key.VMID)
+	}
+	cfg.Target.VMIDRange = [2]int{lo, hi}
+	t.Logf("proofing with vmid_range [%d, %d]", lo, hi)
+	return e.proofCfg(t, cfg, key)
+}
+
+func (e *env) proofCfg(t *testing.T, cfg config.Config, key model.GuestKey) model.GuestResult {
+	t.Helper()
+	ctx := context.Background()
 	cfg.Restore.Reproof = true
 	before := e.volume(t, ctx, e.newest(t, ctx, cfg, key))
 	t.Logf("proofing %s (protected=%v, notes=%q)", before.VolID, before.Protected, before.Notes)
@@ -512,7 +537,7 @@ func TestBrokenBackupFails(t *testing.T) {
 		}
 	})
 
-	r := e.proof(t, key)
+	r := e.proofThrowaway(t, key)
 	if r.Verdict != model.Failed || !slices.Contains(r.FailedUnits, unit) {
 		t.Errorf("verdict %s: %s (failed units %v), want FAILED naming %s", r.Verdict, r.Reason, r.FailedUnits, unit)
 	}
@@ -639,5 +664,169 @@ wait:
 	}
 	if st := d.Store.Snapshot(); len(st.InFlight) != 0 {
 		t.Errorf("in-flight jobs left: %+v", st.InFlight)
+	}
+}
+
+// throwaway builds a container at vmid from tmpl (unprivileged, rootfs on
+// the restore storage, NIC on the isolated bridge, extra pct create args
+// appended), runs configure on it, backs it up to PBP_IT_BROKEN_STORAGE with
+// "vzdump --mode stop", destroys it (clearing its protection first) and
+// returns the backup. The backup is deleted with "pvesm free" when the test
+// ends.
+func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, configure func(v string)) model.Backup {
+	t.Helper()
+	store := envStr(t, "PBP_IT_BROKEN_STORAGE")
+	ctx := context.Background()
+	if lo, hi := e.cfg.Target.VMIDRange[0], e.cfg.Target.VMIDRange[1]; vmid < lo || vmid > hi {
+		t.Fatalf("VMID %d outside the range [%d, %d]", vmid, lo, hi)
+	}
+	if !slices.Contains(e.cfg.Sources.Storages, store) {
+		t.Fatalf("PBP_IT_BROKEN_STORAGE %s is not a configured source", store)
+	}
+	e.assertRangeEmpty(t, ctx)
+	if t.Failed() {
+		t.FailNow()
+	}
+	v := strconv.Itoa(vmid)
+	destroyCT := func() {
+		e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct set "+v+" --protection 0; pct destroy "+v+" --purge; }", nil)
+	}
+	t.Cleanup(destroyCT)
+	e.sh(t, fmt.Sprintf("pct create %s %s --hostname %s --unprivileged 1 --memory 256 --cores 1 "+
+		"--rootfs %s:2 --net0 name=eth0,bridge=%s --start 1 %s",
+		v, sshx.Quote(tmpl), hostname, e.cfg.Restore.Storage, e.cfg.Target.Bridge, extra))
+	configure(v)
+	out := e.sh(t, "vzdump "+v+" --storage "+sshx.Quote(store)+" --mode stop --notes-template '{{guestname}}' 2>&1")
+	t.Logf("vzdump:\n%s", out)
+	destroyCT()
+	if _, err := e.api.GuestConfig(ctx, e.cfg.Target.Node, model.KindLXC, vmid); err == nil {
+		t.Fatalf("source container %d still exists", vmid)
+	}
+
+	cfg := e.cfg
+	cfg.Restore.Reproof = true
+	b := e.newest(t, ctx, cfg, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
+	if b.Storage != store || !strings.Contains(b.VolID, "backup/ct/"+v+"/") {
+		t.Fatalf("unexpected backup %+v", b)
+	}
+	t.Logf("created backup %s", b.VolID)
+	t.Cleanup(func() {
+		res, err := e.ssh.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
+		if err != nil || res.ExitCode != 0 {
+			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
+		}
+	})
+	return b
+}
+
+// waitOpenRCDefault waits until the container's OpenRC reached the default
+// runlevel, plus a few seconds for its services to start (or crash).
+func (e *env) waitOpenRCDefault(t *testing.T, v string) {
+	t.Helper()
+	// The runlevel reads "default" as soon as the change starts; its
+	// services start only afterwards, so also wait for the openrc process
+	// that is changing runlevel to exit.
+	settled := "[ \"$(rc-status -r)\" = default ] && ! pidof openrc >/dev/null"
+	for i := 0; i < 120; i++ {
+		res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(settled), nil)
+		if err == nil && res.ExitCode == 0 {
+			time.Sleep(2 * time.Second)
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("container %s did not reach the OpenRC default runlevel", v)
+}
+
+// rcCrashed runs "rc-status --crashed" in the container and returns its
+// output and exit code.
+func (e *env) rcCrashed(t *testing.T, v string) (string, int) {
+	t.Helper()
+	res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- rc-status --crashed", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.Stdout, res.ExitCode
+}
+
+// TestProofAlpineHealthy proofs a plain Alpine container's backup through the
+// OpenRC probe ("rc-status --crashed", chosen by ostype alpine).
+func TestProofAlpineHealthy(t *testing.T) {
+	e := setup(t)
+	vmid := envInt(t, "PBP_IT_ALPINE_VMID")
+	tmpl := envStr(t, "PBP_IT_ALPINE_TEMPLATE")
+	e.throwaway(t, vmid, tmpl, "pbp-it-alpine", "", func(v string) {
+		e.waitOpenRCDefault(t, v)
+		out, code := e.rcCrashed(t, v)
+		t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
+		if strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
+			t.Fatalf("source not healthy: exit %d, output %q", code, out)
+		}
+	})
+	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
+	if r.Verdict != model.Proven {
+		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
+	}
+}
+
+// TestProofAlpineCrashed proofs an Alpine container whose default runlevel
+// holds an OpenRC service whose daemon exits right after start, so
+// "rc-status --crashed" lists it; expects FAILED naming that service.
+func TestProofAlpineCrashed(t *testing.T) {
+	e := setup(t)
+	vmid := envInt(t, "PBP_IT_ALPINE_CRASH_VMID")
+	tmpl := envStr(t, "PBP_IT_ALPINE_TEMPLATE")
+	const svc = "pbp-it-crash"
+	script := "#!/sbin/openrc-run\ndescription=\"PBP integration test: a daemon that exits right after start\"\n" +
+		"command=\"/bin/sleep\"\ncommand_args=\"1\"\ncommand_background=no\n"
+	e.throwaway(t, vmid, tmpl, "pbp-it-alpcrash", "", func(v string) {
+		res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
+			"cat > /etc/init.d/"+svc+" && chmod 755 /etc/init.d/"+svc+" && rc-update add "+svc+" default"), []byte(script))
+		if err != nil || res.ExitCode != 0 {
+			t.Fatalf("install service: %v %+v", err, res)
+		}
+		// Reboot so the service is started by the default runlevel, as it
+		// will be in the restored copy, and check OpenRC calls it crashed.
+		e.sh(t, "pct reboot "+v)
+		e.waitOpenRCDefault(t, v)
+		out, code := e.rcCrashed(t, v)
+		t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
+		if !slices.Contains(strings.Fields(out), svc) {
+			t.Fatalf("source: %s not crashed (exit %d, output %q)", svc, code, out)
+		}
+	})
+	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
+	if r.Verdict != model.Failed || !slices.Contains(r.FailedUnits, svc) {
+		t.Errorf("verdict %s: %s (failed units %v), want FAILED naming %s", r.Verdict, r.Reason, r.FailedUnits, svc)
+	}
+}
+
+// TestProofProtectedGuest proofs the backup of a container with
+// "protection: 1": PBP must clear protection on its restored copy so the
+// copy is destroyed and the range is empty afterwards.
+func TestProofProtectedGuest(t *testing.T) {
+	e := setup(t)
+	vmid := envInt(t, "PBP_IT_PROTECTED_VMID")
+	tmpl := envStr(t, "PBP_IT_PROTECTED_TEMPLATE")
+	// nesting=1 as the PVE GUI sets it: without it systemd-logind fails in
+	// an unprivileged Debian 12 container, and the honest verdict is FAILED.
+	b := e.throwaway(t, vmid, tmpl, "pbp-it-protected", "--protection 1 --features nesting=1", func(v string) {
+		if !strings.Contains(e.sh(t, "pct config "+v), "\nprotection: 1\n") {
+			t.Fatal("source container is not protected")
+		}
+		res, _ := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
+			"timeout 120 systemctl is-system-running --wait; systemctl --failed --no-legend --plain"), nil)
+		t.Logf("source state: %s", strings.TrimSpace(res.Stdout))
+	})
+	orig, err := e.api.OriginalConfig(context.Background(), e.cfg.Target.Node, b.VolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^protection: 1$`).MatchString(orig) {
+		t.Fatalf("backup config lacks protection: 1:\n%s", orig)
+	}
+	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
+	if r.Verdict != model.Proven {
+		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
 	}
 }

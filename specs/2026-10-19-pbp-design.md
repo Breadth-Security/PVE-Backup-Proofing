@@ -210,6 +210,11 @@ Only `FAILED` indicts the backup. `SKIPPED`/`ERROR` mean "not proven yet" and ar
 - Root filesystem mounted read-write; read-only root → FAILED.
 - Non-systemd (e.g. Alpine/OpenRC): `rc-status`, any crashed/stopped-but-enabled service not on
   the ignore list → FAILED. Unknown init: report "init answering, service state unknown" as `BOOTED`.
+  Before `rc-status --crashed`, wait (bounded like the systemd `--wait`) until OpenRC has finished
+  booting: runlevel past sysinit/boot, the runlevel-changing `openrc` process exited, and no
+  service starting/stopping. Default-runlevel services, where crashes show up, start only after the
+  boot runlevel, which on the isolated bridge waits on networking (~15s on Alpine, seen on pve1).
+  Never settled in time → ERROR `guest still starting after <time>`.
 - OS detection: guest agent `get-osinfo` for VMs; container `ostype` for LXCs.
 
 ### 7.4 Windows VMs
