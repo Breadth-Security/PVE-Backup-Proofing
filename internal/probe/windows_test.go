@@ -85,3 +85,70 @@ func TestWindowsNonZeroExit(t *testing.T) {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
+
+// seqExec answers the service query with each output in turn, repeating
+// the last, and counts the polls.
+type seqExec struct {
+	outs  []string
+	polls *int
+}
+
+func (s seqExec) Exec(_ context.Context, argv []string) (probe.ExecResult, error) {
+	i := min(*s.polls, len(s.outs)-1)
+	*s.polls++
+	return out(s.outs[i]), nil
+}
+
+func runWinSettle(t *testing.T, outs []string, deadline time.Duration) (probe.Outcome, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	polls := 0
+	o := probe.Run(ctx, seqExec{outs, &polls}, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
+	return o, polls
+}
+
+// Automatic services may still be starting when the agent first answers:
+// PBP re-polls until none is left stopped.
+func TestWindowsSettlesToProven(t *testing.T) {
+	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n", ""}, time.Minute)
+	if o.Verdict != model.Proven || polls != 3 {
+		t.Fatalf("got %v %q after %d polls", o.Verdict, o.Reason, polls)
+	}
+}
+
+// Only what is still stopped when the probe deadline comes is FAILED.
+func TestWindowsSettleFailsWithWhatRemains(t *testing.T) {
+	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n"}, 50*time.Millisecond)
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: WinRM" || polls < 3 {
+		t.Fatalf("got %v %q after %d polls", o.Verdict, o.Reason, polls)
+	}
+	if !reflect.DeepEqual(o.FailedUnits, []string{"WinRM"}) {
+		t.Errorf("failed units %v", o.FailedUnits)
+	}
+}
+
+// A re-poll cut short by the probe deadline keeps the last full answer.
+func TestWindowsSettleDeadlineDuringPoll(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ex := &firstThenHang{first: "Spooler\r\n"}
+	o := probe.Run(ctx, ex, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond, Checks: config.Checks{CommandTimeout: time.Hour}})
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: Spooler" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+type firstThenHang struct {
+	first string
+	done  bool
+}
+
+func (f *firstThenHang) Exec(ctx context.Context, _ []string) (probe.ExecResult, error) {
+	if !f.done {
+		f.done = true
+		return out(f.first), nil
+	}
+	<-ctx.Done()
+	return probe.ExecResult{}, ctx.Err()
+}

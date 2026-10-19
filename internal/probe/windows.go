@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
@@ -26,9 +27,40 @@ func serviceNames(out string) []string {
 	return res
 }
 
-// runWindows lists automatic-start services that are not running. Per-guest
-// and profile checks are not applied to Windows guests in v1.
+// defaultWindowsSettlePoll is how often stopped automatic services are
+// re-checked while they may still be starting.
+const defaultWindowsSettlePoll = 15 * time.Second
+
+// runWindows lists automatic-start services that are not running. Services
+// may still be starting when the agent first answers, so a non-empty list is
+// re-polled every WindowsSettlePoll until it is empty or the probe's
+// deadline comes; only what is still stopped then is FAILED. Without a
+// deadline on ctx it polls once. Per-guest and profile checks are not
+// applied to Windows guests in v1.
 func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
+	every := in.WindowsSettlePoll
+	if every <= 0 {
+		every = defaultWindowsSettlePoll
+	}
+	_, settle := ctx.Deadline()
+	var last *Outcome
+	for {
+		out := windowsServices(ctx, ex, in)
+		if last != nil && out.Verdict == model.Error && ctx.Err() != nil {
+			return *last // the deadline cut a re-poll short
+		}
+		if out.Verdict != model.Failed || len(out.FailedUnits) == 0 || !settle {
+			return out
+		}
+		last = &out
+		if !sleep(ctx, every) {
+			return out
+		}
+	}
+}
+
+// windowsServices runs one service query and judges it.
+func windowsServices(ctx context.Context, ex Executor, in Input) Outcome {
 	res, err := ex.Exec(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsScript})
 	switch {
 	case errors.Is(err, ErrExecBlocked):
@@ -64,6 +96,18 @@ func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
 		out.Reason += fmt.Sprintf(", %d ignored", k)
 	}
 	return out
+}
+
+// sleep waits d or until ctx ends; it reports whether ctx is still live.
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // windowsIgnored matches a service name against glob patterns, ignoring case.

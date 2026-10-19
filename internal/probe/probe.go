@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
@@ -23,6 +24,9 @@ type Input struct {
 	Checks  config.Checks
 	Guest   GuestInfo
 	Missing []model.MissingPiece
+	// WindowsSettlePoll is how often a Windows guest's stopped automatic
+	// services are re-checked while they may still be starting (0 = 15s).
+	WindowsSettlePoll time.Duration
 }
 
 // Outcome is the probe's decision plus the evidence behind it.
@@ -43,22 +47,23 @@ type Outcome struct {
 // a command). Neither is ever FAILED.
 func Run(ctx context.Context, ex Executor, in Input) Outcome {
 	g := newGuard(ex, in.Checks.CommandTimeout)
-	var out Outcome
 	switch in.OS {
 	case Linux:
-		out = runLinux(ctx, g, in)
+		out := runLinux(ctx, g, in)
+		// Tracing tolerates Exec errors (conservatively untraced); if any
+		// was the probe ending or a broken transport, the FAILED it led to
+		// is not the backup's.
+		switch {
+		case out.Verdict == model.Proven:
+		case g.endedErr() != nil:
+			out.Verdict, out.Reason = model.Error, endedReason(g.endedErr())
+		case g.transportErr() != nil && out.Verdict == model.Failed:
+			out.Verdict, out.Reason = model.Error, transportReason(g.transportErr())
+		}
+		return out
 	case Windows:
-		out = runWindows(ctx, g, in)
+		return runWindows(ctx, g, in)
 	default:
 		return Outcome{Verdict: model.Booted, Reason: "unknown guest OS"}
 	}
-	switch {
-	case out.Verdict == model.Proven:
-	case g.endedErr() != nil:
-		// The probe was cut short; whatever failed may not have.
-		out.Verdict, out.Reason = model.Error, endedReason(g.endedErr())
-	case g.transportErr() != nil && out.Verdict == model.Failed:
-		out.Verdict, out.Reason = model.Error, transportReason(g.transportErr())
-	}
-	return out
 }
