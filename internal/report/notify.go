@@ -2,7 +2,6 @@ package report
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,9 +9,6 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
-
-//go:embed templates/*.hbs
-var templateFS embed.FS
 
 const (
 	templateDir = "/etc/pve/notification-templates/default"
@@ -37,10 +33,11 @@ var _ Notifier = (*PVENotifier)(nil)
 // EnsureTemplates installs the embedded templates on the node when missing
 // or different.
 func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
+	embedded := Templates()
 	for _, name := range templateFiles {
-		want, err := templateFS.ReadFile("templates/" + name)
-		if err != nil {
-			return fmt.Errorf("report: embedded template %s: %w", name, err)
+		want, ok := embedded[name]
+		if !ok {
+			return fmt.Errorf("report: embedded template %s missing", name)
 		}
 		path := templateDir + "/" + name
 		res, err := p.SSH.Run(ctx, readTemplateCmd(path), nil)
