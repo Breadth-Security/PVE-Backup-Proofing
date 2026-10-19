@@ -20,7 +20,7 @@ type contentEntry struct {
 	Encrypted flexBool `json:"encrypted"`
 }
 
-// ListBackups returns all backup volumes on a storage.
+// ListBackups returns all guest (qemu and lxc) backup volumes on a storage.
 func (c *Client) ListBackups(ctx context.Context, node, storage string) ([]model.Backup, error) {
 	var entries []contentEntry
 	path := "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content"
@@ -29,6 +29,10 @@ func (c *Client) ListBackups(ctx context.Context, node, storage string) ([]model
 	}
 	out := make([]model.Backup, 0, len(entries))
 	for _, e := range entries {
+		// Host backups ("pbs-host") have no guest kind or VMID.
+		if k := model.GuestKind(e.Subtype); (k != model.KindQEMU && k != model.KindLXC) || e.VMID <= 0 {
+			continue
+		}
 		out = append(out, model.Backup{
 			Storage:   storage,
 			VolID:     e.VolID,

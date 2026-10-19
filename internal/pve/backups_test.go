@@ -113,3 +113,19 @@ func TestSetVolumeAttrsOmitsNil(t *testing.T) {
 		t.Errorf("form = %v", form)
 	}
 }
+
+// A PBS storage also lists host backups (format "pbs-host", subtype and vmid
+// null; seen on pve1). They are not guests and must not become guest "/0".
+func TestListBackupsSkipsNonGuestBackups(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"content":"backup","ctime":1788809160,"format":"pbs-host","size":37398067560,"subtype":null,"vmid":null,"volid":"PBS-qemu:backup/host/cic-mobile/2026-09-07T19:26:00Z"},
+			{"volid":"s:backup/ct/110/x","vmid":110,"subtype":"lxc","ctime":100,"size":7}]}`))
+	}))
+	got, err := c.ListBackups(context.Background(), "pve1", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != (model.GuestKey{Kind: model.KindLXC, VMID: 110}) {
+		t.Fatalf("got %+v", got)
+	}
+}
