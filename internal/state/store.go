@@ -57,6 +57,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("state: create dir for %s: %w", path, err)
 	}
 	s := &Store{path: path, state: newState()}
+	// #nosec G304 -- path is PBP's own state file under the fixed state directory, not user input
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -168,6 +169,7 @@ func (s *Store) write(st State) (err error) {
 		return fmt.Errorf("state: marshal: %w", err)
 	}
 	tmp := s.path + ".tmp"
+	// #nosec G304 -- tmp is the state file path plus ".tmp"; the path is PBP's own state file, not user input
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("state: open %s: %w", tmp, err)

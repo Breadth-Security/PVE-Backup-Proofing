@@ -181,6 +181,7 @@ func (c *Client) ensureConn(ctx context.Context) (*ssh.Client, error) {
 	if att == nil {
 		att = &connectAttempt{done: make(chan struct{})}
 		c.connecting = att
+		// #nosec G118 -- the shared reconnect is joined by many callers, so it must outlive any single caller's ctx; it is bounded by c.timeout
 		go func() {
 			cctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()

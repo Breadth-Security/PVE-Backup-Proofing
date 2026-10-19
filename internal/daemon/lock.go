@@ -20,6 +20,7 @@ func AcquireLock(path string) (release func(), err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("run lock: create dir: %w", err)
 	}
+	// #nosec G304 -- path comes from LockPath(), PBP's fixed lock file location, not user input
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("run lock: %w", err)
