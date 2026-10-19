@@ -196,13 +196,14 @@ func TestServeRefusesGuestsItDoesNotOwn(t *testing.T) {
 		name       string
 		vmid       int
 		wantReason string
+		wantCode   string
 	}{
-		{"production CT at 101", 101, "outside"},
-		{"just above range", 990010, "outside"},
-		{"just below range", 989999, "outside"},
-		{"VM or missing guest in range", 990005, "not a container"},
-		{"untagged CT in range", 990002, "pbp tag"},
-		{"similar tag only", 990003, "pbp tag"},
+		{"production CT at 101", 101, "outside", "out-of-range"},
+		{"just above range", 990010, "outside", "out-of-range"},
+		{"just below range", 989999, "outside", "out-of-range"},
+		{"VM or missing guest in range", 990005, "not a container", "not-container"},
+		{"untagged CT in range", 990002, "pbp tag", "untagged"},
+		{"similar tag only", 990003, "pbp tag", "untagged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
@@ -211,6 +212,10 @@ func TestServeRefusesGuestsItDoesNotOwn(t *testing.T) {
 			_, reason, _ := nodeproto.HelperFailure(r.exit, r.stderr, testNonce)
 			if !strings.Contains(reason, tc.wantReason) {
 				t.Errorf("reason %q does not mention %q", reason, tc.wantReason)
+			}
+			// The fixed code leads the wire reason so the client can read it.
+			if !strings.HasPrefix(reason, tc.wantCode+": ") {
+				t.Errorf("reason %q does not start with code %q", reason, tc.wantCode)
 			}
 			if len(f.execCalls) != 0 {
 				t.Errorf("pct exec called %d times", len(f.execCalls))

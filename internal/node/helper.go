@@ -135,7 +135,13 @@ func MarkerLine(kind, nonce, reason string) string {
 }
 
 func writeMarker(w *lineTracker, nonce string, f *failure) {
-	line := MarkerLine(f.kind, nonce, f.reason)
+	reason := f.reason
+	if f.kind == nodeproto.KindRefused && f.code != "" {
+		// The fixed code leads the reason so the client can read it without
+		// parsing prose: `refused: <code>: <detail>`.
+		reason = f.code + ": " + reason
+	}
+	line := MarkerLine(f.kind, nonce, reason)
 	if w.midLine {
 		line = "\n" + line
 	}
