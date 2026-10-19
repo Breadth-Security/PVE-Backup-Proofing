@@ -15,19 +15,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Trivy is installed from its release tarball, not with
+# aquasecurity/trivy-action: that action clones the Trivy repo from
+# github.com using the job token, which on Gitea is a Gitea token that
+# GitHub rejects.
+env:
+  TRIVY_VERSION: "0.76.0"
+  TRIVY_SHA256: "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
+
 jobs:
   trivy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Trivy
+        run: |
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL -o "$tarball" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+          echo "${TRIVY_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy || install -m 0755 trivy /usr/local/bin/trivy
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          version: v0.76.0
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          ignore-unfixed: true
-          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          exit-code: "1"
-          skip-dirs: .superpowers
+        run: |
+          trivy fs --exit-code 1 --ignore-unfixed \
+            --scanners vuln,secret,misconfig \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --skip-dirs .superpowers \
+            .
