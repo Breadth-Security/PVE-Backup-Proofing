@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -29,7 +30,10 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n"
+const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n"
+
+// version is set at build time: -ldflags "-X main.version=...".
+var version = "dev"
 
 // Exit codes.
 const (
@@ -146,7 +150,7 @@ func (a *app) main(ctx context.Context, args []string) int {
 	switch cmd {
 	case "run":
 		guest = fs.Int("guest", 0, "proof only this guest's newest backup")
-	case "daemon", "check", "health":
+	case "daemon", "check", "health", "version":
 	default:
 		fprintf(a.stderr, "pbp: unknown subcommand %q\n%s", cmd, usage)
 		return exitUsage
@@ -156,6 +160,15 @@ func (a *app) main(ctx context.Context, args []string) int {
 	}
 	if fs.NArg() > 0 {
 		fprintf(a.stderr, "pbp %s: unexpected arguments %q\n%s", cmd, fs.Args(), usage)
+		return exitUsage
+	}
+
+	if cmd == "version" {
+		fprintf(a.stdout, "pbp %s\n%s\n", version, runtime.Version())
+		return exitOK
+	}
+	if guest != nil && !guestValid(fs, *guest) {
+		fprintf(a.stderr, "pbp run: --guest must be a positive integer VMID\n%s", usage)
 		return exitUsage
 	}
 
@@ -181,6 +194,13 @@ func (a *app) main(ctx context.Context, args []string) int {
 	}
 }
 
+// guestValid reports whether --guest was left unset or given a positive VMID.
+func guestValid(fs *flag.FlagSet, guest int) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "guest" })
+	return !set || guest > 0
+}
+
 func statePath() string   { return filepath.Join(daemon.StateDir(), "state.json") }
 func startedPath() string { return filepath.Join(daemon.StateDir(), "daemon.started") }
 
@@ -200,6 +220,7 @@ func (a *app) lock(cmd string) (func(), int) {
 
 func (a *app) daemon(ctx context.Context, cfg config.Config) int {
 	slog.SetDefault(report.NewLogger(a.stdout, nil))
+	slog.Info("pbp daemon starting", "version", version, "go", runtime.Version())
 	if err := os.MkdirAll(daemon.StateDir(), 0o700); err == nil {
 		err = os.WriteFile(startedPath(), []byte(a.now().Format(time.RFC3339)+"\n"), 0o600)
 		if err != nil {
@@ -334,15 +355,35 @@ func (a *app) health(cfg config.Config) int {
 	if err != nil {
 		return fail(err.Error())
 	}
-	var startedAt time.Time
-	if b, err := os.ReadFile(startedPath()); err == nil {
-		startedAt, _ = time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	startedAt, err := readStarted(startedPath())
+	if err != nil {
+		return fail(err.Error())
 	}
-	if ok, reason := health.Evaluate(st, a.now(), sched, cfg.Restore.MaxRunDuration, startedAt); !ok {
+	r := cfg.Restore
+	limit := health.OverrunLimit(r.MaxRunDuration, r.BootTimeout, r.ProbeTimeout)
+	if ok, reason := health.Evaluate(st, a.now(), sched, limit, startedAt); !ok {
 		return fail(reason)
 	}
 	fprintln(a.stdout, "ok")
 	return exitOK
+}
+
+// readStarted reads the daemon start time; a missing file is the zero time,
+// an unreadable or corrupt one is an error naming the file.
+func readStarted(path string) (time.Time, error) {
+	// #nosec G304 -- path is PBP's own state file under the state dir
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("daemon start time %s: %w", path, err)
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("daemon start time %s is corrupt: %w", path, err)
+	}
+	return t, nil
 }
 
 // readState loads the state file without creating anything; a missing file

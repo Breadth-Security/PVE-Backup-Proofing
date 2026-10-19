@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -132,6 +133,37 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+func TestGuestFlagMustBePositive(t *testing.T) {
+	for _, g := range []string{"0", "-5", "abc", ""} {
+		e := newEnv(t)
+		if code := e.run("run", "--guest", g); code != exitUsage {
+			t.Errorf("--guest %q: exit %d, want %d", g, code, exitUsage)
+		}
+	}
+	e := newEnv(t)
+	if code := e.run("run", "--guest", "105"); code != exitFail || !strings.Contains(e.out.String(), "no backup found for guest 105") {
+		t.Errorf("--guest 105: %d %q", code, e.out)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v1.2.3"
+	e := newEnv(t)
+	// No config is needed, and unknown flags still fail.
+	if code := e.a.main(context.Background(), []string{"version"}); code != exitOK ||
+		e.out.String() != "pbp v1.2.3\n"+runtime.Version()+"\n" {
+		t.Errorf("version: %d %q", code, e.out)
+	}
+	if code := e.a.main(context.Background(), []string{"version", "extra"}); code != exitUsage {
+		t.Errorf("version extra: %d", code)
+	}
+	if !strings.Contains(usage, "pbp version") {
+		t.Errorf("usage omits version: %q", usage)
+	}
+}
+
 func TestBusyLock(t *testing.T) {
 	for _, cmd := range []string{"run", "check"} {
 		t.Run(cmd, func(t *testing.T) {
@@ -209,6 +241,9 @@ func TestRunWiring(t *testing.T) {
 	if !strings.Contains(string(b), `"msg":"guest result"`) || !strings.Contains(string(b), `"verdict":"SKIPPED"`) ||
 		strings.Contains(string(b), "qemu/102") {
 		t.Errorf("run log = %s", b)
+	}
+	if n := strings.Count(string(b), `"msg":"guest result"`); n != 1 {
+		t.Errorf("guest 101 logged %d result records, want exactly 1:\n%s", n, b)
 	}
 	ents, _ := os.ReadDir(e.logDir)
 	var names []string
@@ -323,6 +358,20 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// A corrupt daemon.started is unhealthy and names the file, not zero time.
+func TestHealthCorruptStartTime(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(daemon.StateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(startedPath(), []byte("yesterday-ish\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.run("health"); code != exitFail || !strings.Contains(e.out.String(), startedPath()) {
+		t.Errorf("corrupt: %d %q", code, e.out)
+	}
+}
+
 func TestDaemonWritesStartTime(t *testing.T) {
 	e := newEnv(t)
 	oldLog := slog.Default()
@@ -335,5 +384,8 @@ func TestDaemonWritesStartTime(t *testing.T) {
 	b, err := os.ReadFile(startedPath())
 	if err != nil || strings.TrimSpace(string(b)) != fixedNow.Format(time.RFC3339) {
 		t.Errorf("daemon.started = %q, %v", b, err)
+	}
+	if !strings.Contains(e.out.String(), "version="+version) {
+		t.Errorf("daemon start does not log the version: %q", e.out)
 	}
 }

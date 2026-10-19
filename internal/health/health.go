@@ -17,6 +17,9 @@ const (
 	missGrace = 30 * time.Minute
 	// defaultMaxRun bounds a run when max_run_duration is unset.
 	defaultMaxRun = 24 * time.Hour
+	// overrunGrace is added to the configured run length before a run
+	// counts as overrun.
+	overrunGrace = 10 * time.Minute
 )
 
 // Unhealthy reasons.
@@ -25,6 +28,17 @@ const (
 	ReasonMissed       = "scheduled run missed"
 	ReasonOverran      = "run overran"
 )
+
+// OverrunLimit is how long a run may last before it counts as overrun. When
+// max_run_duration is set, a run may legitimately finish its in-flight guest
+// after the limit (restore boot and probe) plus a grace period; when it is
+// unset the limit is 24h.
+func OverrunLimit(maxRun, bootTimeout, probeTimeout time.Duration) time.Duration {
+	if maxRun <= 0 {
+		return defaultMaxRun
+	}
+	return maxRun + bootTimeout + probeTimeout + overrunGrace
+}
 
 // Evaluate reports whether PBP is healthy at now. It is unhealthy when the
 // last finished run ended in a run-level error, when the newest run is still

@@ -70,6 +70,23 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestOverrunLimit(t *testing.T) {
+	const m = time.Minute
+	for _, tt := range []struct {
+		name                string
+		maxRun, boot, probe time.Duration
+		want                time.Duration
+	}{
+		{"unset", 0, 5 * m, 5 * m, 24 * time.Hour},
+		{"negative", -time.Hour, 5 * m, 5 * m, 24 * time.Hour},
+		{"set", 6 * time.Hour, 5 * m, 7 * m, 6*time.Hour + 22*m},
+	} {
+		if got := OverrunLimit(tt.maxRun, tt.boot, tt.probe); got != tt.want {
+			t.Errorf("%s: OverrunLimit = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestEvaluateRunSpanningTick(t *testing.T) {
 	sched, err := cron.ParseStandard("0 */6 * * *")
 	if err != nil {

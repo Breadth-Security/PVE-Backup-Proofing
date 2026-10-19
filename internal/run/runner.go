@@ -135,14 +135,9 @@ func guarded(log *slog.Logger, fn func() ([]model.GuestResult, []string)) (res [
 	return fn()
 }
 
-// finish logs the summary, notifies and records the run's outcome.
+// finish notifies and records the run's outcome. Per-guest results are
+// logged once by the caller (report.LogGuest).
 func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
-	for _, r := range s.Results {
-		log.Info("guest result", "guest", r.Backup.Key.String(), "volid", r.Backup.VolID,
-			"verdict", r.Verdict, "reason", r.Reason, "temp_vmid", r.TempVMID,
-			"restore", r.RestoreDuration, "boot", r.BootDuration,
-			"failed_units", r.FailedUnits, "ignored_units", r.IgnoredUnits)
-	}
 	sev := s.Severity()
 	outcome := state.OutcomeOK
 	switch {

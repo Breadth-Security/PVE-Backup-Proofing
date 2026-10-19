@@ -90,8 +90,10 @@ func LogGuest(l *slog.Logger, r model.GuestResult) {
 	}
 	l.Info("guest result",
 		"guest", r.Backup.Key.String(),
+		"volid", r.Backup.VolID,
 		"verdict", string(r.Verdict),
 		"reason", r.Reason,
+		"temp_vmid", r.TempVMID,
 		"restore_s", r.RestoreDuration.Seconds(),
 		"boot_s", r.BootDuration.Seconds(),
 		"failed_units", r.FailedUnits,

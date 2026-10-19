@@ -227,7 +227,9 @@ type storeBreaksOnRestore struct {
 }
 
 func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
-	if err := os.Chmod(a.dir, 0o500); err != nil {
+	// Removing the directory breaks the store's writes even for root, which
+	// ignores permission bits (the Docker build runs the tests as root).
+	if err := os.RemoveAll(a.dir); err != nil {
 		return "", err
 	}
 	return "", &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu", Message: "VM 990000 already exists"}
@@ -239,7 +241,6 @@ func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind mod
 func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	f := newJanitorFixture(t)
 	dir := t.TempDir()
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	store, err := state.Open(filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -254,9 +255,6 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 
 	if res.Verdict != model.Error || len(f.tgt.calls) != 0 {
 		t.Errorf("result %s %q, destroy calls %v", res.Verdict, res.Reason, f.tgt.calls)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
 	}
 	if j, ok := f.store.Snapshot().InFlight[990000]; !ok || j.Stage != state.StageRestored {
 		t.Fatalf("InFlight = %+v, %v; the test needs the stale record", j, ok)

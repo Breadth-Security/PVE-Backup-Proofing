@@ -406,6 +406,21 @@ func TestSendFailsOnNotifyErrorLines(t *testing.T) {
 	}
 }
 
+// PVE::Notify cannot say which targets succeeded, so one ERROR line among
+// successful ones still fails Send (conservative: the run is then "error").
+func TestSendFailsOnMixedSuccessAndError(t *testing.T) {
+	stderr := "INFO: notified via target `webhook-ops`\n" +
+		"ERROR: could not notify via target `mail-to-root`: smtp refused\n" +
+		"INFO: notified via target `gotify`\n"
+	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
+		return sshx.Result{Stderr: stderr}, nil
+	}}
+	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
+	if err == nil || !strings.Contains(err.Error(), "mail-to-root") || strings.Contains(err.Error(), "webhook-ops") {
+		t.Fatalf("want an error naming only the failed target, got %v", err)
+	}
+}
+
 // The BOOTED section names what BOOTED means (the agent may be present but
 // unable to run commands) and shows each guest's reason.
 func TestBodyBootedSection(t *testing.T) {

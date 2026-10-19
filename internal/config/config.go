@@ -234,7 +234,7 @@ func (c Config) validateChecks(bad func(key, format string, a ...any)) {
 		if p.Unit == "" {
 			bad(key+".unit", "required")
 		}
-		p.CheckSet.validate(bad, key)
+		p.validate(bad, key)
 	}
 	for i, g := range c.Checks.Guests {
 		key := fmt.Sprintf("checks.guests[%d]", i)
@@ -243,7 +243,7 @@ func (c Config) validateChecks(bad func(key, format string, a ...any)) {
 		} else if m.VMID < 0 || m.VMID > maxVMID {
 			bad(key+".match.vmid", "must be 1..%d, got %d", maxVMID, m.VMID)
 		}
-		g.CheckSet.validate(bad, key)
+		g.validate(bad, key)
 	}
 }
 
