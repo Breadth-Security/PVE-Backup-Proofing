@@ -131,7 +131,7 @@ type unreachable struct {
 	err error
 }
 
-func (u unreachable) Prepare(context.Context) error { return u.err }
+func (u unreachable) Prepare(context.Context, map[int]bool) error { return u.err }
 
 func (a *app) main(ctx context.Context, args []string) int {
 	if len(args) == 0 {

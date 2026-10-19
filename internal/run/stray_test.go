@@ -88,7 +88,7 @@ func TestRunNoStrayCheckWhenPreflightFails(t *testing.T) {
 // checks) stubbed out, so StrayTagged, Owned and Destroy are the real ones.
 type preparedTarget struct{ target.Target }
 
-func (preparedTarget) Prepare(context.Context) error { return nil }
+func (preparedTarget) Prepare(context.Context, map[int]bool) error { return nil }
 
 // With the real target and a pvefake node holding pbp-tagged guests outside
 // the range, a full run never issues a call that names them.

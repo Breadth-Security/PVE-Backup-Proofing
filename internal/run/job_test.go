@@ -19,6 +19,7 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe/probetest"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target/targetfake"
@@ -113,14 +114,14 @@ type recTarget struct {
 	panicDestroy bool
 }
 
-func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int) error {
+func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	t.rec.add(ctx, "Restore")
-	return t.Fake.Restore(ctx, b, vmid)
+	return t.Fake.Restore(ctx, b, vmid, orig)
 }
 
-func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, v string) ([]model.MissingPiece, error) {
+func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, orig map[string]string) ([]model.MissingPiece, error) {
 	t.rec.add(ctx, "Sanitize")
-	return t.Fake.Sanitize(ctx, kind, vmid, v)
+	return t.Fake.Sanitize(ctx, kind, vmid, orig)
 }
 
 func (t *recTarget) Start(ctx context.Context, kind model.GuestKind, vmid int) error {
@@ -144,6 +145,14 @@ func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int)
 		panic("destroy boom")
 	}
 	return t.Fake.Destroy(ctx, kind, vmid)
+}
+
+func (t *recTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+	t.rec.add(ctx, "DestroyRecorded")
+	if t.panicDestroy {
+		panic("destroy boom")
+	}
+	return t.Fake.DestroyRecorded(ctx, kind, vmid)
 }
 
 type fixture struct {
@@ -194,7 +203,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) run(ctx context.Context) model.GuestResult {
-	return proofOne(ctx, f.d, f.b, tmpVMID)
+	return proofOne(ctx, f.d, f.b, tmpVMID, sanitize.ParseConfigText(f.api.BackupConfigs[f.b.VolID]))
 }
 
 // notes returns the backup's notes as stored in the fake.
@@ -220,7 +229,7 @@ func TestHappyPath(t *testing.T) {
 		"Sanitize @restored",
 		"Start @started",
 		"WaitBooted 5m0s @started",
-		"Destroy @started",
+		"DestroyRecorded @started",
 		"SetProtected=false @destroyed",
 		"SetNotes @-",
 	}
@@ -422,7 +431,7 @@ func TestPanicStillTearsDown(t *testing.T) {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	got := f.rec.entries()
-	want := []string{"Destroy @started", "SetProtected=false @destroyed", "SetNotes @-"}
+	want := []string{"DestroyRecorded @started", "SetProtected=false @destroyed", "SetNotes @-"}
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("calls %q", got)
 	}
@@ -442,7 +451,7 @@ func TestDestroyPanicStillCleansUp(t *testing.T) {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	got := f.rec.entries()
-	want := []string{"Destroy @started", "SetProtected=false @started", "SetNotes @started"}
+	want := []string{"DestroyRecorded @started", "SetProtected=false @started", "SetNotes @started"}
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("calls %q", got)
 	}
@@ -577,7 +586,7 @@ func TestCancelledMidJob(t *testing.T) {
 	if res.Verdict != model.Error || res.Reason != "cancelled" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
-	want := []string{"Destroy @started", "SetProtected=false @destroyed", "SetNotes @-"}
+	want := []string{"DestroyRecorded @started", "SetProtected=false @destroyed", "SetNotes @-"}
 	got := f.rec.entries()
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("teardown calls %q (a '!ctx' mark means a cancelled context was used)", got)

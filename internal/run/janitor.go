@@ -14,9 +14,12 @@ import (
 
 // Janitor finishes the teardown of jobs a crashed run left in the state
 // store, then destroys any other guest PBP owns (in the VMID range and tagged
-// "pbp"). Target.Destroy enforces range and tag, so a guest it refuses is
-// left alone and its entry kept. An entry is removed only once every step for
-// it succeeded. The returned error joins every failure.
+// "pbp"). A job whose restore may have started owns its VMID by the state
+// record, so its guest is removed even without the tag (a partial restore);
+// the target still enforces range, kind and node and refuses an untagged
+// guest that runs. A guest the target refuses is left alone and its entry
+// kept. An entry is removed only once every step for it succeeded. The
+// returned error joins every failure.
 func Janitor(ctx context.Context, d Deps) error {
 	log := logger(d)
 	var errs []error
@@ -61,7 +64,11 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	var errs []error
 	if j.Stage != state.StageDestroyed {
 		log.Warn("janitor: destroying guest of crashed job")
-		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID); err != nil {
+		destroy := d.Target.Destroy
+		if j.MayHaveGuest() {
+			destroy = d.Target.DestroyRecorded
+		}
+		if err := destroy(ctx, j.Kind, j.TempVMID); err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
 		}
 	}

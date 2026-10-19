@@ -61,6 +61,13 @@ type Job struct {
 	Stage         string
 }
 
+// MayHaveGuest reports whether a restore PBP started may have created a guest
+// at TempVMID, so that a guest there is PBP's even without the "pbp" tag
+// (design section 11.2: ownership confirmed by state).
+func (j Job) MayHaveGuest() bool {
+	return j.Stage == StageRestored || j.Stage == StageStarted
+}
+
 // RunRecord summarises one run. Outcome is one of the Outcome constants.
 type RunRecord struct {
 	ID, Trigger, Outcome string

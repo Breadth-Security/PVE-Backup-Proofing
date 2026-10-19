@@ -117,7 +117,7 @@ func (t *hookTarget) AllocateVMID(ctx context.Context, inUse map[int]bool) (int,
 	return v, err
 }
 
-func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int) error {
+func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	t.mu.Lock()
 	if t.held[vmid] {
 		t.dupes = append(t.dupes, vmid)
@@ -128,7 +128,7 @@ func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int) erro
 	if t.onRestore != nil {
 		t.onRestore(vmid)
 	}
-	return t.Fake.Restore(ctx, b, vmid)
+	return t.Fake.Restore(ctx, b, vmid, orig)
 }
 
 func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
@@ -136,6 +136,13 @@ func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int
 	delete(t.held, vmid)
 	t.mu.Unlock()
 	return t.Fake.Destroy(ctx, kind, vmid)
+}
+
+func (t *hookTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+	t.mu.Lock()
+	delete(t.held, vmid)
+	t.mu.Unlock()
+	return t.Fake.DestroyRecorded(ctx, kind, vmid)
 }
 
 func (t *hookTarget) restores() []string {

@@ -45,13 +45,13 @@ type lockProbe struct {
 	held *bool
 }
 
-func (l lockProbe) Prepare(ctx context.Context) error {
+func (l lockProbe) Prepare(ctx context.Context, recorded map[int]bool) error {
 	release, err := daemon.AcquireLock(daemon.LockPath())
 	*l.held = errors.Is(err, daemon.ErrBusy)
 	if err == nil {
 		release()
 	}
-	return l.Target.Prepare(ctx)
+	return l.Target.Prepare(ctx, recorded)
 }
 
 type env struct {

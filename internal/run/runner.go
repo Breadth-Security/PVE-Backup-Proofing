@@ -251,10 +251,12 @@ type pool struct {
 	errs     []string
 }
 
-// lease is what an admitted job holds until it ends.
+// lease is what an admitted job holds until it ends, and the backup's
+// original config admit read (passed on so the job does not read it again).
 type lease struct {
 	vmid       int
 	space, ram int64
+	orig       map[string]string
 }
 
 func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) []model.GuestResult {
@@ -308,7 +310,7 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 					p.addErr(fmt.Sprintf("internal error: %v", r))
 				}
 			}()
-			results[i] = proofOne(ctx, d, b, l.vmid)
+			results[i] = proofOne(ctx, d, b, l.vmid, l.orig)
 		}()
 	}
 	wg.Wait()
@@ -367,7 +369,8 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 		annotate(d, p.log.With("guest", b.Key.String(), "volid", b.VolID), b, *res)
 		return l, res
 	}
-	needRAM := guestMemoryMiB(b.Key.Kind, raw) * (1 << 20) * 110 / 100
+	orig := sanitize.ParseConfigText(raw)
+	needRAM := guestMemoryMiB(b.Key.Kind, orig) * (1 << 20) * 110 / 100
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -399,7 +402,7 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 	p.inUse[vmid] = true
 	p.spaceRes += b.Size
 	p.ramRes += needRAM
-	return lease{vmid: vmid, space: b.Size, ram: needRAM}, nil
+	return lease{vmid: vmid, space: b.Size, ram: needRAM, orig: orig}, nil
 }
 
 func (p *pool) release(l lease) {
@@ -410,11 +413,11 @@ func (p *pool) release(l lease) {
 	p.ramRes -= l.ram
 }
 
-// guestMemoryMiB reads the "memory" key (MiB) from a backed-up guest config,
+// guestMemoryMiB reads the "memory" key (MiB) from a parsed backed-up config,
 // accepting PVE's "current=<n>[,...]" form, and falls back to the PVE default
 // for the guest kind.
-func guestMemoryMiB(kind model.GuestKind, raw string) int64 {
-	v := sanitize.ParseConfigText(raw)["memory"]
+func guestMemoryMiB(kind model.GuestKind, orig map[string]string) int64 {
+	v := orig["memory"]
 	v, _, _ = strings.Cut(v, ",")
 	v = strings.TrimPrefix(strings.TrimSpace(v), "current=")
 	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {

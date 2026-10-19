@@ -31,6 +31,10 @@ var (
 	ErrOutOfRange = errors.New("VMID outside reserved range")
 	// ErrNotOwned: the guest is not tagged "pbp" (or is not the expected kind).
 	ErrNotOwned = errors.New("guest not owned by PBP")
+	// ErrRestoreNotStarted: the node refused the restore request, so no
+	// restore task ran and PBP created no guest at the VMID. Any other
+	// Restore error may have left a (possibly untagged) guest behind.
+	ErrRestoreNotStarted = errors.New("restore not started")
 	// ErrBootFailed: the guest itself did not boot (never reached running,
 	// or a container never accepted exec while SSH worked). Only this boot
 	// error says something about the backup; any other is a node fault.
@@ -46,7 +50,18 @@ func (e bootFailure) Is(target error) bool { return target == ErrBootFailed }
 
 func bootFailed(format string, a ...any) error { return bootFailure{fmt.Sprintf(format, a...)} }
 
-// OwnerTag marks guests PBP created.
+// notStarted is a refused restore request: it matches ErrRestoreNotStarted
+// and keeps the node's message unchanged (it becomes the notes reason).
+type notStarted struct{ err error }
+
+func (e notStarted) Error() string        { return e.err.Error() }
+func (e notStarted) Unwrap() error        { return e.err }
+func (e notStarted) Is(target error) bool { return target == ErrRestoreNotStarted }
+
+// OwnerTag marks guests PBP created. A guest in the reserved range is PBP's
+// if it carries this tag or if the state store records its VMID as the
+// target of a restore PBP started (design section 11.2): a restore that
+// failed, or whose tag write failed, leaves an untagged guest.
 const OwnerTag = "pbp"
 
 // BootInfo describes a guest that reached running.
@@ -64,8 +79,10 @@ type BootInfo struct {
 // Target is where backups are restored and proofed (design section 5.1).
 type Target interface {
 	// Prepare verifies the node: PVE version, isolated bridge, restore
-	// storage, and that no foreign guest sits in the VMID range.
-	Prepare(ctx context.Context) error
+	// storage, and that no foreign guest sits in the VMID range. recorded
+	// holds the VMIDs the state store records as targets of restores PBP
+	// started; an untagged guest there is PBP's, not foreign.
+	Prepare(ctx context.Context, recorded map[int]bool) error
 	// Owned lists guests in the range tagged "pbp".
 	Owned(ctx context.Context) ([]pve.GuestRef, error)
 	// StrayTagged lists guests tagged "pbp" whose VMID is outside the
@@ -75,11 +92,15 @@ type Target interface {
 	// AllocateVMID returns the lowest VMID in range that does not exist and
 	// is not in inUse, or ErrNoFreeVMID.
 	AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error)
-	// Restore restores b into vmid (not started) and tags it "pbp".
-	Restore(ctx context.Context, b model.Backup, vmid int) error
+	// Restore restores b into vmid (not started) and tags it "pbp". orig is
+	// b's original config (sanitize.ParseConfigText of the config stored in
+	// the backup). An error matching ErrRestoreNotStarted means no guest
+	// was created; any other error may have left one.
+	Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error
 	// Sanitize makes the restored guest safe to start and verifies it. It
-	// returns the pieces the proof cannot cover.
-	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, volid string) ([]model.MissingPiece, error)
+	// returns the pieces the proof cannot cover; orig is the backup's
+	// original config, as for Restore.
+	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, orig map[string]string) ([]model.MissingPiece, error)
 	// Start starts a sanitized guest; it refuses one that is not.
 	Start(ctx context.Context, kind model.GuestKind, vmid int) error
 	// WaitBooted waits until the guest runs and can be looked into. An
@@ -88,7 +109,12 @@ type Target interface {
 	WaitBooted(ctx context.Context, kind model.GuestKind, vmid int, timeout time.Duration) (BootInfo, error)
 	// Executor runs commands inside the guest.
 	Executor(kind model.GuestKind, vmid int) probe.Executor
-	// Destroy stops and removes an owned guest and confirms it is gone. A
-	// guest that does not exist is not an error.
+	// Destroy stops and removes an owned guest (in range, tagged "pbp") and
+	// confirms it is gone. A guest that does not exist is not an error.
 	Destroy(ctx context.Context, kind model.GuestKind, vmid int) error
+	// DestroyRecorded is Destroy for a VMID the caller's state store records
+	// as the target of a restore PBP started. It also accepts an untagged
+	// guest there (a partial restore), provided it is stopped: PBP never
+	// starts a guest it has not tagged. Range, kind and node checks apply.
+	DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error
 }

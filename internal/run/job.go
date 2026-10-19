@@ -49,22 +49,26 @@ type job struct {
 	d    Deps
 	b    model.Backup
 	vmid int
+	// orig is the backup's original config, read once at admission.
+	orig map[string]string
 	log  *slog.Logger
 	// protectSet: PBP asked to set protected (the original was false).
 	protectSet bool
-	// restoreTried: a guest may exist at vmid.
+	// restoreTried: a restore was started, so a guest PBP owns (by the
+	// state record, tagged or not) may exist at vmid.
 	restoreTried bool
 }
 
 // proofOne proofs backup b in the temporary guest vmid and always tears it
-// down again, then writes the verdict to the backup's notes. A panic while
-// proofing becomes an ERROR verdict; teardown still runs.
-func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int) (res model.GuestResult) {
+// down again, then writes the verdict to the backup's notes. orig is b's
+// original config. A panic while proofing becomes an ERROR verdict; teardown
+// still runs.
+func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int, orig map[string]string) (res model.GuestResult) {
 	log := d.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	j := &job{d: d, b: b, vmid: vmid, log: log.With("guest", b.Key.String(), "vmid", vmid, "volid", b.VolID)}
+	j := &job{d: d, b: b, vmid: vmid, orig: orig, log: log.With("guest", b.Key.String(), "vmid", vmid, "volid", b.VolID)}
 	res = model.GuestResult{Backup: b, TempVMID: vmid}
 
 	defer func() {
@@ -116,14 +120,24 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	j.restoreTried = true
 	t0 := d.Now()
-	err = d.Target.Restore(ctx, b, j.vmid)
+	err = d.Target.Restore(ctx, b, j.vmid, j.orig)
 	res.RestoreDuration = d.Now().Sub(t0)
 	if err != nil {
+		if errors.Is(err, target.ErrRestoreNotStarted) {
+			// The node refused the request: no guest of PBP's exists, and
+			// one at vmid now (e.g. created meanwhile) is not ours.
+			j.restoreTried = false
+			if serr := j.setStage(state.StageProtected); serr != nil {
+				j.log.Error("record restore not started", "err", serr)
+			}
+		}
+		// Otherwise a guest may exist, untagged; the InFlight entry
+		// (stage restored) makes it PBP's, and teardown removes it.
 		fail(target.ClassifyRestoreError(err), "restore failed: %v", err)
 		return
 	}
 
-	missing, err := d.Target.Sanitize(ctx, kind, j.vmid, b.VolID)
+	missing, err := d.Target.Sanitize(ctx, kind, j.vmid, j.orig)
 	if errors.Is(err, target.ErrUnsafe) {
 		fail(model.Error, "unsafe config: %s", strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "))
 		return
@@ -133,11 +147,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 
-	guest, err := j.originalIdentity(ctx)
-	if err != nil {
-		fail(model.Error, "read original config: %v", err)
-		return
-	}
+	guest := j.originalIdentity()
 	res.Name = guest.Name
 
 	if err := j.setStage(state.StageStarted); err != nil {
@@ -183,23 +193,20 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	res.NotCovered, res.Checks, res.BootLog = out.NotCovered, out.Checks, out.BootLog
 }
 
-// originalIdentity reads the guest's name and tags from the config stored in
+// originalIdentity is the guest's name and tags from the config stored in
 // the backup: the restored guest is renamed and re-tagged "pbp".
-func (j *job) originalIdentity(ctx context.Context) (probe.GuestInfo, error) {
-	raw, err := j.d.API.OriginalConfig(ctx, j.d.Cfg.Target.Node, j.b.VolID)
-	if err != nil {
-		return probe.GuestInfo{}, err
-	}
-	cfg := sanitize.ParseConfigText(raw)
-	g := probe.GuestInfo{VMID: j.b.Key.VMID, Name: cfg["name"]}
+func (j *job) originalIdentity() probe.GuestInfo {
+	g := probe.GuestInfo{VMID: j.b.Key.VMID, Name: j.orig["name"]}
 	if g.Name == "" {
-		g.Name = cfg["hostname"]
+		g.Name = j.orig["hostname"]
 	}
-	g.Tags = sanitize.SplitList(cfg["tags"])
-	return g, nil
+	g.Tags = sanitize.SplitList(j.orig["tags"])
+	return g
 }
 
 // teardown destroys the guest and restores the backup's protected flag. The
+// guest is PBP's by the InFlight record (tagged or not, e.g. after a failed
+// restore), so it is removed with Target.DestroyRecorded. The
 // InFlight entry is removed only when both succeed; otherwise the janitor
 // finishes the job. A failed destroy turns PROVEN into ERROR (so the guest
 // is proofed again next run) and otherwise only notes it in the reason, as
@@ -210,7 +217,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		err := j.safely("destroy", func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
 			defer cancel()
-			return j.d.Target.Destroy(ctx, j.b.Key.Kind, j.vmid)
+			return j.d.Target.DestroyRecorded(ctx, j.b.Key.Kind, j.vmid)
 		})
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)

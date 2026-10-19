@@ -22,7 +22,7 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
-// destroyLog records every Target.Destroy call.
+// destroyLog records every Target.Destroy and DestroyRecorded call.
 type destroyLog struct {
 	target.Target
 	mu    sync.Mutex
@@ -34,6 +34,13 @@ func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int
 	t.calls = append(t.calls, vmid)
 	t.mu.Unlock()
 	return t.Target.Destroy(ctx, kind, vmid)
+}
+
+func (t *destroyLog) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+	t.mu.Lock()
+	t.calls = append(t.calls, vmid)
+	t.mu.Unlock()
+	return t.Target.DestroyRecorded(ctx, kind, vmid)
 }
 
 type janitorFixture struct {
@@ -124,7 +131,9 @@ func TestJanitor(t *testing.T) {
 	// Crashed after start: tagged guest, backup protected by PBP.
 	f.guest(model.KindQEMU, 990000, true)
 	f.backup("pbs:v0", true)
-	// Untagged guest in an InFlight slot: never destroyed.
+	// Untagged running guest at a recorded VMID: refused, since PBP never
+	// starts a guest it has not tagged (see ownership_test.go for the
+	// stopped partial restore the janitor does remove).
 	f.guest(model.KindQEMU, 990001, false)
 	f.backup("pbs:v1", true)
 	// Destroyed but not unprotected.
