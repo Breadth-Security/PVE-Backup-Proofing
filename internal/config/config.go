@@ -125,6 +125,7 @@ func defaults() Config {
 
 // Load reads the YAML file at path, applies defaults and validates it.
 func Load(path string) (Config, error) {
+	// #nosec G304 -- path is the operator-supplied --config flag, $PBP_CONFIG or the default; reading it is the function's purpose
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)

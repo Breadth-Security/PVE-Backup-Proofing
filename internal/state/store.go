@@ -57,6 +57,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("state: create dir for %s: %w", path, err)
 	}
 	s := &Store{path: path, state: newState()}
+	// #nosec G304 -- path is PBP's own state file under the fixed state directory, not user input
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -168,21 +169,22 @@ func (s *Store) write(st State) (err error) {
 		return fmt.Errorf("state: marshal: %w", err)
 	}
 	tmp := s.path + ".tmp"
+	// #nosec G304 -- tmp is the state file path plus ".tmp"; the path is PBP's own state file, not user input
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("state: open %s: %w", tmp, err)
 	}
 	defer func() {
 		if err != nil {
-			os.Remove(tmp)
+			_ = os.Remove(tmp) // best-effort cleanup; err is already being returned
 		}
 	}()
 	if _, err = f.Write(b); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("state: write %s: %w", tmp, err)
 	}
 	if err = f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("state: fsync %s: %w", tmp, err)
 	}
 	if err = f.Close(); err != nil {
@@ -195,7 +197,7 @@ func (s *Store) write(st State) (err error) {
 	if err != nil {
 		return fmt.Errorf("state: open dir: %w", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }() // read-only directory handle
 	if err = d.Sync(); err != nil {
 		return fmt.Errorf("state: fsync dir: %w", err)
 	}

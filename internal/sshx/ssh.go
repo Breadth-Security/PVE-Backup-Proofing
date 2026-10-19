@@ -147,14 +147,20 @@ func (c *Client) connect(ctx context.Context) (*ssh.Client, error) {
 		return nil, fmt.Errorf("sshx: dial %s: %w", c.addr, err)
 	}
 	if dl, ok := ctx.Deadline(); ok {
-		nc.SetDeadline(dl)
+		if err := nc.SetDeadline(dl); err != nil {
+			_ = nc.Close()
+			return nil, fmt.Errorf("sshx: dial %s: set deadline: %w", c.addr, err)
+		}
 	}
 	sc, chans, reqs, err := ssh.NewClientConn(nc, c.addr, c.cfg)
 	if err != nil {
-		nc.Close()
+		_ = nc.Close()
 		return nil, fmt.Errorf("sshx: dial %s: %w", c.addr, err)
 	}
-	nc.SetDeadline(time.Time{})
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		_ = sc.Close()
+		return nil, fmt.Errorf("sshx: dial %s: clear deadline: %w", c.addr, err)
+	}
 	return ssh.NewClient(sc, chans, reqs), nil
 }
 
@@ -175,6 +181,7 @@ func (c *Client) ensureConn(ctx context.Context) (*ssh.Client, error) {
 	if att == nil {
 		att = &connectAttempt{done: make(chan struct{})}
 		c.connecting = att
+		// #nosec G118 -- the shared reconnect is joined by many callers, so it must outlive any single caller's ctx; it is bounded by c.timeout
 		go func() {
 			cctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()
@@ -184,7 +191,7 @@ func (c *Client) ensureConn(ctx context.Context) (*ssh.Client, error) {
 			c.connecting = nil
 			if err == nil {
 				if c.closed {
-					conn.Close()
+					_ = conn.Close()
 					att.conn, att.err = nil, errors.New("sshx: client closed")
 				} else {
 					c.conn = conn
@@ -210,7 +217,7 @@ func (c *Client) dropConn(conn *ssh.Client) {
 		c.conn = nil
 	}
 	c.mu.Unlock()
-	conn.Close()
+	_ = conn.Close()
 }
 
 // session opens a session, reconnecting once if the connection has dropped.
@@ -244,7 +251,7 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	var stdout, stderr bytes.Buffer
 	sess.Stdout, sess.Stderr = &stdout, &stderr
@@ -260,7 +267,7 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	select {
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGKILL)
-		sess.Close()
+		_ = sess.Close()
 		return Result{}, ctx.Err()
 	case err := <-done:
 		res := Result{Stdout: stdout.String(), Stderr: stderr.String()}

@@ -21,7 +21,7 @@ func TestListBackups(t *testing.T) {
 			t.Errorf("path = %q", r.URL.Path)
 		}
 		gotQuery = r.URL.RawQuery
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	got, err := c.ListBackups(context.Background(), "pve1", "PBS-Baremetal")
 	if err != nil {
@@ -51,7 +51,7 @@ func TestListBackups(t *testing.T) {
 
 func TestListBackupsTolerantEncoding(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":[{"volid":"s:backup/vm/5/x","vmid":"5","subtype":"qemu","ctime":"100","size":"7","protected":"1"},
+		_, _ = w.Write([]byte(`{"data":[{"volid":"s:backup/vm/5/x","vmid":"5","subtype":"qemu","ctime":"100","size":"7","protected":"1"},
 			{"volid":"s:backup/vm/6/x","vmid":6,"subtype":"qemu","ctime":100,"size":7,"protected":false,"encrypted":0},
 			{"volid":"s:backup/vm/7/x","vmid":7,"subtype":"qemu","ctime":100,"size":7,"protected":true}]}`))
 	}))
@@ -75,9 +75,11 @@ func TestSetVolumeAttrs(t *testing.T) {
 	var form map[string][]string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, escPath, ctype = r.Method, r.URL.EscapedPath(), r.Header.Get("Content-Type")
-		r.ParseForm()
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
 		form = r.PostForm
-		w.Write([]byte(`{"data":null}`))
+		_, _ = w.Write([]byte(`{"data":null}`))
 	}))
 	notes, prot := "PBP PROVEN", true
 	err := c.SetVolumeAttrs(context.Background(), "pve1", "PBS-Baremetal", "PBS-Baremetal:backup/ct/101/2026-07-26T06:00:03Z", &notes, &prot)
@@ -101,9 +103,11 @@ func TestSetVolumeAttrs(t *testing.T) {
 func TestSetVolumeAttrsOmitsNil(t *testing.T) {
 	var form map[string][]string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
 		form = r.PostForm
-		w.Write([]byte(`{"data":null}`))
+		_, _ = w.Write([]byte(`{"data":null}`))
 	}))
 	f := false
 	if err := c.SetVolumeAttrs(context.Background(), "n", "s", "s:v", nil, &f); err != nil {
@@ -118,7 +122,7 @@ func TestSetVolumeAttrsOmitsNil(t *testing.T) {
 // null; seen on pve1). They are not guests and must not become guest "/0".
 func TestListBackupsSkipsNonGuestBackups(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":[{"content":"backup","ctime":1788809160,"format":"pbs-host","size":37398067560,"subtype":null,"vmid":null,"volid":"PBS-qemu:backup/host/cic-mobile/2026-09-07T19:26:00Z"},
+		_, _ = w.Write([]byte(`{"data":[{"content":"backup","ctime":1788809160,"format":"pbs-host","size":37398067560,"subtype":null,"vmid":null,"volid":"PBS-qemu:backup/host/cic-mobile/2026-09-07T19:26:00Z"},
 			{"volid":"s:backup/ct/110/x","vmid":110,"subtype":"lxc","ctime":100,"size":7}]}`))
 	}))
 	got, err := c.ListBackups(context.Background(), "pve1", "s")
@@ -136,7 +140,7 @@ func TestVolumeNotes(t *testing.T) {
 	var method, escPath string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, escPath = r.Method, r.URL.EscapedPath()
-		w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond","protected":false,"size":1}}`))
+		_, _ = w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond","protected":false,"size":1}}`))
 	}))
 	got, err := c.VolumeNotes(context.Background(), "pve1", "PBS-Baremetal", "PBS-Baremetal:backup/ct/110/2026-10-19T06:24:17Z")
 	if err != nil {

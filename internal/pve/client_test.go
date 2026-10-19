@@ -59,7 +59,7 @@ func TestVersionAndAuthHeader(t *testing.T) {
 	var gotAuth, gotPath string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
-		w.Write([]byte(`{"data":{"version":"9.2.18","release":"9.2"}}`))
+		_, _ = w.Write([]byte(`{"data":{"version":"9.2.18","release":"9.2"}}`))
 	}))
 	v, err := c.Version(context.Background())
 	if err != nil || v != "9.2.18" {
@@ -77,11 +77,13 @@ func TestBaseURLNormalisation(t *testing.T) {
 	var gotPath string
 	srv := quietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		w.Write([]byte(`{"data":{"version":"9.0.0"}}`))
+		_, _ = w.Write([]byte(`{"data":{"version":"9.0.0"}}`))
 	}))
 	defer srv.Close()
 	secret := filepath.Join(t.TempDir(), "s")
-	os.WriteFile(secret, []byte("x"), 0o600)
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, u := range []string{srv.URL + "/", srv.URL + "/api2/json", srv.URL + "/api2/json/"} {
 		c, err := New(config.API{URL: u, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: fingerprint(srv)})
 		if err != nil {
@@ -97,11 +99,13 @@ func TestBaseURLNormalisation(t *testing.T) {
 }
 
 func TestFingerprintPin(t *testing.T) {
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"data":{"version":"9"}}`)) })
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"data":{"version":"9"}}`)) })
 	srv := quietTLSServer(h)
 	defer srv.Close()
 	secret := filepath.Join(t.TempDir(), "s")
-	os.WriteFile(secret, []byte("x"), 0o600)
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// lower-case, no-colon variants are accepted too
 	lower := strings.ToLower(fingerprint(srv))
@@ -123,7 +127,9 @@ func TestNoTLSConfigRejectsSelfSigned(t *testing.T) {
 	srv := quietTLSServer(http.NotFoundHandler())
 	defer srv.Close()
 	secret := filepath.Join(t.TempDir(), "s")
-	os.WriteFile(secret, []byte("x"), 0o600)
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c, err := New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret})
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +148,7 @@ func TestNewMissingSecretFile(t *testing.T) {
 func TestAPIError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"data":null,"errors":{"notes":"value too long"}}`))
+		_, _ = w.Write([]byte(`{"data":null,"errors":{"notes":"value too long"}}`))
 	}))
 	_, err := c.Version(context.Background())
 	var ae *APIError
@@ -170,7 +176,7 @@ func TestStorageStatus(t *testing.T) {
 		if r.URL.Path != "/api2/json/nodes/pve1/storage/local-lvm/status" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		w.Write([]byte(`{"data":{"active":1,"enabled":"1","avail":"1000","total":2000,"content":"images,rootdir"}}`))
+		_, _ = w.Write([]byte(`{"data":{"active":1,"enabled":"1","avail":"1000","total":2000,"content":"images,rootdir"}}`))
 	}))
 	s, err := c.StorageStatus(context.Background(), "pve1", "local-lvm")
 	if err != nil {
@@ -187,7 +193,7 @@ func TestNodeMemory(t *testing.T) {
 		if r.URL.Path != "/api2/json/nodes/pve1/status" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		w.Write([]byte(`{"data":{"memory":{"total":100,"available":60,"free":50,"used":40}}}`))
+		_, _ = w.Write([]byte(`{"data":{"memory":{"total":100,"available":60,"free":50,"used":40}}}`))
 	}))
 	m, err := c.NodeMemory(context.Background(), "pve1")
 	if err != nil || m != (NodeMemory{Total: 100, Available: 60}) {
@@ -200,7 +206,7 @@ func TestNetIface(t *testing.T) {
 		if r.URL.Path != "/api2/json/nodes/pve1/network/vmbr0" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		w.Write([]byte(`{"data":{"type":"OVSBridge","iface":"vmbr0","ovs_ports":"enp66s0f0 ovsport_host ovsport_dev"}}`))
+		_, _ = w.Write([]byte(`{"data":{"type":"OVSBridge","iface":"vmbr0","ovs_ports":"enp66s0f0 ovsport_host ovsport_dev"}}`))
 	}))
 	n, err := c.NetIface(context.Background(), "pve1", "vmbr0")
 	if err != nil {
@@ -220,10 +226,10 @@ func TestWaitTaskOK(t *testing.T) {
 		}
 		polls++
 		if polls < 3 {
-			w.Write([]byte(`{"data":{"status":"running"}}`))
+			_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
 			return
 		}
-		w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
 	}))
 	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:0001::qmrestore:100:root@pam:"); err != nil {
 		t.Fatal(err)
@@ -236,7 +242,7 @@ func TestWaitTaskOK(t *testing.T) {
 func TestWaitTaskFailureIncludesLog(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/status") {
-			w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"command 'x' failed"}}`))
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"command 'x' failed"}}`))
 			return
 		}
 		var sb strings.Builder
@@ -248,7 +254,7 @@ func TestWaitTaskFailureIncludesLog(t *testing.T) {
 			sb.WriteString(`{"n":` + strconv.Itoa(i) + `,"t":"line ` + strconv.Itoa(i) + `"}`)
 		}
 		sb.WriteString(`]}`)
-		w.Write([]byte(sb.String()))
+		_, _ = w.Write([]byte(sb.String()))
 	}))
 	err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:1:")
 	var te *TaskError
@@ -268,7 +274,7 @@ func TestWaitTaskFailureIncludesLog(t *testing.T) {
 
 func TestWaitTaskContextCancel(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":{"status":"running"}}`))
+		_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -279,7 +285,7 @@ func TestWaitTaskContextCancel(t *testing.T) {
 
 func TestWaitTaskWarningsIsSuccess(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"WARNINGS: 2"}}`))
+		_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"WARNINGS: 2"}}`))
 	}))
 	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:2:"); err != nil {
 		t.Fatalf("WARNINGS treated as failure: %v", err)
@@ -293,7 +299,7 @@ func dropConn(t *testing.T, w http.ResponseWriter) {
 		t.Error(err)
 		return
 	}
-	conn.Close()
+	_ = conn.Close()
 }
 
 // Transient poll failures (5xx, dropped connections) while a task runs must
@@ -304,17 +310,17 @@ func TestWaitTaskRetriesTransientErrors(t *testing.T) {
 		polls++
 		switch polls {
 		case 1:
-			w.Write([]byte(`{"data":{"status":"running"}}`))
+			_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
 		case 2, 3:
 			http.Error(w, `{"message":"proxy loop"}`, http.StatusBadGateway)
 		case 4:
 			dropConn(t, w)
 		case 5:
-			w.Write([]byte(`{"data":{"status":"running"}}`))
+			_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
 		case 6, 7, 8, 9, 10: // five in a row, then success
 			http.Error(w, "", http.StatusServiceUnavailable)
 		default:
-			w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
 		}
 	}))
 	// Fresh connections only: Go's transport silently retries a GET whose

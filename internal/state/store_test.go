@@ -67,8 +67,12 @@ func TestOpenMissingGivesEmptyState(t *testing.T) {
 
 func TestOpenEmptyFileIsEmptyState(t *testing.T) {
 	p := tmpPath(t)
-	os.MkdirAll(filepath.Dir(p), 0o700)
-	os.WriteFile(p, nil, 0o600)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	s, err := Open(p)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +84,12 @@ func TestOpenEmptyFileIsEmptyState(t *testing.T) {
 
 func TestOpenCorruptFails(t *testing.T) {
 	p := tmpPath(t)
-	os.MkdirAll(filepath.Dir(p), 0o700)
-	os.WriteFile(p, []byte("{not json"), 0o600)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Open(p)
 	if err == nil || !strings.Contains(err.Error(), p) {
 		t.Fatalf("want error naming path, got %v", err)
@@ -95,7 +103,9 @@ func TestOpenCorruptFails(t *testing.T) {
 func TestUpdateErrorLeavesStateUnchanged(t *testing.T) {
 	p := tmpPath(t)
 	s, _ := Open(p)
-	s.Update(func(st *State) error { st.InFlight[1] = Job{TempVMID: 1}; return nil })
+	if err := s.Update(func(st *State) error { st.InFlight[1] = Job{TempVMID: 1}; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	before, _ := os.ReadFile(p)
 	boom := errors.New("boom")
 	err := s.Update(func(st *State) error { st.InFlight[2] = Job{TempVMID: 2}; return boom })
@@ -114,7 +124,9 @@ func TestUpdateErrorLeavesStateUnchanged(t *testing.T) {
 func TestUpdateWriteFailureLeavesMemoryUnchanged(t *testing.T) {
 	p := tmpPath(t)
 	s, _ := Open(p)
-	s.Update(func(st *State) error { st.InFlight[1] = Job{TempVMID: 1}; return nil })
+	if err := s.Update(func(st *State) error { st.InFlight[1] = Job{TempVMID: 1}; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	// Block the tmp path with a directory so the write fails.
 	if err := os.Mkdir(p+".tmp", 0o700); err != nil {
 		t.Fatal(err)
@@ -131,11 +143,14 @@ func TestUpdateWriteFailureLeavesMemoryUnchanged(t *testing.T) {
 func TestSnapshotIsDeepCopy(t *testing.T) {
 	s, _ := Open(tmpPath(t))
 	orig := true
-	s.Update(func(st *State) error {
+	err := s.Update(func(st *State) error {
 		st.InFlight[1] = Job{ProtectedOrig: &orig}
 		st.Runs = []RunRecord{{ID: "a", Counts: map[model.Verdict]int{model.Proven: 1}}}
 		return nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	snap := s.Snapshot()
 	*snap.InFlight[1].ProtectedOrig = false
 	snap.Runs[0].Counts[model.Proven] = 99
@@ -165,9 +180,15 @@ func TestAppendRunReplacesRunningRecord(t *testing.T) {
 	p := tmpPath(t)
 	s, _ := Open(p)
 	t0 := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
-	s.AppendRun(RunRecord{ID: "a", Outcome: "running", Started: t0}, 30)
-	s.AppendRun(RunRecord{ID: "b", Outcome: "ok"}, 30)
-	s.AppendRun(RunRecord{ID: "a", Outcome: "problems", Started: t0, Ended: t0.Add(time.Hour)}, 30)
+	if err := s.AppendRun(RunRecord{ID: "a", Outcome: "running", Started: t0}, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendRun(RunRecord{ID: "b", Outcome: "ok"}, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendRun(RunRecord{ID: "a", Outcome: "problems", Started: t0, Ended: t0.Add(time.Hour)}, 30); err != nil {
+		t.Fatal(err)
+	}
 	s2, _ := Open(p)
 	runs := s2.Snapshot().Runs
 	if len(runs) != 2 || runs[0].ID != "a" || runs[0].Outcome != "problems" || runs[1].ID != "b" {

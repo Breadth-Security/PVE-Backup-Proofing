@@ -63,10 +63,16 @@ func TestPruneRunLogs(t *testing.T) {
 	base := time.Now().Add(-time.Hour)
 	for i := 0; i < 33; i++ {
 		p := filepath.Join(dir, fmt.Sprintf("run-%02d.log", i))
-		os.WriteFile(p, nil, 0o644)
-		os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute))
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	os.WriteFile(filepath.Join(dir, "other.txt"), nil, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "other.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := PruneRunLogs(dir, 30); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +95,7 @@ func TestOpenRunLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if filepath.Base(f.Name()) != "run-abc.log" {
 		t.Fatal(f.Name())
 	}

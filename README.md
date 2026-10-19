@@ -178,7 +178,7 @@ docker compose exec pbp pbp check
 
 `pbp check` validates the config and your access and runs the full preflight, without restoring anything. Fix everything it reports before you rely on the schedule.
 
-Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroless `nonroot`). The secret files and `config.yaml` must be readable by that user (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is. A bind mount hides that ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first.
+Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroless `nonroot`). The secret files and `config.yaml` must be readable by that user (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is. A bind mount hides that ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first. Run logs are created readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root or as that uid, for example `sudo less logs/run-*.log`.
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
@@ -269,3 +269,43 @@ See [`config.example.yaml`](config.example.yaml), which documents every key. Sec
 docker build -t pbp:latest .            # multi-stage; static binary on distroless
 go test ./... && go vet ./...
 ```
+
+## Code scanning
+
+Workflows in [`.gitea/workflows/`](.gitea/workflows/) check every pull request and every push to `main`, and each **blocks** the pull request when it fails:
+
+- **test**: `go vet` (with and without the `integration` tag) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
+- **Scanners**: Trivy, govulncheck, gosec, staticcheck and golangci-lint check the code and dependencies. gitleaks checks the **whole git history** for committed secrets; Trivy only sees the current files. The scanners also run weekly (Monday 06:17 UTC), so newly published vulnerabilities are caught in code that hasn't changed.
+
+The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the test workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
+
+Tool versions are pinned in the workflow files. To run them locally from the repository root:
+
+```
+# govulncheck
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+# staticcheck
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 -tags integration ./...
+
+# gosec
+# gosec v2.29.0 needs a Go 1.26 toolchain to analyse the code
+GOTOOLCHAIN=go1.26.9 go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
+
+# golangci-lint (config: .golangci.yml)
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --build-tags integration ./...
+
+# Trivy (vulnerabilities, secrets, misconfigurations)
+docker run --rm -v "$PWD":/src:ro aquasec/trivy:0.76.0 fs --exit-code 1 --ignore-unfixed \
+  --scanners vuln,secret,misconfig --skip-dirs /src/.superpowers /src
+
+# gitleaks (full git history)
+docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact /repo
+
+# vet and race tests
+go vet ./... && go vet -tags integration ./... && go test -race ./...
+```
+
+An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site.

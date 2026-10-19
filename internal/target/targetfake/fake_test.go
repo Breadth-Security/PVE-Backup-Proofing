@@ -44,8 +44,12 @@ func TestScriptedLifecycle(t *testing.T) {
 	if _, err := f.AllocateVMID(ctx, map[int]bool{990002: true}); !errors.Is(err, target.ErrNoFreeVMID) {
 		t.Errorf("want ErrNoFreeVMID, got %v", err)
 	}
-	f.Destroy(ctx, model.KindQEMU, v)
-	f.Destroy(ctx, model.KindQEMU, 990000)
+	if err := f.Destroy(ctx, model.KindQEMU, v); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Destroy(ctx, model.KindQEMU, 990000); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.Live) != 0 || len(f.OwnedGuests) != 0 {
 		t.Errorf("live = %v owned = %v", f.Live, f.OwnedGuests)
 	}

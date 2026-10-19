@@ -143,7 +143,7 @@ func (c *Client) do(ctx context.Context, method, path string, query, form url.Va
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
 		return err

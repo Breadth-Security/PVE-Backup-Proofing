@@ -25,7 +25,7 @@ func capture(t *testing.T, reply string) (*Client, *captured) {
 		b, _ := io.ReadAll(r.Body)
 		got.method, got.path, got.rawQuery = r.Method, r.URL.Path, r.URL.RawQuery
 		got.form, _ = url.ParseQuery(string(b))
-		w.Write([]byte(reply))
+		_, _ = w.Write([]byte(reply))
 	}))
 	return c, got
 }
