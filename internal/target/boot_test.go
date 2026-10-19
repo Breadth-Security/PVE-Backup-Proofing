@@ -348,3 +348,44 @@ func TestLXCExecutor(t *testing.T) {
 		t.Error("transport error not returned")
 	}
 }
+
+// Agent-exec polling honours its context, so the probe's per-command and
+// whole-probe timeouts can cut a stuck command short.
+func TestVMExecutorHonoursContext(t *testing.T) {
+	f := healthyFake()
+	runningVM(f, 990000, "1")
+	api := &agentAPI{Fake: f, statuses: []pve.AgentExecStatus{{}}} // never exits
+	n := newTarget(t, api, f, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := n.Executor(model.KindQEMU, 990000).Exec(ctx, []string{"sleep", "infinity"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Error("exec polling ignored the context")
+	}
+}
+
+// pct exec passes its context to the SSH runner.
+func TestLXCExecutorPassesContext(t *testing.T) {
+	f := healthyFake()
+	ctxRunner := ctxSSH{}
+	n := newTarget(t, f, f, ctxRunner)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := n.Executor(model.KindLXC, 990002).Exec(ctx, []string{"true"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// ctxSSH fails with the context's error once it has ended.
+type ctxSSH struct{}
+
+func (ctxSSH) Run(ctx context.Context, cmd string, stdin []byte) (sshx.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return sshx.Result{}, err
+	}
+	return sshx.Result{}, nil
+}

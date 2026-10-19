@@ -175,7 +175,15 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 
-	out := probe.Run(ctx, d.Target.Executor(kind, j.vmid), probe.Input{
+	// restore.probe_timeout bounds everything run inside the guest; a probe
+	// cut short by it is ERROR, never FAILED.
+	pctx := ctx
+	if t := d.Cfg.Restore.ProbeTimeout; t > 0 {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, t)
+		defer cancel()
+	}
+	out := probe.Run(pctx, d.Target.Executor(kind, j.vmid), probe.Input{
 		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
 	})
 	res.Verdict, res.Reason = out.Verdict, out.Reason

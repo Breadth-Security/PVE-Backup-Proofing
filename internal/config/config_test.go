@@ -16,7 +16,8 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Workers != 1 || c.Restore.SpaceMarginPercent != 10 || c.Restore.BootTimeout != 5*time.Minute ||
-		c.Notify.When != "always" || c.Logging.RetainRuns != 30 || c.Target.SSH.Port != 22 {
+		c.Notify.When != "always" || c.Logging.RetainRuns != 30 || c.Target.SSH.Port != 22 ||
+		c.Restore.ProbeTimeout != 5*time.Minute || c.Checks.CommandTimeout != time.Minute {
 		t.Fatalf("unexpected values: %+v", c)
 	}
 	found := false
@@ -103,6 +104,10 @@ func TestValidateErrors(t *testing.T) {
 		{"margin high", RS, "restore: {storage: local-zfs, space_margin_percent: 101}", "restore.space_margin_percent"},
 		{"margin negative", RS, "restore: {storage: local-zfs, space_margin_percent: -1}", "restore.space_margin_percent"},
 		{"retain runs", "sources:", "logging: {retain_runs: 0}\nsources:", "logging.retain_runs"},
+		{"probe timeout short", RS, "restore: {storage: local-zfs, probe_timeout: 29s}", "restore.probe_timeout"},
+		{"probe timeout unitless", RS, "restore: {storage: local-zfs, probe_timeout: 600}", "restore.probe_timeout"},
+		{"command timeout short", "sources:", "checks: {command_timeout: 500ms}\nsources:", "checks.command_timeout"},
+		{"command timeout unitless", "sources:", "checks: {command_timeout: 60}\nsources:", "checks.command_timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +147,23 @@ func TestUnitlessDurationMessage(t *testing.T) {
 	_, err = loadStr(t, strings.Replace(minimal, RS, "restore: {storage: local-zfs, max_run_duration: 500ms}", 1))
 	if err == nil || !strings.Contains(err.Error(), "restore.max_run_duration: must be >= 1s, got 500ms") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTimeoutDefaults(t *testing.T) {
+	c, err := loadStr(t, minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Restore.ProbeTimeout != 5*time.Minute || c.Checks.CommandTimeout != time.Minute {
+		t.Fatalf("probe_timeout %v command_timeout %v", c.Restore.ProbeTimeout, c.Checks.CommandTimeout)
+	}
+	c, err = loadStr(t, strings.Replace(minimal, RS, "restore: {storage: local-zfs, probe_timeout: 30s}", 1)+"checks: {command_timeout: 1s}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Restore.ProbeTimeout != 30*time.Second || c.Checks.CommandTimeout != time.Second {
+		t.Fatalf("probe_timeout %v command_timeout %v", c.Restore.ProbeTimeout, c.Checks.CommandTimeout)
 	}
 }
 

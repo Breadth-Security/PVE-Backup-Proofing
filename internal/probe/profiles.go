@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -43,12 +44,15 @@ func guestMatches(m config.GuestMatch, g GuestInfo) bool {
 	return false
 }
 
-// checker runs check sets through an Executor and accumulates results.
+// checker runs check sets through an Executor and accumulates results. A
+// command that times out fails its own check and the others still run;
+// any other Exec error aborts the checks.
 type checker struct {
-	ex      Executor
-	results []model.CheckResult
-	ports   map[int]bool
-	portsOK bool
+	ex       Executor
+	results  []model.CheckResult
+	ports    map[int]bool
+	portsOK  bool
+	portsErr error // the listing timed out: port checks fail
 }
 
 func (c *checker) record(name string, ok bool, detail string) {
@@ -56,20 +60,29 @@ func (c *checker) record(name string, ok bool, detail string) {
 }
 
 func (c *checker) service(ctx context.Context, prefix, unit string) error {
+	name := prefix + ":services:" + unit
 	r, err := c.ex.Exec(ctx, []string{"systemctl", "is-active", unit})
+	if errors.Is(err, errCommandTimeout) {
+		c.record(name, false, timedOutDetail)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	state := strings.TrimSpace(r.Stdout)
-	c.record(prefix+":services:"+unit, state == "active", state)
+	c.record(name, state == "active", state)
 	return nil
 }
 
 func (c *checker) listening(ctx context.Context) (map[int]bool, error) {
 	if c.portsOK {
-		return c.ports, nil
+		return c.ports, c.portsErr
 	}
 	r, err := c.ex.Exec(ctx, []string{"ss", "-ltnH"})
+	if errors.Is(err, errCommandTimeout) {
+		c.portsOK, c.portsErr = true, err
+		return nil, err
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +113,12 @@ func parseListeningPorts(out string) map[int]bool {
 }
 
 func (c *checker) command(ctx context.Context, prefix, cmd string) error {
+	name := prefix + ":commands:" + cmd
 	r, err := c.ex.Exec(ctx, []string{"sh", "-c", cmd})
+	if errors.Is(err, errCommandTimeout) {
+		c.record(name, false, timedOutDetail)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -111,7 +129,7 @@ func (c *checker) command(ctx context.Context, prefix, cmd string) error {
 			detail += ": " + s
 		}
 	}
-	c.record(prefix+":commands:"+cmd, r.ExitCode == 0, detail)
+	c.record(name, r.ExitCode == 0, detail)
 	return nil
 }
 
@@ -125,7 +143,8 @@ func (c *checker) run(ctx context.Context, prefix string, cs config.CheckSet, an
 	}
 	if len(cs.Ports) > 0 {
 		listening, err := c.listening(ctx)
-		if err != nil {
+		timedOut := errors.Is(err, errCommandTimeout)
+		if err != nil && !timedOut {
 			return err
 		}
 		if anyPort {
@@ -137,14 +156,20 @@ func (c *checker) run(ctx context.Context, prefix string, cs config.CheckSet, an
 			}
 			name := strings.Join(strs, ",")
 			detail := ""
-			if !ok {
+			switch {
+			case timedOut:
+				detail = timedOutDetail
+			case !ok:
 				detail = "none listening"
 			}
 			c.record(prefix+":ports:"+name, ok, detail)
 		} else {
 			for _, p := range cs.Ports {
 				detail := ""
-				if !listening[p] {
+				switch {
+				case timedOut:
+					detail = timedOutDetail
+				case !listening[p]:
 					detail = "not listening"
 				}
 				c.record(prefix+":ports:"+strconv.Itoa(p), listening[p], detail)

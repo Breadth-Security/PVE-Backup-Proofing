@@ -230,6 +230,25 @@ func TestRunCancel(t *testing.T) {
 	}
 }
 
+// A deadline (the probe's per-command timeout) stops a running command.
+func TestRunDeadline(t *testing.T) {
+	s := newServer(t, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.Run(ctx, "sleep", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("deadline took too long")
+	}
+}
+
 func TestReconnectAfterDrop(t *testing.T) {
 	s := newServer(t, true)
 	c, err := Dial(s.cfg)

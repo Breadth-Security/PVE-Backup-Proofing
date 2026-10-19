@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
@@ -66,6 +67,14 @@ func TestWindowsExecUnavailable(t *testing.T) {
 func TestWindowsTransportError(t *testing.T) {
 	o := runWin(errExec{err: errors.New("agent exec: 500 internal")}, config.Checks{})
 	if o.Verdict != model.Error || o.Reason != "probe transport error: agent exec: 500 internal" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+func TestWindowsCommandTimesOut(t *testing.T) {
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
+	o := probe.Run(context.Background(), hanging(probetest.Scripted{}, winCmd), probe.Input{OS: probe.Windows, Checks: ck})
+	if o.Verdict != model.Failed || o.Reason != "check timed out: windows services" {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }

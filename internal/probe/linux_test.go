@@ -3,9 +3,12 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
@@ -288,5 +291,92 @@ func TestDispatch(t *testing.T) {
 	o = probe.Run(context.Background(), probetest.Scripted{}, probe.Input{OS: probe.Unknown})
 	if o.Verdict != model.Booted || o.Reason != "unknown guest OS" {
 		t.Fatalf("got %+v", o)
+	}
+}
+
+// hangExec blocks on the listed commands until its context ends, like a
+// command stuck inside the guest; everything else is scripted.
+type hangExec struct {
+	probetest.Scripted
+	hang map[string]bool
+}
+
+func (h hangExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if h.hang[strings.Join(argv, " ")] {
+		<-ctx.Done()
+		return probe.ExecResult{}, fmt.Errorf("agent exec: %w", ctx.Err())
+	}
+	return h.Scripted.Exec(ctx, argv)
+}
+
+func hanging(ex probetest.Scripted, cmds ...string) hangExec {
+	h := hangExec{ex, map[string]bool{}}
+	for _, c := range cmds {
+		h.hang[c] = true
+	}
+	return h
+}
+
+// A single command that times out fails its check (FAILED), and the other
+// checks still run.
+func TestCheckTimesOut(t *testing.T) {
+	ex := healthy()
+	ex["sh -c ok-cmd"] = out("")
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond, Guests: []config.GuestChecks{
+		{Match: config.GuestMatch{VMID: 7}, CheckSet: config.CheckSet{Commands: []string{"hang-cmd", "ok-cmd"}}},
+	}}
+	o := probe.Run(context.Background(), hanging(ex, "sh -c hang-cmd"), probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 7}})
+	if o.Verdict != model.Failed || o.Reason != "check timed out: guest:commands:hang-cmd" {
+		t.Fatalf("got %+v", o)
+	}
+	want := []model.CheckResult{
+		{Name: "nginx:ports:80,443", OK: true},
+		{Name: "guest:commands:hang-cmd", OK: false, Detail: "timed out"},
+		{Name: "guest:commands:ok-cmd", OK: true},
+	}
+	if !reflect.DeepEqual(o.Checks, want) {
+		t.Errorf("checks = %+v", o.Checks)
+	}
+}
+
+func TestBaseCommandTimesOut(t *testing.T) {
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
+	for cmd, name := range map[string]string{
+		sysState: "system state",
+		findmnt:  "root filesystem",
+		failedC:  "failed units",
+		enabledC: "enabled units",
+		ssC:      "nginx:ports:80,443",
+	} {
+		o := probe.Run(context.Background(), hanging(healthy(), cmd), probe.Input{OS: probe.Linux, Checks: ck})
+		if o.Verdict != model.Failed || o.Reason != "check timed out: "+name {
+			t.Errorf("%s: got %v %q", cmd, o.Verdict, o.Reason)
+		}
+	}
+	o := probe.Run(context.Background(), hanging(probetest.Scripted{}, "rc-status --crashed"), probe.Input{OS: probe.Linux, OSType: "alpine", Checks: ck})
+	if o.Verdict != model.Failed || o.Reason != "check timed out: openrc services" {
+		t.Errorf("rc-status: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// When the whole probe deadline expires, PBP could not finish judging the
+// guest: ERROR, not FAILED.
+func TestProbeDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	ck := config.Checks{CommandTimeout: time.Hour}
+	o := probe.Run(ctx, hanging(healthy(), enabledC), probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error || o.Reason != "probe timed out" {
+		t.Fatalf("got %+v", o)
+	}
+	// Also when the deadline hits while tracing a failed unit.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel2()
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	ex[failedC] = out("a.mount loaded failed failed x\n")
+	o = probe.Run(ctx2, hanging(ex, "systemctl show -p Type -p What -p Where -p RequiresMountsFor -p Requires -p BindsTo a.mount"), probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error || o.Reason != "probe timed out" {
+		t.Fatalf("tracing: got %+v", o)
 	}
 }

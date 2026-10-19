@@ -10,7 +10,7 @@ import (
 )
 
 type linuxRun struct {
-	ex  Executor
+	ex  *guard
 	in  Input
 	out Outcome
 }
@@ -20,16 +20,12 @@ func (r *linuxRun) exec(ctx context.Context, argv ...string) (ExecResult, error)
 }
 
 // fail finalizes a FAILED outcome and captures the boot journal. The
-// journal is read past the guard: failing to capture it is no transport
-// error that should turn a real FAILED into ERROR.
+// journal is read without recording errors: failing to capture it must not
+// turn a real FAILED into ERROR.
 func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	r.out.Verdict = model.Failed
 	r.out.Reason = reason
-	ex := r.ex
-	if g, ok := ex.(*guard); ok {
-		ex = g.ex
-	}
-	if res, err := ex.Exec(ctx, []string{"journalctl", "-b", "--no-pager", "-n", "200"}); err == nil {
+	if res, err := r.ex.run(ctx, []string{"journalctl", "-b", "--no-pager", "-n", "200"}); err == nil {
 		r.out.BootLog = res.Stdout
 	}
 	return r.out
@@ -48,11 +44,17 @@ func (r *linuxRun) booted(reason string) Outcome {
 	return r.out
 }
 
-// execErr maps an Exec error to an outcome: a blocked agent is BOOTED,
-// anything else a transport ERROR.
-func (r *linuxRun) execErr(err error) Outcome {
-	if errors.Is(err, ErrExecBlocked) {
+// execErr maps an Exec error from step name to an outcome: a blocked agent
+// is BOOTED, a command timeout fails the check, an ended probe is ERROR, and
+// anything else is a transport ERROR.
+func (r *linuxRun) execErr(ctx context.Context, name string, err error) Outcome {
+	switch {
+	case errors.Is(err, ErrExecBlocked):
 		return r.booted(ErrExecBlocked.Error())
+	case errors.Is(err, errProbeEnded):
+		return r.errorOut(endedReason(err))
+	case errors.Is(err, errCommandTimeout):
+		return r.fail(ctx, "check timed out: "+name)
 	}
 	return r.errorOut(transportReason(err))
 }
@@ -78,7 +80,7 @@ func firstFields(out string) []string {
 // openRCTypes are the container ostypes whose init is OpenRC.
 var openRCTypes = map[string]bool{"alpine": true, "gentoo": true}
 
-func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
+func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	r := &linuxRun{ex: ex, in: in}
 	if openRCTypes[in.OSType] {
 		return r.runOpenRC(ctx)
@@ -86,7 +88,7 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 
 	res, err := r.exec(ctx, "systemctl", "is-system-running", "--wait")
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "system state", err)
 	}
 	if res.ExitCode == 127 {
 		if in.OSType != "" {
@@ -104,7 +106,7 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 
 	res, err = r.exec(ctx, "findmnt", "-n", "-o", "OPTIONS", "/")
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "root filesystem", err)
 	}
 	if res.ExitCode == 0 {
 		for _, o := range strings.Split(strings.TrimSpace(res.Stdout), ",") {
@@ -116,7 +118,7 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 
 	res, err = r.exec(ctx, "systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager")
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "failed units", err)
 	}
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-units exited %d", res.ExitCode))
@@ -127,7 +129,7 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 
 	res, err = r.exec(ctx, "systemctl", "list-unit-files", "--state=enabled", "--no-legend", "--plain")
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "enabled units", err)
 	}
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-unit-files exited %d", res.ExitCode))
@@ -136,13 +138,16 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 	err = c.runProfiles(ctx, in, firstFields(res.Stdout))
 	r.out.Checks = c.results
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "service checks", err)
 	}
 	return r.finish(ctx)
 }
 
 func (r *linuxRun) finish(ctx context.Context) Outcome {
 	for _, c := range r.out.Checks {
+		if !c.OK && c.Detail == timedOutDetail {
+			return r.fail(ctx, "check timed out: "+c.Name)
+		}
 		if !c.OK {
 			return r.fail(ctx, "check failed: "+c.Name)
 		}
@@ -158,7 +163,7 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 	res, err := r.exec(ctx, "rc-status", "--crashed")
 	if err != nil {
-		return r.execErr(err)
+		return r.execErr(ctx, "openrc services", err)
 	}
 	if res.ExitCode == 127 {
 		return r.booted("init answering, service state unknown")

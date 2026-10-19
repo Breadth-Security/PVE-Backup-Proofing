@@ -58,11 +58,15 @@ type Restore struct {
 	Storage            string        `yaml:"storage"`
 	SpaceMarginPercent int           `yaml:"space_margin_percent"`
 	BootTimeout        time.Duration `yaml:"boot_timeout"`
-	Reproof            bool          `yaml:"reproof"`
-	MaxRunDuration     time.Duration `yaml:"max_run_duration"`
+	// ProbeTimeout bounds all checks inside one booted guest.
+	ProbeTimeout   time.Duration `yaml:"probe_timeout"`
+	Reproof        bool          `yaml:"reproof"`
+	MaxRunDuration time.Duration `yaml:"max_run_duration"`
 }
 
 type Checks struct {
+	// CommandTimeout bounds each command PBP runs inside a guest.
+	CommandTimeout        time.Duration `yaml:"command_timeout"`
 	IgnoreUnits           []string      `yaml:"ignore_units"`
 	WindowsIgnoreServices []string      `yaml:"windows_ignore_services"`
 	Profiles              []Profile     `yaml:"profiles"`
@@ -108,8 +112,9 @@ func defaults() Config {
 	return Config{
 		Workers: 1,
 		Target:  Target{Type: "existing-node", SSH: SSH{User: "root", Port: 22}},
-		Restore: Restore{SpaceMarginPercent: 10, BootTimeout: 5 * time.Minute},
+		Restore: Restore{SpaceMarginPercent: 10, BootTimeout: 5 * time.Minute, ProbeTimeout: 5 * time.Minute},
 		Checks: Checks{
+			CommandTimeout:        time.Minute,
 			IgnoreUnits:           DefaultIgnoreUnits(),
 			WindowsIgnoreServices: DefaultWindowsIgnore(),
 		},
@@ -180,6 +185,8 @@ func (c Config) validate() error {
 		bad("restore.space_margin_percent", "must be 0..100, got %d", r.SpaceMarginPercent)
 	}
 	duration(bad, "restore.boot_timeout", r.BootTimeout, 30*time.Second)
+	duration(bad, "restore.probe_timeout", r.ProbeTimeout, 30*time.Second)
+	duration(bad, "checks.command_timeout", c.Checks.CommandTimeout, time.Second)
 	if r.MaxRunDuration != 0 {
 		duration(bad, "restore.max_run_duration", r.MaxRunDuration, time.Second)
 	}
@@ -201,7 +208,7 @@ func duration(bad func(key, format string, a ...any), key string, d, min time.Du
 }
 
 // durationKeys are the config keys holding durations, as dotted paths.
-var durationKeys = []string{"restore.boot_timeout", "restore.max_run_duration"}
+var durationKeys = []string{"restore.boot_timeout", "restore.probe_timeout", "restore.max_run_duration", "checks.command_timeout"}
 
 // unitlessDurations names every duration key written as a bare number
 // ("300"), which has no unit. The YAML decoder rejects these with only a

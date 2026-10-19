@@ -640,6 +640,37 @@ func TestProbeGetsOSType(t *testing.T) {
 	}
 }
 
+// hangSys blocks "systemctl is-system-running --wait" until its context ends.
+type hangSys struct{ probetest.Scripted }
+
+func (h hangSys) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if strings.Join(argv, " ") == sysCmd {
+		<-ctx.Done()
+		return probe.ExecResult{}, ctx.Err()
+	}
+	return h.Scripted.Exec(ctx, argv)
+}
+
+// restore.probe_timeout bounds the whole probe: a guest that keeps PBP
+// waiting is ERROR (not proven, not blamed) and is still torn down.
+func TestProbeTimeout(t *testing.T) {
+	f := newFixture(t)
+	f.d.Cfg.Restore.ProbeTimeout = 30 * time.Millisecond
+	f.d.Cfg.Checks.CommandTimeout = time.Hour
+	f.tgt.Exec[tmpVMID] = hangSys{healthy()}
+	start := time.Now()
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "probe timed out" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("probe not bounded")
+	}
+	if _, live := f.tgt.Live[tmpVMID]; live {
+		t.Error("guest not destroyed")
+	}
+}
+
 func TestLXCNameFromHostname(t *testing.T) {
 	f := newFixture(t)
 	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}

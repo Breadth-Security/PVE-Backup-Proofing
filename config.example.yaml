@@ -31,10 +31,14 @@ restore:
   storage: local-zfs
   space_margin_percent: 10     # default; 0..100
   boot_timeout: 5m             # default; at least 30s. Durations need a unit (s, m, h)
+  probe_timeout: 5m            # default; at least 30s. Bounds all checks inside one booted
+                               # guest; a probe cut short is ERROR, never FAILED
   reproof: false
   # max_run_duration: 6h       # unset or 0 = no limit; otherwise at least 1s
 
 checks:
+  command_timeout: 60s         # default; at least 1s. Bounds each command run inside a guest;
+                               # a command that times out fails its check ("check timed out")
   # Units ignored when judging "no failed units". Omit the key to get this
   # default list; set it (even to []) to use exactly your own list.
   ignore_units:
