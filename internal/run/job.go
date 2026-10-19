@@ -83,7 +83,9 @@ func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int) (res model.
 			res.Verdict, res.Reason = model.Error, "cancelled"
 		}
 		j.teardown(&res)
-		j.annotate(res)
+		if err := j.safely("notes", func() error { j.annotate(res); return nil }); err != nil {
+			res.Verdict, res.Reason = model.Error, "internal error: "+err.Error()
+		}
 	}()
 	j.prove(ctx, &res)
 	return res
@@ -205,9 +207,12 @@ func (j *job) originalIdentity(ctx context.Context) (probe.GuestInfo, error) {
 func (j *job) teardown(res *model.GuestResult) {
 	clean := true
 	if j.restoreTried {
-		ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
-		defer cancel()
-		if err := j.d.Target.Destroy(ctx, j.b.Key.Kind, j.vmid); err != nil {
+		err := j.safely("destroy", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
+			defer cancel()
+			return j.d.Target.Destroy(ctx, j.b.Key.Kind, j.vmid)
+		})
+		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
 			if res.Verdict == model.Proven {
 				res.Verdict, res.Reason = model.Error, "cleanup failed: destroy (booted ok)"
@@ -215,14 +220,17 @@ func (j *job) teardown(res *model.GuestResult) {
 				res.Reason += "; cleanup failed: destroy"
 			}
 			clean = false
-		} else if err := j.setStage(stageDestroyed); err != nil {
+		} else if err := j.safely("record destroyed", func() error { return j.setStage(stageDestroyed) }); err != nil {
 			j.log.Error("record destroyed stage", "err", err)
 		}
 	}
 	if j.protectSet {
-		ctx, cancel := context.WithTimeout(context.Background(), unprotectTimeout)
-		defer cancel()
-		if err := j.setProtected(ctx, false); err != nil {
+		err := j.safely("unprotect", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), unprotectTimeout)
+			defer cancel()
+			return j.setProtected(ctx, false)
+		})
+		if err != nil {
 			j.log.Error("restore backup protected flag failed; left for the janitor", "err", err)
 			res.Reason += "; cleanup failed: unprotect"
 			clean = false
@@ -231,13 +239,32 @@ func (j *job) teardown(res *model.GuestResult) {
 	if !clean {
 		return
 	}
-	err := j.d.Store.Update(func(st *state.State) error {
-		delete(st.InFlight, j.vmid)
-		return nil
+	err := j.safely("remove job", func() error {
+		return j.d.Store.Update(func(st *state.State) error {
+			delete(st.InFlight, j.vmid)
+			return nil
+		})
 	})
 	if err != nil {
 		j.log.Error("remove finished job from state", "err", err)
 	}
+}
+
+// panicError is a recovered panic value turned into an error.
+type panicError struct{ v any }
+
+func (e panicError) Error() string { return fmt.Sprint(e.v) }
+
+// safely runs one cleanup step so that a panic in it is logged with its
+// stack and returned as an error, letting the remaining steps still run.
+func (j *job) safely(step string, fn func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			j.log.Error("panic during "+step, "panic", p, "stack", string(debug.Stack()))
+			err = panicError{p}
+		}
+	}()
+	return fn()
 }
 
 // annotate writes the verdict line to the backup's notes and records PROVEN

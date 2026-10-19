@@ -77,6 +77,7 @@ type recAPI struct {
 	*pvefake.Fake
 	rec                                   *recorder
 	failNotes, failProtect, failUnprotect bool
+	panicNotes                            bool
 	storages                              []string
 }
 
@@ -85,6 +86,9 @@ func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string
 	switch {
 	case notes != nil:
 		a.rec.add(ctx, "SetNotes")
+		if a.panicNotes {
+			panic("notes boom")
+		}
 		if a.failNotes {
 			return errors.New("notes refused")
 		}
@@ -105,6 +109,8 @@ type recTarget struct {
 	rec *recorder
 	// onBoot runs inside WaitBooted (e.g. to cancel the job's context).
 	onBoot func(ctx context.Context) error
+	// panicDestroy makes Destroy panic.
+	panicDestroy bool
 }
 
 func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int) error {
@@ -134,6 +140,9 @@ func (t *recTarget) WaitBooted(ctx context.Context, kind model.GuestKind, vmid i
 
 func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
 	t.rec.add(ctx, "Destroy")
+	if t.panicDestroy {
+		panic("destroy boom")
+	}
 	return t.Fake.Destroy(ctx, kind, vmid)
 }
 
@@ -422,6 +431,47 @@ func TestPanicStillTearsDown(t *testing.T) {
 	}
 	if !strings.Contains(f.logBuf.String(), "boom from guest") || !strings.Contains(f.logBuf.String(), "stack=") {
 		t.Errorf("panic not logged with stack: %q", f.logBuf)
+	}
+}
+
+func TestDestroyPanicStillCleansUp(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.panicDestroy = true
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "cleanup failed: destroy (booted ok)" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	got := f.rec.entries()
+	want := []string{"Destroy @started", "SetProtected=false @started", "SetNotes @started"}
+	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
+		t.Errorf("calls %q", got)
+	}
+	if f.protected() {
+		t.Error("backup left protected")
+	}
+	if j, ok := f.inFlight(); !ok || j.Stage != "started" {
+		t.Errorf("InFlight = %+v, %v", j, ok)
+	}
+	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · cleanup failed: destroy (booted ok)\n") {
+		t.Errorf("notes %q", f.notes())
+	}
+	if !strings.Contains(f.logBuf.String(), "destroy boom") || !strings.Contains(f.logBuf.String(), "stack=") {
+		t.Errorf("panic not logged with stack: %q", f.logBuf)
+	}
+}
+
+func TestNotesPanicReturnsNormally(t *testing.T) {
+	f := newFixture(t)
+	f.api.panicNotes = true
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "internal error: notes boom" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	if _, ok := f.inFlight(); ok {
+		t.Error("InFlight entry kept although cleanup succeeded")
+	}
+	if f.protected() {
+		t.Error("backup left protected")
 	}
 }
 
