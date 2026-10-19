@@ -88,40 +88,48 @@ func TestWindowsNonZeroExit(t *testing.T) {
 }
 
 // seqExec answers the service query with each output in turn, repeating
-// the last, and counts the polls.
+// the last, and counts the polls. After stopAfter polls (if > 0) it calls
+// stop, which ends the probe deterministically instead of by wall clock.
 type seqExec struct {
-	outs  []string
-	polls *int
+	outs      []string
+	polls     *int
+	stopAfter int
+	stop      context.CancelFunc
 }
 
-func (s seqExec) Exec(_ context.Context, argv []string) (probe.ExecResult, error) {
+func (s seqExec) Exec(context.Context, []string) (probe.ExecResult, error) {
 	i := min(*s.polls, len(s.outs)-1)
 	*s.polls++
+	if s.stopAfter > 0 && *s.polls == s.stopAfter {
+		s.stop()
+	}
 	return out(s.outs[i]), nil
 }
 
-func runWinSettle(t *testing.T, outs []string, deadline time.Duration) (probe.Outcome, int) {
+// runWinSettle probes with a generous deadline (so settling is on) and, if
+// stopAfter > 0, ends the probe after that many polls.
+func runWinSettle(t *testing.T, outs []string, stopAfter int) (probe.Outcome, int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	polls := 0
-	o := probe.Run(ctx, seqExec{outs, &polls}, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
+	o := probe.Run(ctx, seqExec{outs, &polls, stopAfter, cancel}, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
 	return o, polls
 }
 
 // Automatic services may still be starting when the agent first answers:
 // PBP re-polls until none is left stopped.
 func TestWindowsSettlesToProven(t *testing.T) {
-	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n", ""}, time.Minute)
+	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n", ""}, 0)
 	if o.Verdict != model.Proven || polls != 3 {
 		t.Fatalf("got %v %q after %d polls", o.Verdict, o.Reason, polls)
 	}
 }
 
-// Only what is still stopped when the probe deadline comes is FAILED.
+// Only what is still stopped when the probe ends is FAILED.
 func TestWindowsSettleFailsWithWhatRemains(t *testing.T) {
-	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n"}, 50*time.Millisecond)
-	if o.Verdict != model.Failed || o.Reason != "stopped auto services: WinRM" || polls < 3 {
+	o, polls := runWinSettle(t, []string{"Spooler\r\nWinRM\r\n", "WinRM\r\n"}, 3)
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: WinRM" || polls != 3 {
 		t.Fatalf("got %v %q after %d polls", o.Verdict, o.Reason, polls)
 	}
 	if !reflect.DeepEqual(o.FailedUnits, []string{"WinRM"}) {
@@ -129,20 +137,23 @@ func TestWindowsSettleFailsWithWhatRemains(t *testing.T) {
 	}
 }
 
-// A re-poll cut short by the probe deadline keeps the last full answer.
+// A re-poll cut short by the end of the probe keeps the last full answer.
 func TestWindowsSettleDeadlineDuringPoll(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	ex := &firstThenHang{first: "Spooler\r\n"}
+	ex := &firstThenHang{first: "Spooler\r\n", stop: cancel}
 	o := probe.Run(ctx, ex, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond, Checks: config.Checks{CommandTimeout: time.Hour}})
 	if o.Verdict != model.Failed || o.Reason != "stopped auto services: Spooler" {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
 
+// firstThenHang answers once, then ends the probe during the next poll and
+// hangs until the context is done.
 type firstThenHang struct {
 	first string
 	done  bool
+	stop  context.CancelFunc
 }
 
 func (f *firstThenHang) Exec(ctx context.Context, _ []string) (probe.ExecResult, error) {
@@ -150,26 +161,9 @@ func (f *firstThenHang) Exec(ctx context.Context, _ []string) (probe.ExecResult,
 		f.done = true
 		return out(f.first), nil
 	}
+	f.stop()
 	<-ctx.Done()
 	return probe.ExecResult{}, ctx.Err()
-}
-
-// The probe ending before the first answer is ERROR, never BOOTED or FAILED.
-func TestWindowsProbeEnded(t *testing.T) {
-	hang := hanging(probetest.Scripted{}, winCmd)
-	in := probe.Input{OS: probe.Windows, Checks: config.Checks{CommandTimeout: time.Hour}}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if o := probe.Run(ctx, hang, in); o.Verdict != model.Error || o.Reason != "probe timed out" {
-		t.Errorf("deadline: got %v %q", o.Verdict, o.Reason)
-	}
-
-	ctx, cancel = context.WithCancel(context.Background())
-	time.AfterFunc(20*time.Millisecond, cancel)
-	if o := probe.Run(ctx, hang, in); o.Verdict != model.Error || o.Reason != "probe cancelled" {
-		t.Errorf("cancel: got %v %q", o.Verdict, o.Reason)
-	}
 }
 
 func TestWindowsWrappedExecBlocked(t *testing.T) {

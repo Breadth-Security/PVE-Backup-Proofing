@@ -45,10 +45,10 @@ func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("report: read %s: %w", path, err)
 		}
-		switch {
-		case res.ExitCode == 0 && res.Stdout == string(want):
+		if res.ExitCode == 0 && res.Stdout == string(want) {
 			continue
-		case res.ExitCode != 0 && !strings.Contains(res.Stderr, "No such file"):
+		}
+		if res.ExitCode != 0 && !strings.Contains(res.Stderr, "No such file") {
 			// Not merely missing: overwriting what cannot be read could
 			// clobber a template this process cannot see.
 			return fmt.Errorf("report: read %s: exit %d: %s", path, res.ExitCode, trimStderr(res.Stderr))
@@ -104,6 +104,9 @@ func trimStderr(s string) string {
 		n := maxStderr
 		for n > 0 && !utf8.RuneStart(s[n]) {
 			n--
+		}
+		if n == 0 {
+			n = maxStderr // no rune start to cut at: fall back to a byte cut
 		}
 		s = s[:n]
 	}

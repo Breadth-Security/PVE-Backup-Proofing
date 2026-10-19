@@ -9,6 +9,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
+	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
 )
 
 var _ pve.API = (*Fake)(nil)
@@ -32,8 +33,8 @@ type Fake struct {
 	VersionString string
 	// Fail maps a method name (e.g. "Restore") to an error returned by it.
 	Fail map[string]error
-	// Calls records each call as "Method arg arg...".
-	Calls []string
+	// calls records each call as "Method arg arg...".
+	calls testutil.CallLog
 }
 
 func New() *Fake {
@@ -54,15 +55,15 @@ func (f *Fake) begin(method string, args ...any) error {
 	for _, a := range args {
 		parts = append(parts, fmt.Sprint(a))
 	}
-	f.Calls = append(f.Calls, strings.Join(parts, " "))
+	f.calls.Add(strings.Join(parts, " "))
 	return f.Fail[method]
 }
 
-func (f *Fake) CallLog() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.Calls...)
-}
+// CallLog returns the calls recorded so far, each as "Method arg arg...".
+func (f *Fake) CallLog() []string { return f.calls.Snapshot() }
+
+// ResetCalls forgets the calls recorded so far.
+func (f *Fake) ResetCalls() { f.calls.Reset() }
 
 func (f *Fake) Version(ctx context.Context) (string, error) {
 	f.mu.Lock()

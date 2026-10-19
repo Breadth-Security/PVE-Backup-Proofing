@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
+	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
 )
 
 const dialTimeout = 15 * time.Second
@@ -304,25 +304,17 @@ func (c *Client) Close() error {
 type Fake struct {
 	Handler func(cmd string, stdin []byte) (Result, error)
 
-	mu    sync.Mutex
-	calls []string
+	calls testutil.CallLog
 }
 
 // Run records cmd and delegates to Handler (zero Result if nil).
 func (f *Fake) Run(_ context.Context, cmd string, stdin []byte) (Result, error) {
-	f.mu.Lock()
-	f.calls = append(f.calls, cmd)
-	h := f.Handler
-	f.mu.Unlock()
-	if h == nil {
+	f.calls.Add(cmd)
+	if f.Handler == nil {
 		return Result{}, nil
 	}
-	return h(cmd, stdin)
+	return f.Handler(cmd, stdin)
 }
 
-// CallLog returns a copy of the commands run so far, in order.
-func (f *Fake) CallLog() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.calls)
-}
+// CallLog returns the commands run so far, in order.
+func (f *Fake) CallLog() []string { return f.calls.Snapshot() }

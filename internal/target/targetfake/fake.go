@@ -13,6 +13,7 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
 )
 
 var _ target.Target = (*Fake)(nil)
@@ -79,8 +80,8 @@ type Fake struct {
 	Untagged map[int]string
 	// sanitized marks guests whose last Sanitize succeeded.
 	sanitized map[int]bool
-	// Calls records each call as "Method arg...", e.g. "Restore 990000 <volid>".
-	Calls []string
+	// calls records each call as "Method arg...", e.g. "Restore 990000 <volid>".
+	calls testutil.CallLog
 }
 
 // New returns a Fake allocating from [lo, hi].
@@ -97,15 +98,11 @@ func (f *Fake) guard(vmid int) error {
 }
 
 func (f *Fake) record(format string, args ...any) {
-	f.Calls = append(f.Calls, fmt.Sprintf(format, args...))
+	f.calls.Add(fmt.Sprintf(format, args...))
 }
 
-// CallLog returns a copy of Calls.
-func (f *Fake) CallLog() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.Calls)
-}
+// CallLog returns the calls recorded so far.
+func (f *Fake) CallLog() []string { return f.calls.Snapshot() }
 
 func (f *Fake) Prepare(ctx context.Context, recorded map[int]target.Recorded) error {
 	f.mu.Lock()

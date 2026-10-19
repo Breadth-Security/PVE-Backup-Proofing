@@ -314,24 +314,25 @@ func templateProblems(body string, d, guest map[string]any) []string {
 			problems = append(problems, tag+": empty tag")
 			continue
 		}
-		if len(f) > 2 {
-			problems = append(problems, tag+": more than one argument")
-			continue
-		}
-		sigil, word := "", f[0]
+		sigil, word, args := "", f[0], f[1:]
 		if c := word[0]; c == '#' || c == '/' {
 			sigil, word = word[:1], word[1:]
 		}
 		switch {
-		case sigil == "/", word == "this":
+		case len(args) > 1:
+			problems = append(problems, tag+": more than one argument")
+		case sigil == "/" && len(args) > 0:
+			problems = append(problems, tag+": closing tag with argument")
+		case sigil == "/":
+		case sigil == "#" && len(args) == 0:
+			problems = append(problems, tag+": block without argument")
 		case sigil == "#":
-			if len(f) != 2 {
-				problems = append(problems, tag+": block without argument")
-			} else if _, ok := d[f[1]]; !ok {
-				problems = append(problems, tag+": no such key "+f[1])
+			if _, ok := d[args[0]]; !ok {
+				problems = append(problems, tag+": no such key "+args[0])
 			}
-		case len(f) != 1:
+		case len(args) > 0:
 			problems = append(problems, tag+": helper call with argument")
+		case word == "this":
 		default:
 			_, top := d[word]
 			_, inGuest := guest[word]
@@ -370,6 +371,9 @@ func TestTemplateGuardCatchesBadTags(t *testing.T) {
 		"{{nope}}":              "no such key",
 		"{{#each nope}}":        "no such key nope",
 		"{{{ reason }}}":        "triple-stash",
+		"{{this x}}":            "helper call with argument",
+		"{{/each junk}}":        "closing tag with argument",
+		"{{#each}}":             "block without argument",
 	} {
 		got := templateProblems(body, d, guest)
 		if len(got) != 1 || !strings.Contains(got[0], want) {
@@ -451,5 +455,11 @@ func TestBodyEnvironmentErrorsSection(t *testing.T) {
 	const want = "{{#if environment-errors}}\n\nEnvironment errors:\n{{#each environment-errors}}\n  {{this}}\n{{/each}}\n{{/if}}"
 	if !strings.Contains(body, want) {
 		t.Errorf("body lacks the guarded Environment errors section:\n%s", body)
+	}
+}
+
+func TestTrimStderrWithoutRuneStarts(t *testing.T) {
+	if got := trimStderr(strings.Repeat("\x80", 2*maxStderr)); len(got) != maxStderr {
+		t.Fatalf("len %d, want %d", len(got), maxStderr)
 	}
 }

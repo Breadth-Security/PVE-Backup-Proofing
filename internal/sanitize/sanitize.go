@@ -55,7 +55,7 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		case kind == model.KindQEMU && k == "args":
 			p.Unsafe = append(p.Unsafe, "args")
 		case kind == model.KindQEMU && rePCIEtc.MatchString(k):
-			if !isVirtualDevice(v) {
+			if !isVirtualDevice(k, v) {
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
 		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
@@ -101,15 +101,21 @@ func (p *Plan) remove(key string, piece model.MissingPiece) {
 	p.Removed = append(p.Removed, piece)
 }
 
-// isVirtualDevice reports whether a serial/usb/parallel value attaches no
-// host hardware: a socket serial port or a SPICE-redirected USB device.
-func isVirtualDevice(v string) bool {
+// isVirtualDevice reports whether the value of key (serial/usb/parallel/
+// hostpci) attaches no host hardware: a socket serial port, or a
+// SPICE-redirected USB device with no host device named.
+func isVirtualDevice(key, v string) bool {
 	v = strings.TrimSpace(v)
-	if v == "socket" || firstField(v) == "spice" {
+	if v == "socket" {
 		return true
 	}
-	host, _ := optValue(v, "host")
-	return host == "spice"
+	if !strings.HasPrefix(key, "usb") {
+		return false
+	}
+	if host, ok := optValue(v, "host"); ok {
+		return host == "spice"
+	}
+	return firstField(v) == "spice"
 }
 
 func firstField(s string) string {

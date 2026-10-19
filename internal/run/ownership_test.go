@@ -212,7 +212,7 @@ func TestJanitorRecordsDestroyedBeforeUnprotect(t *testing.T) {
 	}
 
 	// An operator restores something into the now-empty VMID by hand.
-	f.api.Calls = nil // forget the legitimate destroy above
+	f.api.ResetCalls() // forget the legitimate destroy above
 	f.guest(model.KindQEMU, 990001, false)
 	f.api.GuestList[len(f.api.GuestList)-1].Status = "stopped"
 	f.api.Configs[990001]["name"] = "x"

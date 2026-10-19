@@ -304,11 +304,12 @@ func TestSplitList(t *testing.T) {
 func TestSanitizeUSBSpiceKept(t *testing.T) {
 	p := Sanitize(model.KindQEMU, map[string]string{
 		"usb0": "spice", "usb1": "host=spice,usb3=1", "usb2": "host=1234:5678",
+		"usb3": "spice,host=1234:5678", "hostpci0": "spice",
 	}, br)
-	if want := []string{"usb2"}; !reflect.DeepEqual(p.Delete, want) {
+	if want := []string{"hostpci0", "usb2", "usb3"}; !reflect.DeepEqual(p.Delete, want) {
 		t.Errorf("Delete = %v, want %v", p.Delete, want)
 	}
-	if len(p.Removed) != 1 || p.Removed[0].Key != "usb2" {
+	if len(p.Removed) != 3 {
 		t.Errorf("Removed = %v", p.Removed)
 	}
 }

@@ -64,3 +64,14 @@ func optBool(opts, key string) (val, ok bool) {
 	}
 	return false, false
 }
+
+// backupEnabled reports whether the option string includes the volume in
+// backups: absent means def, and any value that is not a recognised true
+// spelling means no.
+func backupEnabled(opts string, def bool) bool {
+	if _, found := optValue(opts, "backup"); !found {
+		return def
+	}
+	b, _ := optBool(opts, "backup")
+	return b
+}

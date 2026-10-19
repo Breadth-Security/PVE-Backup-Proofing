@@ -436,44 +436,23 @@ func TestRunCtxDuringReconnect(t *testing.T) {
 
 func TestRunNotBlockedByStuckConnect(t *testing.T) {
 	c := stuckClient(t)
-	go func() { _, _ = c.Run(context.Background(), "exit3", nil) }() // stuck connecting
+	first, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); _, _ = c.Run(first, "exit3", nil) }() // stuck connecting
+	defer func() { cancelFirst(); <-firstDone }()
 	waitFor(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return c.connecting != nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
 	start := time.Now()
 	_, err := c.Run(ctx, "exit3", nil)
-	if !errors.Is(err, context.Canceled) {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v", err)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("second Run blocked behind stuck connect")
-	}
-}
-
-// CallLog is safe to read while commands are still running, and returns a
-// copy.
-func TestFakeCallLogConcurrent(t *testing.T) {
-	f := &Fake{}
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = f.Run(context.Background(), "c", nil)
-			_ = f.CallLog()
-		}()
-	}
-	wg.Wait()
-	log := f.CallLog()
-	if len(log) != 8 {
-		t.Fatalf("got %d calls", len(log))
-	}
-	log[0] = "mutated"
-	if f.CallLog()[0] != "c" {
-		t.Error("CallLog shares storage with the Fake")
 	}
 }
