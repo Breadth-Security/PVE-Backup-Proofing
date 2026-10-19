@@ -651,16 +651,19 @@ func (h hangSys) Exec(ctx context.Context, argv []string) (probe.ExecResult, err
 	return h.Scripted.Exec(ctx, argv)
 }
 
-// restore.probe_timeout bounds the whole probe: a guest that keeps PBP
-// waiting is ERROR (not proven, not blamed) and is still torn down.
+// restore.probe_timeout bounds the whole probe: a guest whose boot never
+// settles keeps PBP waiting only that long, is ERROR (not proven, not
+// blamed) and is still torn down.
 func TestProbeTimeout(t *testing.T) {
 	f := newFixture(t)
 	f.d.Cfg.Restore.ProbeTimeout = 30 * time.Millisecond
 	f.d.Cfg.Checks.CommandTimeout = time.Hour
-	f.tgt.Exec[tmpVMID] = hangSys{healthy()}
+	ex := healthy()
+	ex["systemctl is-system-running"] = out("starting\n")
+	f.tgt.Exec[tmpVMID] = hangSys{ex}
 	start := time.Now()
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || res.Reason != "probe timed out" {
+	if res.Verdict != model.Error || !strings.HasPrefix(res.Reason, "guest still starting after ") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	if time.Since(start) > 5*time.Second {

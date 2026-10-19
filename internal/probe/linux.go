@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
@@ -86,7 +87,24 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 		return r.runOpenRC(ctx)
 	}
 
-	res, err := r.exec(ctx, "systemctl", "is-system-running", "--wait")
+	// Wait for boot to settle, bounded by the probe's time rather than the
+	// per-command timeout: on the isolated bridge, DHCP and wait-online units
+	// can keep a healthy guest "starting" for a minute or two.
+	start := time.Now()
+	res, err := r.ex.settle(ctx, settleBudget(ctx, in.SettleTimeout), []string{"systemctl", "is-system-running", "--wait"})
+	if errors.Is(err, errSettleTimeout) {
+		// Not settled in time: judge the state it is in now.
+		waited := time.Since(start).Round(time.Second)
+		res, err = r.exec(ctx, "systemctl", "is-system-running")
+		if err == nil && res.ExitCode != 127 {
+			switch strings.TrimSpace(res.Stdout) {
+			case "starting", "initializing":
+				// Something in boot hung, but that alone doesn't show the
+				// backup is bad.
+				return r.errorOut("guest still starting after " + waited.String())
+			}
+		}
+	}
 	if err != nil {
 		return r.execErr(ctx, "system state", err)
 	}
