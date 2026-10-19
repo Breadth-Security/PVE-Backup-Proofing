@@ -35,7 +35,7 @@ For each run, PBP:
 | `SKIPPED` | Not attempted (not enough space or RAM, already proven, run deadline reached) | No |
 | `ERROR` | A PBP or node problem (SSH or API failure, node out of RAM, unsafe config) | No |
 
-**Only `FAILED` indicts the backup.** `SKIPPED` and `ERROR` mean "not proven yet", and `BOOTED` means "starts, but not looked inside". Guests that are `BOOTED` for lack of a guest agent are listed explicitly in each run summary.
+**Only `FAILED` indicts the backup.** `SKIPPED` and `ERROR` mean "not proven yet", and `BOOTED` means "starts, but not looked inside". Every `BOOTED` guest (no guest agent, or an agent that cannot run commands) is listed with its reason in each run summary, under "Guests PBP could not look inside (booted only)".
 
 ### Backup notes
 

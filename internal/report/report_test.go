@@ -312,3 +312,26 @@ func TestSendFailsOnNotifyErrorLines(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The BOOTED section names what BOOTED means (the agent may be present but
+// unable to run commands) and shows each guest's reason.
+func TestBodyBootedSection(t *testing.T) {
+	b, err := templateFS.ReadFile("templates/pbp-body.txt.hbs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	const title = "Guests PBP could not look inside (booted only):"
+	i := strings.Index(body, title)
+	if i < 0 {
+		t.Fatalf("body has no %q section", title)
+	}
+	section := body[i:]
+	end := strings.Index(section, "{{/each}}")
+	if !strings.HasPrefix(section[len(title):], "\n{{#each booted}}") || end < 0 || !strings.Contains(section[:end], "{{reason}}") {
+		t.Errorf("booted section does not list each reason:\n%s", section)
+	}
+	if strings.Contains(body, "without a working guest agent") {
+		t.Error("old booted title still present")
+	}
+}

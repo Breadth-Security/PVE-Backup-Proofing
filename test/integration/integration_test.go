@@ -417,7 +417,7 @@ func TestNotificationRenders(t *testing.T) {
 		"Duration: 1m30s\n",
 		"Run error: integration test: this run error is synthetic\n",
 		"  lxc/990001 it-lxc: FAILED - failed: pbp-it-broken.service\n",
-		"Guests without a working guest agent (booted, but not fully verified):\n  qemu/990002 it-vm: guest agent missing\n",
+		"Guests PBP could not look inside (booted only):\n  qemu/990002 it-vm: guest agent missing\n",
 		"Not covered by backup:\n  Found srv.mount depends on /srv (mount point mp0)",
 	} {
 		if !strings.Contains(res.Stdout, want) {
