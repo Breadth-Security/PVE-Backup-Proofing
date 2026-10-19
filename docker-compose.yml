@@ -1,0 +1,28 @@
+services:
+  pbp:
+    image: pbp:latest
+    build: .
+    restart: unless-stopped
+    # On SIGTERM the daemon lets an in-flight run finish tearing down its
+    # temporary guest for up to 10 minutes. Give Docker slightly longer than
+    # that before it sends SIGKILL, or a restart could orphan a guest.
+    stop_grace_period: 11m
+    environment:
+      TZ: Europe/London        # the schedule in config.yaml is cron in this zone
+    volumes:
+      - ./config.yaml:/etc/pbp/config.yaml:ro
+      - ./known_hosts:/etc/pbp/known_hosts:ro
+      - pbp-state:/var/lib/pbp
+      - ./logs:/var/log/pbp    # must be writable by uid 65532
+    secrets:
+      - pve_token
+      - pve_ssh_key
+
+secrets:
+  pve_token:
+    file: ./secrets/pve_token
+  pve_ssh_key:
+    file: ./secrets/pve_ssh_key
+
+volumes:
+  pbp-state:

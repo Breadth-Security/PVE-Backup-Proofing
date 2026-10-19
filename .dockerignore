@@ -1,0 +1,6 @@
+.git
+.superpowers
+specs
+logs
+*.test
+coverage.out
