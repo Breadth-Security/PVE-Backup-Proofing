@@ -243,3 +243,18 @@ func TestSanitizeQEMURngHwrng(t *testing.T) {
 		t.Errorf("plan = %+v", p)
 	}
 }
+
+// An MTU above the isolated bridge's is refused by PVE ("MTU size '9000' is
+// bigger than bridge MTU '1500'", pve1 CT 110), so NICs lose their mtu.
+func TestSanitizeNetDropsMTU(t *testing.T) {
+	lxc := Sanitize(model.KindLXC, map[string]string{
+		"net0": "name=eth0,bridge=vmbr0,firewall=1,gw=192.168.0.1,hwaddr=BC:24:11:D1:D5:91,ip=192.168.0.252/24,mtu=9000,tag=1,type=veth",
+	}, "vmbr99")
+	if got, want := lxc.Set["net0"], "name=eth0,bridge=vmbr99,firewall=1,gw=192.168.0.1,hwaddr=BC:24:11:D1:D5:91,ip=192.168.0.252/24,type=veth"; got != want {
+		t.Errorf("lxc net0 = %q, want %q", got, want)
+	}
+	vm := Sanitize(model.KindQEMU, map[string]string{"net0": "virtio=BC:24:11:27:C5:0A,bridge=vmbr0,firewall=1,mtu=1,tag=1"}, "vmbr99")
+	if got, want := vm.Set["net0"], "virtio=BC:24:11:27:C5:0A,bridge=vmbr99,firewall=1"; got != want {
+		t.Errorf("qemu net0 = %q, want %q", got, want)
+	}
+}

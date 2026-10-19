@@ -83,8 +83,9 @@ func firstField(s string) string {
 	return f
 }
 
-// sanitizeNet forces the isolated bridge and drops VLAN/trunk/rate options,
-// preserving the order of everything else.
+// sanitizeNet forces the isolated bridge and drops VLAN/trunk/rate options
+// and the MTU (PVE refuses an MTU above the isolated bridge's), preserving the
+// order of everything else.
 func sanitizeNet(v, bridge string) string {
 	var out []string
 	seenBridge := false
@@ -92,7 +93,7 @@ func sanitizeNet(v, bridge string) string {
 		k, _, _ := strings.Cut(f, "=")
 		// A qemu first field is "<model>=MAC", never one of these keys.
 		switch k {
-		case "tag", "trunks", "rate":
+		case "tag", "trunks", "rate", "mtu":
 			continue
 		case "bridge":
 			if seenBridge {
