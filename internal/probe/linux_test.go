@@ -167,6 +167,72 @@ func TestOpenRCExitCodes(t *testing.T) {
 	}
 }
 
+// openRCSettle identifies the command that waits for OpenRC to finish
+// booting (it polls `rc-status -r`).
+func openRCSettle(argv []string) bool {
+	return len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "rc-status -r")
+}
+
+// settlingOpenRC answers the OpenRC settle wait: it blocks for delay (or
+// until its context ends, if hang), then reports the runlevel reached.
+type settlingOpenRC struct {
+	probetest.Scripted
+	delay time.Duration
+	hang  bool
+	calls *[]string
+}
+
+func (s settlingOpenRC) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if s.calls != nil {
+		*s.calls = append(*s.calls, strings.Join(argv, " "))
+	}
+	if openRCSettle(argv) {
+		if s.hang {
+			<-ctx.Done()
+			return probe.ExecResult{}, fmt.Errorf("pct exec: %w", ctx.Err())
+		}
+		select {
+		case <-time.After(s.delay):
+		case <-ctx.Done():
+			return probe.ExecResult{}, fmt.Errorf("pct exec: %w", ctx.Err())
+		}
+		return out(""), nil
+	}
+	return s.Scripted.Exec(ctx, argv)
+}
+
+// An Alpine guest is checked only after OpenRC has finished booting: on the
+// isolated bridge the boot runlevel waits on networking, and services in the
+// default runlevel (where crashes show up) start only after it. Seen on pve1:
+// rc-status --crashed was empty for ~15s, then listed the crashed service.
+func TestOpenRCWaitsForBoot(t *testing.T) {
+	var calls []string
+	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out("pbp-it-crash\n")}, delay: 50 * time.Millisecond, calls: &calls}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	o := probe.Run(ctx, ex, probe.Input{OS: probe.Linux, OSType: "alpine", Checks: config.Checks{CommandTimeout: 10 * time.Millisecond}})
+	if o.Verdict != model.Failed || o.Reason != "failed: pbp-it-crash" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+	settled := slices.IndexFunc(calls, func(c string) bool { return strings.HasPrefix(c, "sh -c ") && strings.Contains(c, "rc-status -r") })
+	crashed := slices.Index(calls, "rc-status --crashed")
+	if settled < 0 || crashed < 0 || settled > crashed {
+		t.Fatalf("settle wait must run before rc-status --crashed: %q", calls)
+	}
+}
+
+// OpenRC that never finishes booting before the probe deadline is ERROR
+// ("guest still starting"), never PROVEN.
+func TestOpenRCNeverSettles(t *testing.T) {
+	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out("")}, hang: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	o := probe.Run(ctx, ex, probe.Input{OS: probe.Linux, OSType: "alpine"})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
 // recordingExec records every argv it is asked to run.
 type recordingExec struct {
 	probetest.Scripted

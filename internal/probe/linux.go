@@ -178,7 +178,39 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 	return r.out
 }
 
+// openRCSettleScript waits until OpenRC has finished booting: the runlevel
+// is past sysinit/boot, the openrc process that is changing runlevel has
+// exited (until then the default runlevel's services may still show as
+// stopped, not yet started), and no service is starting or stopping. It
+// exits 127 when rc-status is missing, so the check below decides what that
+// means.
+const openRCSettleScript = `command -v rc-status >/dev/null 2>&1 || exit 127
+while :; do
+  rl=$(rc-status -r 2>/dev/null)
+  case "$rl" in
+    sysinit|boot|"") ;;
+    *) if ! pidof openrc >/dev/null 2>&1 &&
+          ! rc-status -a 2>/dev/null | grep -qE '\[ *(starting|stopping) *\]'; then
+         exit 0
+       fi ;;
+  esac
+  sleep 1
+done`
+
 func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
+	// Wait for boot to finish first, bounded by the probe's time like the
+	// systemd path: services in the default runlevel, where crashes show
+	// up, start only after the boot runlevel, which on the isolated bridge
+	// waits on networking. Checking earlier would miss them.
+	start := time.Now()
+	_, err := r.ex.settle(ctx, settleBudget(ctx, r.in.SettleTimeout), []string{"sh", "-c", openRCSettleScript})
+	if errors.Is(err, errSettleTimeout) {
+		return r.errorOut("guest still starting after " + time.Since(start).Round(time.Second).String())
+	}
+	if err != nil {
+		return r.execErr(ctx, "openrc boot", err)
+	}
+
 	res, err := r.exec(ctx, "rc-status", "--crashed")
 	if err != nil {
 		return r.execErr(ctx, "openrc services", err)
