@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 func TestLine(t *testing.T) {

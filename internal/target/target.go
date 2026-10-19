@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 )
 
 var (

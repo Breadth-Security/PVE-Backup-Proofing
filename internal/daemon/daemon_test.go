@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
 
 // syncBuf is a log sink safe for concurrent writers.

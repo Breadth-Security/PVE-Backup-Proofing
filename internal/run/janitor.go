@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
 // Janitor finishes the teardown of jobs a crashed run left in the state

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
 
 // ExistingNode restores onto a PVE node that also runs production guests.

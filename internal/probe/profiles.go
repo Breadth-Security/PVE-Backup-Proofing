@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 // globMatch reports whether name matches pattern; a malformed pattern never matches.

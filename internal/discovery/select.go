@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
 )
 
 // NewestPerGuest returns the newest backup of each guest across all storages.

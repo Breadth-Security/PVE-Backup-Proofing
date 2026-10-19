@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/testutil"
 )
 
 var _ pve.API = (*Fake)(nil)

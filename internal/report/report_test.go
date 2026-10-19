@@ -13,8 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
 
 func failedSummary() model.RunSummary {

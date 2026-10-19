@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 // GuestInfo identifies the guest for per-guest check matching.

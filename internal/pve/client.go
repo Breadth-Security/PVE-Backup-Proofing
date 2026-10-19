@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
 
 const (

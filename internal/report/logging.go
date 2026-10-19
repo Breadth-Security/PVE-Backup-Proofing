@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 // NewLogger writes text records to stdout and JSON records to runFile. A nil

@@ -19,8 +19,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/testutil"
 )
 
 const dialTimeout = 15 * time.Second

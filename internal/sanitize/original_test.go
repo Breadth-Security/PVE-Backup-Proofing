@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 func TestMissingFromOriginalQEMU(t *testing.T) {

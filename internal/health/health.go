@@ -8,7 +8,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
 )
 
 const (
