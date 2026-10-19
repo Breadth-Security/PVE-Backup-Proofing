@@ -2,7 +2,9 @@ package sshx
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
@@ -10,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +45,13 @@ func (s *testServer) dropConns() {
 // known_hosts file lists a different key than the server presents.
 func newServer(t *testing.T, trustHost bool) *testServer {
 	t.Helper()
+	return newServerKeys(t, false, trustHost)
+}
+
+// newServerKeys optionally adds an ecdsa host key alongside ed25519; the
+// known_hosts file only ever lists the ed25519 key.
+func newServerKeys(t *testing.T, ecdsaToo, trustHost bool) *testServer {
+	t.Helper()
 	dir := t.TempDir()
 
 	hostPub, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -58,6 +68,11 @@ func newServer(t *testing.T, trustHost bool) *testServer {
 		},
 	}
 	scfg.AddHostKey(hostSigner)
+	if ecdsaToo {
+		ek, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		es, _ := ssh.NewSignerFromKey(ek)
+		scfg.AddHostKey(es)
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -266,5 +281,115 @@ func TestFake(t *testing.T) {
 	}
 	if _, err := (&Fake{}).Run(context.Background(), "z", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDialKnownHostsOnlyEd25519WithEcdsaServer(t *testing.T) {
+	s := newServerKeys(t, true, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatalf("should negotiate ed25519 per known_hosts: %v", err)
+	}
+	c.Close()
+}
+
+func TestDialNoKnownHostsEntry(t *testing.T) {
+	s := newServer(t, true)
+	empty := filepath.Join(t.TempDir(), "kh")
+	os.WriteFile(empty, nil, 0o600)
+	s.cfg.KnownHostsFile = empty
+	_, err := Dial(s.cfg)
+	if err == nil || !strings.Contains(err.Error(), "knownhosts") {
+		t.Fatalf("want knownhosts error, got %v", err)
+	}
+}
+
+// silentListener accepts TCP connections and never speaks.
+func silentListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestDialHandshakeTimeout(t *testing.T) {
+	s := newServer(t, true)
+	_, port, _ := net.SplitHostPort(silentListener(t))
+	s.cfg.Port, _ = strconv.Atoi(port)
+	start := time.Now()
+	_, err := dial(context.Background(), s.cfg, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("handshake not bounded: %v", time.Since(start))
+	}
+}
+
+// stuckClient returns a connected client whose next reconnect hangs.
+func stuckClient(t *testing.T) *Client {
+	t.Helper()
+	s := newServer(t, true)
+	c, err := dial(context.Background(), s.cfg, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	s.dropConns()
+	time.Sleep(50 * time.Millisecond)
+	c.addr = silentListener(t)
+	return c
+}
+
+func TestRunCtxDuringReconnect(t *testing.T) {
+	c := stuckClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := c.Run(ctx, "exit3", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("ctx ignored during reconnect")
+	}
+}
+
+func TestRunNotBlockedByStuckConnect(t *testing.T) {
+	c := stuckClient(t)
+	go c.Run(context.Background(), "exit3", nil) // stuck connecting
+	time.Sleep(200 * time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	start := time.Now()
+	_, err := c.Run(ctx, "exit3", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("second Run blocked behind stuck connect")
 	}
 }
