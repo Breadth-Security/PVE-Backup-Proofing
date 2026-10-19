@@ -654,6 +654,47 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	if len(f.tgt.restores()) != 0 {
 		t.Errorf("restored: %q", f.tgt.restores())
 	}
+	// The failure is this backup's own: its notes say so.
+	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read backup config: ") {
+		t.Errorf("notes = %q", got)
+	}
+}
+
+// Node-wide capacity errors (storage status, node memory, VMID allocation)
+// say nothing about the backup: they stay out of its notes.
+func TestRunNodeCapacityErrorsStayOutOfNotes(t *testing.T) {
+	for _, method := range []string{"StorageStatus", "NodeMemory"} {
+		t.Run(method, func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			f.add("pbs", model.KindQEMU, 101, 1024, "db01")
+			f.api.Fail[method] = errors.New("api down")
+			s := f.run(context.Background(), Options{Trigger: "manual"})
+			if r := byVMID(t, s)[101]; r.Verdict != model.Error {
+				t.Errorf("got %s %q", r.Verdict, r.Reason)
+			}
+			if got := f.api.Backups["pbs"][0].Notes; got != "db01" {
+				t.Errorf("notes = %q", got)
+			}
+		})
+	}
+	t.Run("AllocateVMID", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.add("pbs", model.KindQEMU, 101, 1024, "db01")
+		f.d.Target = allocFail{f.tgt}
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		if r := byVMID(t, s)[101]; r.Verdict != model.Error {
+			t.Errorf("got %s %q", r.Verdict, r.Reason)
+		}
+		if got := f.api.Backups["pbs"][0].Notes; got != "db01" {
+			t.Errorf("notes = %q", got)
+		}
+	})
+}
+
+type allocFail struct{ target.Target }
+
+func (allocFail) AllocateVMID(context.Context, map[int]bool) (int, error) {
+	return 0, errors.New("api down")
 }
 
 func TestRunStorageDiscoveryErrors(t *testing.T) {
@@ -792,6 +833,9 @@ func TestRunAdmissionErrorWhileCancelledIsSkipped(t *testing.T) {
 	s := f.run(ctx, Options{Trigger: "schedule"})
 
 	wantResult(t, byVMID(t, s)[101], model.Skipped, "run cancelled")
+	if got := f.api.Backups["pbs"][0].Notes; got != "" {
+		t.Errorf("notes written for a cancelled admission: %q", got)
+	}
 }
 
 func TestRunUsesGivenRunID(t *testing.T) {

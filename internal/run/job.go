@@ -269,33 +269,37 @@ func (j *job) safely(step string, fn func() error) (err error) {
 
 // annotate writes the verdict line to the backup's notes and records PROVEN
 // times. A failed notes write is logged; it never changes the verdict.
-func (j *job) annotate(res model.GuestResult) {
+func (j *job) annotate(res model.GuestResult) { annotate(j.d, j.log, j.b, res) }
+
+// annotate writes res's verdict line into b's notes and, for PROVEN, records
+// the time in LastProven. SKIPPED is never written. Failures are logged only.
+func annotate(d Deps, log *slog.Logger, b model.Backup, res model.GuestResult) {
 	if res.Verdict == model.Skipped {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), notesTimeout)
 	defer cancel()
-	at := j.d.Now()
+	at := d.Now()
 	// The listed notes are only the first line on PBS; merge into the full
 	// notes, and write nothing if they cannot be read.
-	node := j.d.Cfg.Target.Node
-	if full, err := j.d.API.VolumeNotes(ctx, node, j.b.Storage, j.b.VolID); err != nil {
-		j.log.Error("read backup notes failed; notes not written", "verdict", res.Verdict, "err", err)
+	node := d.Cfg.Target.Node
+	if full, err := d.API.VolumeNotes(ctx, node, b.Storage, b.VolID); err != nil {
+		log.Error("read backup notes failed; notes not written", "verdict", res.Verdict, "err", err)
 	} else {
 		text := notes.Merge(full, notes.Line(res.Verdict, at, res.Reason))
-		if err := j.d.API.SetVolumeAttrs(ctx, node, j.b.Storage, j.b.VolID, &text, nil); err != nil {
-			j.log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
+		if err := d.API.SetVolumeAttrs(ctx, node, b.Storage, b.VolID, &text, nil); err != nil {
+			log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
 		}
 	}
 	if res.Verdict != model.Proven {
 		return
 	}
-	err := j.d.Store.Update(func(st *state.State) error {
-		st.LastProven[j.b.Key.String()] = at
+	err := d.Store.Update(func(st *state.State) error {
+		st.LastProven[b.Key.String()] = at
 		return nil
 	})
 	if err != nil {
-		j.log.Error("record last proven", "err", err)
+		log.Error("record last proven", "err", err)
 	}
 }
 

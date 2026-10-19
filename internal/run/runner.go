@@ -361,7 +361,11 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 
 	raw, err := d.API.OriginalConfig(ctx, node, b.VolID)
 	if err != nil {
-		return fail(model.Error, "cannot read backup config: "+err.Error())
+		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
+		// Unlike the node-wide gates below, this failure is the backup's
+		// own, so its notes record it (annotate skips a SKIPPED result).
+		annotate(d, p.log.With("guest", b.Key.String(), "volid", b.VolID), b, *res)
+		return l, res
 	}
 	needRAM := guestMemoryMiB(b.Key.Kind, raw) * (1 << 20) * 110 / 100
 
