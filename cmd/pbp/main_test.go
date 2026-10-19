@@ -543,9 +543,15 @@ func unsetenv(t *testing.T, key string) {
 
 // stubSys is a node.System whose failures echo secrets, as subprocess stderr
 // can.
-type stubSys struct{ secret string }
+type stubSys struct {
+	secret    string
+	ctConfErr bool
+}
 
 func (s stubSys) CTConfig(context.Context, int) (map[string]string, error) {
+	if s.ctConfErr {
+		return nil, errors.New("open /etc/pve/lxc/990001.conf: " + s.secret)
+	}
 	return map[string]string{"tags": "pbp"}, nil
 }
 func (s stubSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
@@ -572,7 +578,7 @@ func TestNodeErrorReasonsNotAudited(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			e, au := nodeEnv(t)
-			e.a.nodeSys = stubSys{secret}
+			e.a.nodeSys = stubSys{secret: secret}
 			e.a.stdin = strings.NewReader(c.stdin)
 			c.req.Deadline, c.req.Nonce = time.Now().Add(time.Minute), nodeproto.NewNonce()
 			enc, err := nodeproto.Encode(c.req)
@@ -589,6 +595,44 @@ func TestNodeErrorReasonsNotAudited(t *testing.T) {
 			for _, g := range au.got {
 				if strings.Contains(formatAudit(g), secret) {
 					t.Errorf("audit leaks subprocess text: %+v", g)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeRefusalAuditCodesOmitPayloadText(t *testing.T) {
+	const secret = "hunter2-secret"
+	cases := map[string]struct {
+		req   nodeproto.Request
+		stdin string
+		sys   stubSys
+		code  string
+	}{
+		"severity":      {nodeproto.Request{Op: "notify"}, `{"severity":"` + secret + `"}`, stubSys{}, "bad-severity"},
+		"unknown field": {nodeproto.Request{Op: "notify"}, `{"severity":"info","` + secret + `":1}`, stubSys{}, "bad-payload"},
+		"not container": {nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}}, "", stubSys{secret: secret, ctConfErr: true}, "not-container"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, au := nodeEnv(t)
+			e.a.nodeSys = c.sys
+			e.a.stdin = strings.NewReader(c.stdin)
+			c.req.Deadline, c.req.Nonce = time.Now().Add(time.Minute), nodeproto.NewNonce()
+			enc, err := nodeproto.Encode(c.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+			if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+				t.Fatalf("exit %d", code)
+			}
+			if len(au.got) != 2 || au.got[1].Outcome != "refused" || au.got[1].Reason != c.code {
+				t.Fatalf("audit %+v, want reason %q", au.got, c.code)
+			}
+			for _, g := range au.got {
+				if strings.Contains(formatAudit(g), secret) {
+					t.Errorf("audit leaks text: %+v", g)
 				}
 			}
 		})

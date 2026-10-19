@@ -28,16 +28,18 @@ var severities = map[string]bool{"info": true, "notice": true, "warning": true, 
 var reNonce = regexp.MustCompile(`(?:^| )--nonce ([0-9a-f]{16})(?: |$)`)
 
 // failure is a helper-side failure: kind is a nodeproto Kind*.
+// code is a fixed, payload-free category for refusals, safe for audit logs;
+// reason is the detailed text for the client and may echo request content.
 type failure struct {
-	kind, reason string
+	kind, code, reason string
 }
 
-func refused(format string, a ...any) *failure {
-	return &failure{nodeproto.KindRefused, fmt.Sprintf(format, a...)}
+func refused(code, format string, a ...any) *failure {
+	return &failure{nodeproto.KindRefused, code, fmt.Sprintf(format, a...)}
 }
 
 func internalErr(format string, a ...any) *failure {
-	return &failure{nodeproto.KindError, fmt.Sprintf(format, a...)}
+	return &failure{kind: nodeproto.KindError, reason: fmt.Sprintf(format, a...)}
 }
 
 var timedOut = &failure{kind: nodeproto.KindTimeout}
@@ -75,6 +77,15 @@ func singleLine(reason string) string {
 // final line is the plain `pbp-node: refused: <reason>`, which the daemon
 // treats as a transport error. The real client never sends such requests.
 func Serve(ctx context.Context, cfg Config, sys System, version string, request string, stdin io.Reader, stdout, stderr io.Writer) int {
+	exit, _ := ServeCoded(ctx, cfg, sys, version, request, stdin, stdout, stderr)
+	return exit
+}
+
+// ServeCoded is Serve that also returns the fixed refusal category (such as
+// "out-of-range" or "bad-payload") when the helper refused the request, and ""
+// otherwise. The category never contains request or subprocess text, so it is
+// what callers should audit instead of the marker reason.
+func ServeCoded(ctx context.Context, cfg Config, sys System, version string, request string, stdin io.Reader, stdout, stderr io.Writer) (int, string) {
 	errw := &lineTracker{w: stderr}
 	req, err := nodeproto.Parse(request)
 	if err != nil {
@@ -82,8 +93,9 @@ func Serve(ctx context.Context, cfg Config, sys System, version string, request 
 		if m := reNonce.FindStringSubmatch(request); m != nil {
 			nonce = m[1]
 		}
-		writeMarker(errw, nonce, refused("invalid request: %v", err))
-		return nodeproto.ExitRefused
+		f0 := refused("bad-request", "invalid request: %v", err)
+		writeMarker(errw, nonce, f0)
+		return nodeproto.ExitRefused, f0.code
 	}
 
 	deadline := req.Deadline
@@ -92,20 +104,20 @@ func Serve(ctx context.Context, cfg Config, sys System, version string, request 
 	}
 	if !time.Now().Before(deadline) {
 		writeMarker(errw, req.Nonce, timedOut)
-		return nodeproto.ExitRefused
+		return nodeproto.ExitRefused, ""
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	exit, f := dispatch(ctx, cfg, sys, version, req, stdin, stdout, errw)
 	if f == nil {
-		return exit
+		return exit, ""
 	}
 	if ctx.Err() != nil {
 		f = timedOut
 	}
 	writeMarker(errw, req.Nonce, f)
-	return nodeproto.ExitRefused
+	return nodeproto.ExitRefused, f.code
 }
 
 // MarkerLine renders the helper's final stderr line (without newline) for a
@@ -160,7 +172,7 @@ func dispatch(ctx context.Context, cfg Config, sys System, version string, req n
 		return 0, nil
 	}
 	// Parse accepts only the ops above.
-	return 0, refused("unknown op %q", req.Op)
+	return 0, refused("unsupported-op", "unknown op %q", req.Op)
 }
 
 func writeJSON(w io.Writer, v any) *failure {
@@ -185,17 +197,17 @@ func writeJSON(w io.Writer, v any) *failure {
 func execGuest(ctx context.Context, cfg Config, sys System, req nodeproto.Request, stdin io.Reader, stdout, stderr io.Writer) (int, *failure) {
 	lo, hi := cfg.VMIDRange[0], cfg.VMIDRange[1]
 	if req.VMID < lo || req.VMID > hi {
-		return 0, refused("vmid %d is outside the reserved range [%d, %d]", req.VMID, lo, hi)
+		return 0, refused("out-of-range", "vmid %d is outside the reserved range [%d, %d]", req.VMID, lo, hi)
 	}
 	conf, err := sys.CTConfig(ctx, req.VMID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, timedOut
 		}
-		return 0, refused("guest %d is not a container on this node: %v", req.VMID, err)
+		return 0, refused("not-container", "guest %d is not a container on this node: %v", req.VMID, err)
 	}
 	if !slices.Contains(sanitize.SplitList(conf["tags"]), ownerTag) {
-		return 0, refused("container %d does not carry the %s tag", req.VMID, ownerTag)
+		return 0, refused("untagged", "container %d does not carry the %s tag", req.VMID, ownerTag)
 	}
 	exit, err := sys.PctExec(ctx, req.VMID, req.Argv, stdin, stdout, stderr)
 	if err != nil {
@@ -229,7 +241,7 @@ func notify(ctx context.Context, sys System, stdin io.Reader) *failure {
 		raw = r.b
 	}
 	if len(raw) > maxNotifyPayload {
-		return refused("notify payload larger than %d bytes", maxNotifyPayload)
+		return refused("payload-too-large", "notify payload larger than %d bytes", maxNotifyPayload)
 	}
 	var p struct {
 		Severity string                     `json:"severity"`
@@ -239,16 +251,16 @@ func notify(ctx context.Context, sys System, stdin io.Reader) *failure {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil {
-		return refused("notify payload: %v", err)
+		return refused("bad-payload", "notify payload: %v", err)
 	}
 	if dec.More() {
-		return refused("notify payload: trailing data")
+		return refused("bad-payload", "notify payload: trailing data")
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return refused("notify payload: trailing data")
+		return refused("bad-payload", "notify payload: trailing data")
 	}
 	if !severities[p.Severity] {
-		return refused("notify severity %q is not one of info, notice, warning, error", p.Severity)
+		return refused("bad-severity", "notify severity %q is not one of info, notice, warning, error", p.Severity)
 	}
 	if p.Data == nil {
 		p.Data = map[string]json.RawMessage{}

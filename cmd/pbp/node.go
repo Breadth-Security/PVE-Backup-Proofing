@@ -176,20 +176,23 @@ func (a *app) nodeMain(ctx context.Context, args []string) int {
 	}
 
 	errw := &tailWriter{w: a.stderr}
-	code := node.Serve(ctx, cfg, a.nodeSys, version, request, a.stdin, a.stdout, errw)
+	code, refusal := node.ServeCoded(ctx, cfg, a.nodeSys, version, request, a.stdin, a.stdout, errw)
 
 	switch {
 	case perr != nil:
 		// The parse error can echo request text, so log a fixed reason.
 		entry.Outcome, entry.Reason = nodeproto.KindRefused, "invalid request"
 	case code == nodeproto.ExitRefused:
-		kind, reason, ok := nodeproto.HelperFailure(code, errw.last+"\n", req.Nonce)
+		kind, _, ok := nodeproto.HelperFailure(code, errw.last+"\n", req.Nonce)
 		switch {
 		case !ok:
 			entry.Outcome, entry.Reason = nodeproto.KindError, "exit 250 without helper marker"
 		case kind == nodeproto.KindRefused:
-			// Refusal reasons are helper-authored fixed strings.
-			entry.Outcome, entry.Reason = kind, cleanField(reason, 300)
+			// Only the fixed category: detailed reasons can echo payload text.
+			if refusal == "" {
+				refusal = "refused"
+			}
+			entry.Outcome, entry.Reason = kind, refusal
 		case kind == nodeproto.KindTimeout:
 			entry.Outcome, entry.Reason = kind, "timed out"
 		default:
