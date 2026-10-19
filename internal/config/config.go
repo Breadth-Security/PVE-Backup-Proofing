@@ -108,17 +108,14 @@ type Logging struct {
 
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
-// explicit zero or empty list is kept (and validated) rather than replaced.
+// explicit zero is kept (and validated) rather than replaced. The ignore
+// lists are defaulted after decoding instead (see orDefault).
 func defaults() Config {
 	return Config{
 		Workers: 1,
 		Target:  Target{Type: "existing-node", SSH: SSH{User: "root", Port: 22}},
 		Restore: Restore{SpaceMarginPercent: 10, BootTimeout: 5 * time.Minute, ProbeTimeout: 5 * time.Minute},
-		Checks: Checks{
-			CommandTimeout:        time.Minute,
-			IgnoreUnits:           DefaultIgnoreUnits(),
-			WindowsIgnoreServices: DefaultWindowsIgnore(),
-		},
+		Checks:  Checks{CommandTimeout: time.Minute},
 		Notify:  Notify{When: "always"},
 		Logging: Logging{Dir: "/var/log/pbp", RetainRuns: 30},
 	}
@@ -143,18 +140,21 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	// A key present with a null value decodes to nil and would wipe the
-	// default; only an explicit [] means "none".
-	if c.Checks.IgnoreUnits == nil {
-		c.Checks.IgnoreUnits = DefaultIgnoreUnits()
-	}
-	if c.Checks.WindowsIgnoreServices == nil {
-		c.Checks.WindowsIgnoreServices = DefaultWindowsIgnore()
-	}
+	c.Checks.IgnoreUnits = orDefault(c.Checks.IgnoreUnits, DefaultIgnoreUnits)
+	c.Checks.WindowsIgnoreServices = orDefault(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore)
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// orDefault returns list, or def() when list is nil: the key is absent or
+// null. Only an explicit [] (empty, not nil) means "none".
+func orDefault(list []string, def func() []string) []string {
+	if list == nil {
+		return def()
+	}
+	return list
 }
 
 func (c Config) validate() error {

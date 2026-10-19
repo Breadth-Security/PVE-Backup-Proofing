@@ -188,8 +188,8 @@ func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
 			writes[cmd] = string(stdin)
 			return sshx.Result{}, nil
 		}
-		if strings.HasPrefix(cmd, "cat ") {
-			return sshx.Result{ExitCode: 1, Stderr: "cat: x: No such file or directory\n"}, nil
+		if strings.HasPrefix(cmd, "test -e ") {
+			return sshx.Result{ExitCode: exitMissing}, nil
 		}
 		return sshx.Result{}, nil
 	}}
@@ -218,7 +218,7 @@ func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
 func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	f := &sshx.Fake{}
 	f.Handler = func(cmd string, _ []byte) (sshx.Result, error) {
-		if !strings.HasPrefix(cmd, "cat ") || strings.Contains(cmd, "cat >") {
+		if !strings.HasPrefix(cmd, "test -e ") || strings.Contains(cmd, "cat >") {
 			t.Errorf("unexpected write: %s", cmd)
 		}
 		name := "templates/pbp-body.txt.hbs"
@@ -237,17 +237,28 @@ func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 }
 
 // A template that cannot be read for a reason other than being absent is an
-// error, not a cue to overwrite it.
+// error, not a cue to overwrite it. Only the exit code tells "missing" apart:
+// stderr text (here a "No such file" from a file removed between test and
+// cat) never does.
 func TestEnsureTemplatesReadFailure(t *testing.T) {
-	f := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
-		if strings.Contains(cmd, "cat >") {
-			t.Errorf("rewrote a template that could not be read: %s", cmd)
+	for _, stderr := range []string{"cat: x: Permission denied\n", "cat: x: No such file or directory\n"} {
+		f := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
+			if strings.Contains(cmd, "cat >") {
+				t.Errorf("rewrote a template that could not be read: %s", cmd)
+			}
+			return sshx.Result{ExitCode: 1, Stderr: stderr}, nil
+		}}
+		err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background())
+		if err == nil || !strings.Contains(err.Error(), strings.TrimSpace(stderr)) {
+			t.Errorf("err = %v", err)
 		}
-		return sshx.Result{ExitCode: 1, Stderr: "cat: x: Permission denied\n"}, nil
-	}}
-	err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "Permission denied") {
-		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReadTemplateCmd(t *testing.T) {
+	want := `test -e '/etc/x y.hbs' || exit 3; cat '/etc/x y.hbs'`
+	if got := readTemplateCmd("/etc/x y.hbs"); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -470,11 +481,5 @@ func TestBodyEnvironmentErrorsSection(t *testing.T) {
 	const want = "{{#if environment-errors}}\n\nEnvironment errors:\n{{#each environment-errors}}\n  {{this}}\n{{/each}}\n{{/if}}"
 	if !strings.Contains(body, want) {
 		t.Errorf("body lacks the guarded Environment errors section:\n%s", body)
-	}
-}
-
-func TestTrimStderrWithoutRuneStarts(t *testing.T) {
-	if got := trimStderr(strings.Repeat("\x80", 2*maxStderr)); len(got) != maxStderr {
-		t.Fatalf("len %d, want %d", len(got), maxStderr)
 	}
 }

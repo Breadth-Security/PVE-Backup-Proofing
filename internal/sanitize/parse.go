@@ -48,30 +48,18 @@ func optValue(opts, key string) (string, bool) {
 	return "", false
 }
 
-// optBool returns the boolean value of option key in a comma-separated
-// option string, using PVE's spellings (yes|on|true|1, no|off|false|0, any
-// case). ok is false when the option is absent or not a boolean.
-func optBool(opts, key string) (val, ok bool) {
-	v, found := optValue(opts, key)
+// backupEnabled reports whether the option string includes the volume in
+// backups: absent means def; PVE's true spellings (yes|on|true|1, any case)
+// mean yes, and any other value means no. It is the config-text counterpart
+// of pve.flexBool.
+func backupEnabled(opts string, def bool) bool {
+	v, found := optValue(opts, "backup")
 	if !found {
-		return false, false
+		return def
 	}
 	switch strings.ToLower(v) {
 	case "1", "yes", "on", "true":
-		return true, true
-	case "0", "no", "off", "false":
-		return false, true
+		return true
 	}
-	return false, false
-}
-
-// backupEnabled reports whether the option string includes the volume in
-// backups: absent means def, and any value that is not a recognised true
-// spelling means no.
-func backupEnabled(opts string, def bool) bool {
-	if _, found := optValue(opts, "backup"); !found {
-		return def
-	}
-	b, _ := optBool(opts, "backup")
-	return b
+	return false
 }

@@ -42,6 +42,7 @@ func TestMissingFromOriginalBackupSpellings(t *testing.T) {
 	for v, excluded := range map[string]bool{
 		"0": true, "no": true, "off": true, "false": true, "NO": true, "Off": true, "FALSE": true,
 		"1": false, "yes": false, "on": false, "true": false, "Yes": false, "ON": false,
+		"maybe": true, // unrecognised: reported as excluded
 	} {
 		qemu := MissingFromOriginal(model.KindQEMU, map[string]string{"scsi1": "s:vm-1-disk-1,backup=" + v})
 		if got := len(qemu) == 1; got != excluded {
@@ -51,15 +52,5 @@ func TestMissingFromOriginalBackupSpellings(t *testing.T) {
 		if got := len(lxc) == 1; got != excluded {
 			t.Errorf("lxc backup=%s: excluded=%v, want %v", v, got, excluded)
 		}
-	}
-}
-
-// An unrecognised backup= value is reported as excluded, for both kinds.
-func TestMissingFromOriginalUnknownBackupValueIsExcluded(t *testing.T) {
-	if got := MissingFromOriginal(model.KindQEMU, map[string]string{"scsi1": "s:vm-1-disk-1,backup=maybe"}); len(got) != 1 {
-		t.Errorf("qemu: got %v", got)
-	}
-	if got := MissingFromOriginal(model.KindLXC, map[string]string{"mp0": "s:subvol-1-disk-1,mp=/a,backup=maybe"}); len(got) != 1 {
-		t.Errorf("lxc: got %v", got)
 	}
 }

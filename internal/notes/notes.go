@@ -13,13 +13,11 @@ import (
 const (
 	linePrefix = "PBP "
 	sep        = " · "
-	// timeLayout is how a line shows when the verdict was reached; the
-	// parser's pattern is derived from it so the two cannot drift.
-	timeLayout = "2006-01-02 15:04"
+	// timeLayout is how a line shows when the verdict was reached, and
+	// timePattern matches it (TestLineRoundTrips guards against drift).
+	timeLayout  = "2006-01-02 15:04"
+	timePattern = `\d{4}-\d{2}-\d{2} \d{2}:\d{2}`
 )
-
-// timePattern is timeLayout as a regular expression.
-var timePattern = strings.NewReplacer("2006", `\d{4}`, "01", `\d{2}`, "02", `\d{2}`, "15", `\d{2}`, "04", `\d{2}`).Replace(timeLayout)
 
 // maxReason caps the reason in a notes line, in characters (runes), so the
 // line stays readable as the backup's comment. Notifications keep the full

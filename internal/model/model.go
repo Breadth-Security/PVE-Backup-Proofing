@@ -55,25 +55,28 @@ type NotCovered struct {
 	Piece MissingPiece
 }
 
+// notCoveredKinds describes each known MissingPiece kind in a log line:
+// its label and whether the piece's Key follows it.
+var notCoveredKinds = map[string]struct {
+	label      string
+	includeKey bool
+}{
+	"excluded-disk":       {"disk", true},
+	"excluded-mountpoint": {"mount point", true},
+	"bind-mount":          {"bind mount", true},
+	"passthrough":         {"device", true},
+	"network-storage":     {"network storage", false},
+}
+
 // LogLine renders the human-readable "not covered" log message.
 func (n NotCovered) LogLine() string {
 	p := n.Piece
 	name := cmp.Or(p.Path, p.Key, p.Kind)
-	what := p.Kind // unknown kinds are shown as they are
-	switch p.Kind {
-	case "excluded-disk":
-		what = "disk"
-	case "excluded-mountpoint":
-		what = "mount point"
-	case "bind-mount":
-		what = "bind mount"
-	case "passthrough":
-		what = "device"
-	case "network-storage":
-		what = "network storage"
-		p.Key = "" // not part of the description
+	what, withKey := p.Kind, true // unknown kinds are shown as they are
+	if k, ok := notCoveredKinds[p.Kind]; ok {
+		what, withKey = k.label, k.includeKey
 	}
-	if p.Key != "" {
+	if withKey && p.Key != "" {
 		what += " " + p.Key
 	}
 	if p.Detail != "" {

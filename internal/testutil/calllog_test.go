@@ -1,7 +1,6 @@
 package testutil
 
 import (
-	"slices"
 	"sync"
 	"testing"
 )
@@ -26,7 +25,7 @@ func TestCallLog(t *testing.T) {
 		t.Error("Snapshot shares storage")
 	}
 	l.Reset()
-	if got := l.Snapshot(); len(got) != 0 || slices.Contains(got, "c") {
+	if got := l.Snapshot(); len(got) != 0 {
 		t.Errorf("after Reset: %q", got)
 	}
 }
