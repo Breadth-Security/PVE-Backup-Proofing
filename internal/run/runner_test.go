@@ -625,6 +625,35 @@ func TestRunSpaceReservedByInFlightJob(t *testing.T) {
 	wantResult(t, r[102], model.Skipped, "insufficient space on local-zfs")
 }
 
+// A finished job releases its reservation: with one worker, two backups
+// that each fit only alone are proofed one after the other.
+func TestRunReservationReleased(t *testing.T) {
+	t.Run("space", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		// 80 GiB usable (100 free minus a 20 GiB margin); 50 GiB each.
+		f.api.Storage["local-zfs"] = pve.StorageStatus{Avail: 100 * gib, Total: 200 * gib}
+		f.add("pbs", model.KindQEMU, 101, 1024, "")
+		f.add("pbs", model.KindQEMU, 102, 1024, "")
+		f.api.Backups["pbs"][0].Size = 50 * gib
+		f.api.Backups["pbs"][1].Size = 50 * gib
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		r := byVMID(t, s)
+		wantResult(t, r[101], model.Proven, "")
+		wantResult(t, r[102], model.Proven, "")
+	})
+	t.Run("memory", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		// 4 GiB free; each needs 2048 MiB + 10%.
+		f.api.Memory = pve.NodeMemory{Total: 8 * gib, Available: 4 * gib}
+		f.add("pbs", model.KindQEMU, 101, 2048, "")
+		f.add("pbs", model.KindQEMU, 102, 2048, "")
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		r := byVMID(t, s)
+		wantResult(t, r[101], model.Proven, "")
+		wantResult(t, r[102], model.Proven, "")
+	})
+}
+
 // countingAPI signals after each NodeMemory / StorageStatus call.
 type countingAPI struct {
 	*hookAPI

@@ -10,7 +10,6 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
 const (
@@ -84,20 +83,17 @@ func TestRunNoStrayCheckWhenPreflightFails(t *testing.T) {
 	}
 }
 
-// preparedTarget is the production ExistingNode with Prepare (SSH bridge
-// checks) stubbed out, so StrayTagged, Owned and Destroy are the real ones.
-type preparedTarget struct{ target.Target }
-
-func (preparedTarget) Prepare(context.Context, map[int]bool) error { return nil }
-
-// With the real target and a pvefake node holding pbp-tagged guests outside
-// the range, a full run never issues a call that names them.
+// With the real target (Prepare included) and a pvefake node holding
+// pbp-tagged guests outside the range, a full run that proofs a backup never
+// issues a call that names them.
 func TestRunNeverTouchesStrayGuestsOnRealTarget(t *testing.T) {
 	f := newJanitorFixture(t)
-	f.d.Target = preparedTarget{f.tgt}
-	f.d.Notifier = &fakeNotifier{}
+	f.isolatedNode(f.api)
 	f.d.Cfg.Sources.Storages = []string{"pbs"}
 	f.d.Cfg.Notify.When = "always"
+	f.api.Storage["local-zfs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images,rootdir", Avail: 1 << 40, Total: 2 << 40}
+	f.api.Memory = pve.NodeMemory{Total: 64 << 30, Available: 32 << 30}
+	f.ownBackup() // qemu 101, no guest agent: proofed to BOOTED
 	for _, g := range strayGuests() {
 		f.guest(g.Key.Kind, g.Key.VMID, true)
 		f.api.GuestList[len(f.api.GuestList)-1].Name = g.Name
@@ -105,6 +101,12 @@ func TestRunNeverTouchesStrayGuestsOnRealTarget(t *testing.T) {
 
 	s := Run(context.Background(), f.d, Options{Trigger: "manual"})
 
+	if len(s.Results) != 1 || s.Results[0].Verdict != model.Booted || s.Results[0].TempVMID != 990000 {
+		t.Fatalf("results = %+v (RunError %q)", s.Results, s.RunError)
+	}
+	if !f.destroyed(990000) || f.exists(990000) {
+		t.Error("proof guest not torn down")
+	}
 	if !slices.Equal(s.EnvironmentErrors, []string{wantStrayVM, wantStrayCT}) {
 		t.Errorf("EnvironmentErrors = %q (RunError %q)", s.EnvironmentErrors, s.RunError)
 	}
