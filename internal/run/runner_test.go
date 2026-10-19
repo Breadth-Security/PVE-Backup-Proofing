@@ -117,7 +117,7 @@ func (t *hookTarget) AllocateVMID(ctx context.Context, inUse map[int]bool) (int,
 	return v, err
 }
 
-func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int) error {
+func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
 	t.mu.Lock()
 	if t.held[vmid] {
 		t.dupes = append(t.dupes, vmid)
@@ -128,14 +128,14 @@ func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int) erro
 	if t.onRestore != nil {
 		t.onRestore(vmid)
 	}
-	return t.Fake.Restore(ctx, b, vmid)
+	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.mu.Lock()
 	delete(t.held, vmid)
 	t.mu.Unlock()
-	return t.Fake.Destroy(ctx, kind, vmid)
+	return t.Fake.Destroy(ctx, kind, vmid, rec)
 }
 
 func (t *hookTarget) restores() []string {
@@ -279,7 +279,7 @@ func TestRunPreflightNotIsolated(t *testing.T) {
 	if len(sent) != 1 || sent[0].Severity() != "error" {
 		t.Fatalf("sent = %+v", sent)
 	}
-	if r := f.lastRun(t); r.Outcome != "error" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 }
@@ -496,7 +496,7 @@ func TestRunNotifyWhenProblems(t *testing.T) {
 	if n := len(f.notif.sends()); n != 0 {
 		t.Errorf("sent %d notifications for an all-PROVEN run", n)
 	}
-	if r := f.lastRun(t); r.Outcome != "ok" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeOK {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 
@@ -509,7 +509,7 @@ func TestRunNotifyWhenProblems(t *testing.T) {
 	if sent := f2.notif.sends(); len(sent) != 1 || sent[0].Severity() != "warning" {
 		t.Errorf("sent = %+v", sent)
 	}
-	if r := f2.lastRun(t); r.Outcome != "problems" {
+	if r := f2.lastRun(t); r.Outcome != state.OutcomeProblems {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 }
@@ -535,7 +535,7 @@ func TestRunSendFailureMakesOutcomeError(t *testing.T) {
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 
 	wantResult(t, byVMID(t, s)[101], model.Proven, "")
-	if r := f.lastRun(t); r.Outcome != "error" || r.Counts[model.Proven] != 1 {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError || r.Counts[model.Proven] != 1 {
 		t.Errorf("record = %+v", r)
 	}
 	if !strings.Contains(f.logBuf.String(), "ssh: handshake failed") {
@@ -618,6 +618,35 @@ func TestRunSpaceReservedByInFlightJob(t *testing.T) {
 	wantResult(t, r[102], model.Skipped, "insufficient space on local-zfs")
 }
 
+// A finished job releases its reservation: with one worker, two backups
+// that each fit only alone are proofed one after the other.
+func TestRunReservationReleased(t *testing.T) {
+	t.Run("space", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		// 80 GiB usable (100 free minus a 20 GiB margin); 50 GiB each.
+		f.api.Storage["local-zfs"] = pve.StorageStatus{Avail: 100 * gib, Total: 200 * gib}
+		f.add("pbs", model.KindQEMU, 101, 1024, "")
+		f.add("pbs", model.KindQEMU, 102, 1024, "")
+		f.api.Backups["pbs"][0].Size = 50 * gib
+		f.api.Backups["pbs"][1].Size = 50 * gib
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		r := byVMID(t, s)
+		wantResult(t, r[101], model.Proven, "")
+		wantResult(t, r[102], model.Proven, "")
+	})
+	t.Run("memory", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		// 4 GiB free; each needs 2048 MiB + 10%.
+		f.api.Memory = pve.NodeMemory{Total: 8 * gib, Available: 4 * gib}
+		f.add("pbs", model.KindQEMU, 101, 2048, "")
+		f.add("pbs", model.KindQEMU, 102, 2048, "")
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		r := byVMID(t, s)
+		wantResult(t, r[101], model.Proven, "")
+		wantResult(t, r[102], model.Proven, "")
+	})
+}
+
 // countingAPI signals after each NodeMemory / StorageStatus call.
 type countingAPI struct {
 	*hookAPI
@@ -654,6 +683,47 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	if len(f.tgt.restores()) != 0 {
 		t.Errorf("restored: %q", f.tgt.restores())
 	}
+	// The failure is this backup's own: its notes say so.
+	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read backup config: ") {
+		t.Errorf("notes = %q", got)
+	}
+}
+
+// Node-wide capacity errors (storage status, node memory, VMID allocation)
+// say nothing about the backup: they stay out of its notes.
+func TestRunNodeCapacityErrorsStayOutOfNotes(t *testing.T) {
+	for _, method := range []string{"StorageStatus", "NodeMemory"} {
+		t.Run(method, func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			f.add("pbs", model.KindQEMU, 101, 1024, "db01")
+			f.api.Fail[method] = errors.New("api down")
+			s := f.run(context.Background(), Options{Trigger: "manual"})
+			if r := byVMID(t, s)[101]; r.Verdict != model.Error {
+				t.Errorf("got %s %q", r.Verdict, r.Reason)
+			}
+			if got := f.api.Backups["pbs"][0].Notes; got != "db01" {
+				t.Errorf("notes = %q", got)
+			}
+		})
+	}
+	t.Run("AllocateVMID", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.add("pbs", model.KindQEMU, 101, 1024, "db01")
+		f.d.Target = allocFail{f.tgt}
+		s := f.run(context.Background(), Options{Trigger: "manual"})
+		if r := byVMID(t, s)[101]; r.Verdict != model.Error {
+			t.Errorf("got %s %q", r.Verdict, r.Reason)
+		}
+		if got := f.api.Backups["pbs"][0].Notes; got != "db01" {
+			t.Errorf("notes = %q", got)
+		}
+	})
+}
+
+type allocFail struct{ target.Target }
+
+func (allocFail) AllocateVMID(context.Context, map[int]bool) (int, error) {
+	return 0, errors.New("api down")
 }
 
 func TestRunStorageDiscoveryErrors(t *testing.T) {
@@ -670,7 +740,7 @@ func TestRunStorageDiscoveryErrors(t *testing.T) {
 	if len(s.Results) != 1 || s.Results[0].Verdict != model.Proven {
 		t.Errorf("results = %+v", s.Results)
 	}
-	if r := f.lastRun(t); r.Outcome != "error" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 
@@ -724,11 +794,11 @@ func TestRunRecord(t *testing.T) {
 
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 
-	if during.Outcome != "running" || during.ID != "20261019T021400Z-schedule" {
+	if during.Outcome != state.OutcomeRunning || during.ID != "20261019T021400.000Z-schedule" {
 		t.Errorf("record during run = %+v", during)
 	}
 	rec := f.lastRun(t)
-	if rec.ID != during.ID || rec.Outcome != "ok" || rec.Trigger != "schedule" ||
+	if rec.ID != during.ID || rec.Outcome != state.OutcomeOK || rec.Trigger != "schedule" ||
 		!rec.Started.Equal(now) || !rec.Ended.Equal(now.Add(3*time.Minute)) || rec.Counts[model.Proven] != 1 {
 		t.Errorf("record = %+v", rec)
 	}
@@ -747,7 +817,7 @@ func TestRunRetainRuns(t *testing.T) {
 		f.run(context.Background(), Options{Trigger: "schedule"})
 		f.clock.advance(time.Hour)
 	}
-	if runs := f.store.Snapshot().Runs; len(runs) != 2 || runs[1].ID != "20261019T041400Z-schedule" {
+	if runs := f.store.Snapshot().Runs; len(runs) != 2 || runs[1].ID != "20261019T041400.000Z-schedule" {
 		t.Errorf("runs = %+v", runs)
 	}
 }
@@ -792,6 +862,9 @@ func TestRunAdmissionErrorWhileCancelledIsSkipped(t *testing.T) {
 	s := f.run(ctx, Options{Trigger: "schedule"})
 
 	wantResult(t, byVMID(t, s)[101], model.Skipped, "run cancelled")
+	if got := f.api.Backups["pbs"][0].Notes; got != "" {
+		t.Errorf("notes written for a cancelled admission: %q", got)
+	}
 }
 
 func TestRunUsesGivenRunID(t *testing.T) {
@@ -845,5 +918,17 @@ func TestRunDispatcherPanicWaitsForJobs(t *testing.T) {
 	}
 	if len(f.tgt.Live) != 0 {
 		t.Errorf("guest left behind: %v", f.tgt.Live)
+	}
+}
+
+// Two runs started in the same second get distinct IDs (and log files).
+func TestNewRunIDHasMilliseconds(t *testing.T) {
+	t0 := time.Date(2026, 10, 19, 2, 14, 0, 0, time.FixedZone("CEST", 2*3600))
+	a, b := NewRunID(t0, "manual"), NewRunID(t0.Add(7*time.Millisecond), "manual")
+	if a != "20261019T001400.000Z-manual" || b != "20261019T001400.007Z-manual" {
+		t.Errorf("ids = %q, %q", a, b)
+	}
+	if strings.ContainsAny(a, "/\\: ") {
+		t.Errorf("id %q is not filename-safe", a)
 	}
 }

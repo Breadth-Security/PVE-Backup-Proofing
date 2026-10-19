@@ -190,3 +190,145 @@ func TestDestroyRefusesProtected(t *testing.T) {
 		t.Fatal("guest removed")
 	}
 }
+
+// Like the real API, restoring a volid that was never seeded fails and creates nothing.
+func TestRestoreUnseededVolid(t *testing.T) {
+	f := New()
+	if _, err := f.Restore(context.Background(), "pve1", model.KindQEMU, 9100, volid, "scratch"); err == nil {
+		t.Fatal("Restore of an unseeded volid succeeded")
+	}
+	if len(f.GuestList) != 0 || len(f.Configs) != 0 {
+		t.Errorf("failed Restore left state: %+v %v", f.GuestList, f.Configs)
+	}
+}
+
+func TestSetGuestConfigRecordsArguments(t *testing.T) {
+	ctx := context.Background()
+	f := seeded()
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+		t.Fatal(err)
+	}
+	f.ResetCalls()
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 9100, map[string]string{"b": "2", "a": "1"}, []string{"cores"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"SetGuestConfig pve1 qemu 9100 set=map[a:1 b:2] del=[cores]"}
+	if got := f.CallLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %q, want %q", got, want)
+	}
+}
+
+// A guest seeded in GuestList without a Configs entry has an empty config, not "not found".
+func TestSeededGuestWithoutConfig(t *testing.T) {
+	ctx := context.Background()
+	f := New()
+	f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Status: "stopped"}}
+	cfg, err := f.GuestConfig(ctx, "pve1", model.KindQEMU, 100)
+	if err != nil || len(cfg) != 0 {
+		t.Fatalf("cfg=%v err=%v", cfg, err)
+	}
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 100, map[string]string{"tags": "x"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := f.GuestConfig(ctx, "pve1", model.KindQEMU, 100); cfg["tags"] != "x" {
+		t.Errorf("cfg = %v", cfg)
+	}
+	if _, err := f.GuestConfig(ctx, "pve1", model.KindQEMU, 101); err == nil {
+		t.Error("unlisted guest should not be found")
+	}
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 101, nil, nil); err == nil {
+		t.Error("SetGuestConfig on an unlisted guest should fail")
+	}
+}
+
+func TestOriginalConfig(t *testing.T) {
+	ctx := context.Background()
+	f := seeded()
+	if got, err := f.OriginalConfig(ctx, "pve1", volid); err != nil || got != f.BackupConfigs[volid] {
+		t.Errorf("got %q %v", got, err)
+	}
+	if _, err := f.OriginalConfig(ctx, "pve1", "nope"); err == nil {
+		t.Error("unseeded volid should fail")
+	}
+}
+
+func TestAgentMethods(t *testing.T) {
+	ctx := context.Background()
+	f := New()
+	if err := f.AgentPing(ctx, "pve1", 100); err != nil {
+		t.Error(err)
+	}
+	if o, err := f.AgentOSInfo(ctx, "pve1", 100); err != nil || o.ID != "debian" {
+		t.Errorf("os = %+v %v", o, err)
+	}
+	pid, err := f.AgentExec(ctx, "pve1", 100, []string{"echo", "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := f.AgentExecStatus(ctx, "pve1", 100, pid); err != nil || !st.Exited {
+		t.Errorf("status = %+v %v", st, err)
+	}
+	want := []string{"AgentPing pve1 100", "AgentOSInfo pve1 100", "AgentExec pve1 100 echo hi", "AgentExecStatus pve1 100 1"}
+	if got := f.CallLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %q", got)
+	}
+}
+
+// Fail applies to every method, not just Start.
+func TestFailOnOtherMethods(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("boom")
+	f := seeded()
+	f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Status: "stopped"}}
+	calls := map[string]func() error{
+		"Version":         func() error { _, err := f.Version(ctx); return err },
+		"ListBackups":     func() error { _, err := f.ListBackups(ctx, "pve1", "PBS"); return err },
+		"VolumeNotes":     func() error { _, err := f.VolumeNotes(ctx, "pve1", "PBS", volid); return err },
+		"SetVolumeAttrs":  func() error { return f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil) },
+		"StorageStatus":   func() error { _, err := f.StorageStatus(ctx, "pve1", "scratch"); return err },
+		"NodeMemory":      func() error { _, err := f.NodeMemory(ctx, "pve1"); return err },
+		"NetIface":        func() error { _, err := f.NetIface(ctx, "pve1", "vmbr0"); return err },
+		"WaitTask":        func() error { return f.WaitTask(ctx, "pve1", "u") },
+		"Guests":          func() error { _, err := f.Guests(ctx); return err },
+		"Restore":         func() error { _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); return err },
+		"GuestConfig":     func() error { _, err := f.GuestConfig(ctx, "pve1", model.KindQEMU, 100); return err },
+		"SetGuestConfig":  func() error { return f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 100, nil, nil) },
+		"OriginalConfig":  func() error { _, err := f.OriginalConfig(ctx, "pve1", volid); return err },
+		"Start":           func() error { _, err := f.Start(ctx, "pve1", model.KindQEMU, 100); return err },
+		"Shutdown":        func() error { _, err := f.Shutdown(ctx, "pve1", model.KindQEMU, 100); return err },
+		"Stop":            func() error { _, err := f.Stop(ctx, "pve1", model.KindQEMU, 100); return err },
+		"Destroy":         func() error { _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 100); return err },
+		"GuestStatus":     func() error { _, err := f.GuestStatus(ctx, "pve1", model.KindQEMU, 100); return err },
+		"AgentPing":       func() error { return f.AgentPing(ctx, "pve1", 100) },
+		"AgentOSInfo":     func() error { _, err := f.AgentOSInfo(ctx, "pve1", 100); return err },
+		"AgentExec":       func() error { _, err := f.AgentExec(ctx, "pve1", 100, nil); return err },
+		"AgentExecStatus": func() error { _, err := f.AgentExecStatus(ctx, "pve1", 100, 1); return err },
+	}
+	for name, call := range calls {
+		f.Fail[name] = boom
+		if err := call(); err != boom {
+			t.Errorf("%s: err = %v, want injected failure", name, err)
+		}
+		delete(f.Fail, name)
+	}
+	if len(f.GuestList) != 1 {
+		t.Errorf("failed calls changed state: %+v", f.GuestList)
+	}
+}
+
+// SetVolumeAttrs logs the guest the backup belongs to, "unknown" for an unseeded volid.
+func TestSetVolumeAttrsLogsGuest(t *testing.T) {
+	ctx := context.Background()
+	f := New()
+	f.Backups["PBS"] = []model.Backup{{Storage: "PBS", VolID: volid, Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}}}
+	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", "PBS:nope", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"SetVolumeAttrs pve1 PBS " + volid + " guest=qemu/100", "SetVolumeAttrs pve1 PBS PBS:nope guest=unknown"}
+	if got := f.CallLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %q", got)
+	}
+}

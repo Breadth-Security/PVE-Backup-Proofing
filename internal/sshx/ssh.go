@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
+	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
 )
 
 const dialTimeout = 15 * time.Second
@@ -229,6 +231,9 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 	if s, err := conn.NewSession(); err == nil {
 		return s, nil
 	}
+	// Any NewSession error is treated as a dropped connection (the ssh
+	// package does not distinguish a dead transport from a refused channel):
+	// reconnect once, and let the second failure surface.
 	c.dropConn(conn)
 	conn, err = c.ensureConn(ctx)
 	if err != nil {
@@ -241,8 +246,30 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 	return s, nil
 }
 
-// Run executes cmd in a new session. Cancelling ctx closes the session and
-// returns ctx.Err().
+// bounded wraps cmd in the node's coreutils timeout when ctx has a deadline:
+// OpenSSH does not pass a cancelled context on to the remote process, so
+// without it a hung command would outlive the caller. The limit is the
+// remaining time rounded up to whole seconds (at least 1s), and the command
+// is killed 5s after it is signalled. cmd goes to "sh -c" as one
+// single-quoted argument (Quote), so the shell sees it exactly as sent
+// unwrapped and nothing in it can reach the wrapper. Without a deadline cmd
+// is returned unchanged.
+//
+// A wrapped command runs under /bin/sh (dash on PVE), an unwrapped one under
+// the remote user's login shell (bash for root): commands sent through Run
+// must stay POSIX sh, or they may break only when a deadline is set.
+func bounded(ctx context.Context, cmd string) string {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return cmd
+	}
+	secs := max(int64(math.Ceil(time.Until(dl).Seconds())), 1)
+	return fmt.Sprintf("timeout --kill-after=5s %ds sh -c %s", secs, Quote(cmd))
+}
+
+// Run executes cmd in a new session, bounded on the node by ctx's deadline
+// if it has one (see bounded). Cancelling ctx closes the session and returns
+// ctx.Err().
 func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -258,7 +285,7 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	if stdin != nil {
 		sess.Stdin = bytes.NewReader(stdin)
 	}
-	if err := sess.Start(cmd); err != nil {
+	if err := sess.Start(bounded(ctx, cmd)); err != nil {
 		return Result{}, fmt.Errorf("sshx: start: %w", err)
 	}
 	done := make(chan error, 1)
@@ -299,19 +326,18 @@ func (c *Client) Close() error {
 // Fake is a mutex-safe Runner for other packages' tests.
 type Fake struct {
 	Handler func(cmd string, stdin []byte) (Result, error)
-	Calls   []string
 
-	mu sync.Mutex
+	calls testutil.CallLog
 }
 
 // Run records cmd and delegates to Handler (zero Result if nil).
 func (f *Fake) Run(_ context.Context, cmd string, stdin []byte) (Result, error) {
-	f.mu.Lock()
-	f.Calls = append(f.Calls, cmd)
-	h := f.Handler
-	f.mu.Unlock()
-	if h == nil {
+	f.calls.Add(cmd)
+	if f.Handler == nil {
 		return Result{}, nil
 	}
-	return h(cmd, stdin)
+	return f.Handler(cmd, stdin)
 }
+
+// CallLog returns the commands run so far, in order.
+func (f *Fake) CallLog() []string { return f.calls.Snapshot() }

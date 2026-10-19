@@ -17,16 +17,22 @@ func TestLine(t *testing.T) {
 	}
 }
 
+// pbp composes a PBP line on the given day of October 2026 at hh:mm.
+func pbp(v model.Verdict, day, hour, min int, reason string) string {
+	return Line(v, time.Date(2026, 10, day, hour, min, 0, 0, time.UTC), reason)
+}
+
 func TestMerge(t *testing.T) {
-	l := "PBP FAILED 2026-10-19 02:31 · failed: postgresql.service"
+	l := pbp(model.Failed, 19, 2, 31, "failed: postgresql.service")
+	old := pbp(model.Proven, 18, 2, 10, "ok")
 	cases := map[string]struct{ in, want string }{
 		"empty":             {"", l},
 		"vzdump name":       {"kasm.cic.unifiedlab.lan", l + "\nkasm.cic.unifiedlab.lan"},
 		"multiline":         {"db01\nmonthly keep", l + "\ndb01\nmonthly keep"},
-		"replace first":     {"PBP PROVEN 2026-10-18 02:10 · ok\ndb01", l + "\ndb01"},
-		"replace middle":    {"db01\nPBP PROVEN 2026-10-18 02:10 · ok\nnote", l + "\ndb01\nnote"},
+		"replace first":     {old + "\ndb01", l + "\ndb01"},
+		"replace middle":    {"db01\n" + old + "\nnote", l + "\ndb01\nnote"},
 		"user PBP prefix":   {"PBPX backup of x", l + "\nPBPX backup of x"},
-		"only pbp line":     {"PBP PROVEN 2026-10-18 02:10 · ok", l},
+		"only pbp line":     {old, l},
 		"trailing newlines": {"db01\n\n", l + "\ndb01"},
 	}
 	for name, c := range cases {
@@ -43,8 +49,8 @@ func TestHasProven(t *testing.T) {
 		in   string
 		want bool
 	}{
-		"proven after name": {"db01\nPBP PROVEN 2026-10-18 02:10 · ok", true},
-		"failed":            {"PBP FAILED 2026-10-18 02:10 · boom", false},
+		"proven after name": {"db01\n" + pbp(model.Proven, 18, 2, 10, "ok"), true},
+		"failed":            {pbp(model.Failed, 18, 2, 10, "boom"), false},
 		"empty":             {"", false},
 		"provenance":        {"PBP PROVENANCE notes", false},
 	}
@@ -86,5 +92,51 @@ func TestLineCapsReason(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Error("cap split a multi-byte character")
+	}
+}
+
+// Line formats in the time's own location; the result must still be
+// recognised as a PBP line.
+func TestLineNonUTC(t *testing.T) {
+	at := time.Date(2026, 10, 19, 23, 45, 0, 0, time.FixedZone("x", 5*3600+1800))
+	got := Line(model.Proven, at, "ok")
+	if want := "PBP PROVEN 2026-10-19 23:45 · ok"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	next := pbp(model.Failed, 20, 0, 0, "x")
+	if !HasProven(got) || Merge(got+"\ndb01", next) != next+"\ndb01" {
+		t.Fatal("non-UTC line not recognised as a PBP line")
+	}
+}
+
+func TestMergeDropsStackedPBPLines(t *testing.T) {
+	l := pbp(model.Failed, 19, 2, 31, "boom")
+	in := strings.Join([]string{
+		pbp(model.Proven, 18, 2, 10, "ok"), pbp(model.Error, 17, 2, 10, "e"), "db01", pbp(model.Booted, 16, 2, 10, "b"),
+	}, "\n")
+	if got, want := Merge(in, l), l+"\ndb01"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+// The matcher looks at every line: a PROVEN line after a FAILED one counts.
+func TestHasProvenAfterFailedMidNotes(t *testing.T) {
+	in := strings.Join([]string{"db01", pbp(model.Failed, 18, 2, 10, "boom"), pbp(model.Proven, 17, 2, 10, "ok"), "monthly"}, "\n")
+	if !HasProven(in) {
+		t.Fatal("PROVEN line after a FAILED line not found")
+	}
+}
+
+// Every verdict's line is recognised by the parser built from the same
+// constants.
+func TestLineRoundTrips(t *testing.T) {
+	for _, v := range []model.Verdict{model.Proven, model.Failed, model.Booted, model.Skipped, model.Error} {
+		l := pbp(v, 19, 2, 14, "r")
+		if got := Merge(l+"\ndb01", "new"); got != "new\ndb01" {
+			t.Errorf("%s: line not recognised, merged to %q", v, got)
+		}
+		if HasProven(l) != (v == model.Proven) {
+			t.Errorf("%s: HasProven = %v", v, HasProven(l))
+		}
 	}
 }

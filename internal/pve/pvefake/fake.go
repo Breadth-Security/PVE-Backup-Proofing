@@ -9,6 +9,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
+	"git.breadthanalytics.com/tdiana/pbv/internal/testutil"
 )
 
 var _ pve.API = (*Fake)(nil)
@@ -32,8 +33,8 @@ type Fake struct {
 	VersionString string
 	// Fail maps a method name (e.g. "Restore") to an error returned by it.
 	Fail map[string]error
-	// Calls records each call as "Method arg arg...".
-	Calls []string
+	// calls records each call as "Method arg arg...".
+	calls testutil.CallLog
 }
 
 func New() *Fake {
@@ -54,15 +55,15 @@ func (f *Fake) begin(method string, args ...any) error {
 	for _, a := range args {
 		parts = append(parts, fmt.Sprint(a))
 	}
-	f.Calls = append(f.Calls, strings.Join(parts, " "))
+	f.calls.Add(strings.Join(parts, " "))
 	return f.Fail[method]
 }
 
-func (f *Fake) CallLog() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.Calls...)
-}
+// CallLog returns the calls recorded so far, each as "Method arg arg...".
+func (f *Fake) CallLog() []string { return f.calls.Snapshot() }
+
+// ResetCalls forgets the calls recorded so far.
+func (f *Fake) ResetCalls() { f.calls.Reset() }
 
 func (f *Fake) Version(ctx context.Context) (string, error) {
 	f.mu.Lock()
@@ -105,10 +106,17 @@ func (f *Fake) VolumeNotes(ctx context.Context, node, storage, volid string) (st
 func (f *Fake) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("SetVolumeAttrs", node, storage, volid); err != nil {
+	list := f.Backups[storage]
+	// The log names the backup's guest so tests can assert which guests' backups were written.
+	guest := "unknown"
+	for _, b := range list {
+		if b.VolID == volid {
+			guest = b.Key.String()
+		}
+	}
+	if err := f.begin("SetVolumeAttrs", node, storage, volid, "guest="+guest); err != nil {
 		return err
 	}
-	list := f.Backups[storage]
 	for i := range list {
 		if list[i].VolID != volid {
 			continue
@@ -183,7 +191,8 @@ func (f *Fake) Guests(ctx context.Context) ([]pve.GuestRef, error) {
 	return append([]pve.GuestRef(nil), f.GuestList...), nil
 }
 
-// Restore creates a guest whose config is parsed from BackupConfigs[volid].
+// Restore creates a guest whose config is parsed from BackupConfigs[volid]; like
+// the real API it fails for a volid that was not seeded.
 func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -193,7 +202,11 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	if f.find(vmid) >= 0 {
 		return "", fmt.Errorf("vmid %d already exists", vmid)
 	}
-	cfg := parseConfig(f.BackupConfigs[volid])
+	raw, ok := f.BackupConfigs[volid]
+	if !ok {
+		return "", fmt.Errorf("volume %s does not exist", volid)
+	}
+	cfg := parseConfig(raw)
 	f.Configs[vmid] = cfg
 	f.GuestList = append(f.GuestList, pve.GuestRef{
 		Key: model.GuestKey{Kind: kind, VMID: vmid}, Node: fakeNode, Name: cfg["name"], Status: "stopped",
@@ -222,15 +235,29 @@ func parseConfig(raw string) map[string]string {
 
 func upid(op string, vmid int) string { return fmt.Sprintf("UPID:%s:fake:%s:%d:", fakeNode, op, vmid) }
 
+// config returns the live config of a listed guest, creating an empty one when
+// the guest was seeded in GuestList without Configs. Callers hold f.mu.
+func (f *Fake) config(vmid int) (map[string]string, error) {
+	if f.find(vmid) < 0 {
+		return nil, fmt.Errorf("guest %d not found", vmid)
+	}
+	cfg, ok := f.Configs[vmid]
+	if !ok {
+		cfg = map[string]string{}
+		f.Configs[vmid] = cfg
+	}
+	return cfg, nil
+}
+
 func (f *Fake) GuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int) (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin("GuestConfig", node, kind, vmid); err != nil {
 		return nil, err
 	}
-	cfg, ok := f.Configs[vmid]
-	if !ok {
-		return nil, fmt.Errorf("guest %d not found", vmid)
+	cfg, err := f.config(vmid)
+	if err != nil {
+		return nil, err
 	}
 	out := make(map[string]string, len(cfg))
 	for k, v := range cfg {
@@ -242,12 +269,12 @@ func (f *Fake) GuestConfig(ctx context.Context, node string, kind model.GuestKin
 func (f *Fake) SetGuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int, set map[string]string, del []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("SetGuestConfig", node, kind, vmid); err != nil {
+	if err := f.begin("SetGuestConfig", node, kind, vmid, "set="+fmt.Sprint(set), "del="+fmt.Sprint(del)); err != nil {
 		return err
 	}
-	cfg, ok := f.Configs[vmid]
-	if !ok {
-		return fmt.Errorf("guest %d not found", vmid)
+	cfg, err := f.config(vmid)
+	if err != nil {
+		return err
 	}
 	for _, k := range del {
 		delete(cfg, k)

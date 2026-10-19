@@ -3,6 +3,7 @@ package target
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -246,10 +247,10 @@ func TestWaitBootedLXC(t *testing.T) {
 		if got.OS != probe.Linux || got.AgentMissing || got.ExecBlocked {
 			t.Errorf("got %+v", got)
 		}
-		if ssh.Calls[0] != "pct exec 990001 -- 'true'" {
-			t.Errorf("ssh calls = %q", ssh.Calls)
+		if ssh.CallLog()[0] != "pct exec 990001 -- 'true'" {
+			t.Errorf("ssh calls = %q", ssh.CallLog())
 		}
-		for _, c := range ssh.Calls {
+		for _, c := range ssh.CallLog() {
 			if strings.Contains(c, "pct status") {
 				t.Errorf("must use API status, not %q", c)
 			}
@@ -319,8 +320,8 @@ func TestExecutorRefusesOutsideRange(t *testing.T) {
 			t.Errorf("%s: err = %v", kind, err)
 		}
 	}
-	if len(ssh.Calls) != 0 || len(f.CallLog()) != 0 {
-		t.Errorf("calls made: %q %q", ssh.Calls, f.CallLog())
+	if len(ssh.CallLog()) != 0 || len(f.CallLog()) != 0 {
+		t.Errorf("calls made: %q %q", ssh.CallLog(), f.CallLog())
 	}
 }
 
@@ -341,11 +342,50 @@ func TestLXCExecutor(t *testing.T) {
 	if res != (probe.ExecResult{Stdout: "o", Stderr: "e", ExitCode: 2}) {
 		t.Errorf("res = %+v", res)
 	}
-	if want := `pct exec 990002 -- 'sh' '-c' 'echo '\''hi'\'''`; ssh.Calls[0] != want {
-		t.Errorf("cmd = %q, want %q", ssh.Calls[0], want)
+	if want := `pct exec 990002 -- 'sh' '-c' 'echo '\''hi'\'''`; ssh.CallLog()[0] != want {
+		t.Errorf("cmd = %q, want %q", ssh.CallLog()[0], want)
 	}
 	if _, err := n.Executor(model.KindLXC, 990002).Exec(ctx, []string{"boom"}); err == nil {
 		t.Error("transport error not returned")
+	}
+}
+
+// deadlineRunner records each command with its context's deadline.
+type deadlineRunner struct {
+	cmds      []string
+	deadlines []time.Time
+}
+
+func (r *deadlineRunner) Run(ctx context.Context, cmd string, _ []byte) (sshx.Result, error) {
+	dl, _ := ctx.Deadline()
+	r.cmds = append(r.cmds, cmd)
+	r.deadlines = append(r.deadlines, dl)
+	return sshx.Result{}, nil
+}
+
+// pct exec gets the caller's context, deadline included: the SSH runner
+// bounds the command on the node by it (sshx.TestBounded), since OpenSSH
+// does not pass a cancelled context on to the remote command.
+func TestLXCExecutorPassesDeadline(t *testing.T) {
+	f := healthyFake()
+	ssh := &deadlineRunner{}
+	n := newTarget(t, f, f, ssh)
+	ex := n.Executor(model.KindLXC, 990002)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	want, _ := ctx.Deadline()
+	if _, err := ex.Exec(ctx, []string{"true"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.Exec(context.Background(), []string{"true"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ssh.cmds, []string{"pct exec 990002 -- 'true'", "pct exec 990002 -- 'true'"}) {
+		t.Errorf("cmds = %q", ssh.cmds)
+	}
+	if !ssh.deadlines[0].Equal(want) || !ssh.deadlines[1].IsZero() {
+		t.Errorf("deadlines = %v, want %v then none", ssh.deadlines, want)
 	}
 }
 

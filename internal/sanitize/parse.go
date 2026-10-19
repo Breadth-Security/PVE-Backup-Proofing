@@ -47,3 +47,19 @@ func optValue(opts, key string) (string, bool) {
 	}
 	return "", false
 }
+
+// backupEnabled reports whether the option string includes the volume in
+// backups: absent means def; PVE's true spellings (yes|on|true|1, any case)
+// mean yes, and any other value means no. It is the config-text counterpart
+// of pve.flexBool.
+func backupEnabled(opts string, def bool) bool {
+	v, found := optValue(opts, "backup")
+	if !found {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "yes", "on", "true":
+		return true
+	}
+	return false
+}

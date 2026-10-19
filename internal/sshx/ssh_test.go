@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,16 +154,19 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		}
 		_ = r.Reply(true, nil)
 		cmd := string(r.Payload[4:])
+		inner := unwrapBounded(cmd)
 		code := byte(0)
 		switch {
-		case strings.HasPrefix(cmd, "exit3"):
+		case strings.HasPrefix(inner, "exit3"):
 			code = 3
 			_, _ = io.WriteString(ch, "out")
 			_, _ = io.WriteString(ch.Stderr(), "err")
-		case strings.HasPrefix(cmd, "cat"):
+		case strings.HasPrefix(inner, "cat"):
 			_, _ = io.Copy(ch, ch)
-		case strings.HasPrefix(cmd, "sleep"):
-			select {}
+		case strings.HasPrefix(inner, "sleep"):
+			for range reqs { // block until the client closes the session
+			}
+			return
 		default:
 			_, _ = io.WriteString(ch, "ok:"+cmd)
 		}
@@ -211,6 +215,16 @@ func TestDialUnknownHost(t *testing.T) {
 	}
 }
 
+var reBounded = regexp.MustCompile(`^timeout --kill-after=5s \d+s sh -c '(.*)'$`)
+
+// unwrapBounded returns the command a bounded() wrapper runs, or cmd itself.
+func unwrapBounded(cmd string) string {
+	if m := reBounded.FindStringSubmatch(cmd); m != nil {
+		return strings.ReplaceAll(m[1], `'\''`, "'")
+	}
+	return cmd
+}
+
 func TestRunCancel(t *testing.T) {
 	s := newServer(t, true)
 	c, err := Dial(s.cfg)
@@ -253,6 +267,33 @@ func TestRunDeadline(t *testing.T) {
 	}
 }
 
+// waitFor polls cond until it holds, failing the test after five seconds.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitConnLost waits until c's connection has noticed the server dropping it.
+func waitConnLost(t *testing.T, c *Client) {
+	t.Helper()
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	lost := make(chan struct{})
+	go func() { _ = conn.Wait(); close(lost) }()
+	select {
+	case <-lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection drop not noticed")
+	}
+}
+
 func TestReconnectAfterDrop(t *testing.T) {
 	s := newServer(t, true)
 	c, err := Dial(s.cfg)
@@ -264,7 +305,7 @@ func TestReconnectAfterDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.dropConns()
-	time.Sleep(50 * time.Millisecond)
+	waitConnLost(t, c)
 	res, err := c.Run(context.Background(), "exit3", nil)
 	if err != nil || res.ExitCode != 3 {
 		t.Fatalf("reconnect failed: %+v %v", res, err)
@@ -301,8 +342,8 @@ func TestFake(t *testing.T) {
 	if _, err := r.Run(context.Background(), "b", nil); err != nil {
 		t.Fatal(err)
 	}
-	if res.Stdout != "x" || len(f.Calls) != 2 || f.Calls[1] != "b" {
-		t.Fatalf("%+v %v", res, f.Calls)
+	if res.Stdout != "x" || len(f.CallLog()) != 2 || f.CallLog()[1] != "b" {
+		t.Fatalf("%+v %v", res, f.CallLog())
 	}
 	if _, err := (&Fake{}).Run(context.Background(), "z", nil); err != nil {
 		t.Fatal(err)
@@ -386,7 +427,7 @@ func stuckClient(t *testing.T) *Client {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	s.dropConns()
-	time.Sleep(50 * time.Millisecond)
+	waitConnLost(t, c)
 	c.addr = silentListener(t)
 	return c
 }
@@ -407,13 +448,20 @@ func TestRunCtxDuringReconnect(t *testing.T) {
 
 func TestRunNotBlockedByStuckConnect(t *testing.T) {
 	c := stuckClient(t)
-	go func() { _, _ = c.Run(context.Background(), "exit3", nil) }() // stuck connecting
-	time.Sleep(200 * time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	first, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); _, _ = c.Run(first, "exit3", nil) }() // stuck connecting
+	defer func() { cancelFirst(); <-firstDone }()
+	waitFor(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.connecting != nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
 	start := time.Now()
 	_, err := c.Run(ctx, "exit3", nil)
-	if !errors.Is(err, context.Canceled) {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v", err)
 	}
 	if time.Since(start) > time.Second {

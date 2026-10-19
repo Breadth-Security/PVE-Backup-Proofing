@@ -17,7 +17,7 @@ PBP (Proxmox Backup Proofing) is a small daemon that runs in a container. On a s
 
 For each run, PBP:
 
-1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated, the restore storage, that the VMID range holds no guest PBP does not own, and installs the notification templates.
+1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated and the restore storage, installs the notification templates, cleans up after any crashed run (the janitor), and then checks that the VMID range holds no guest PBP does not own.
 2. **Discovery.** Picks the newest backup per guest across all configured storages. Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A snapshot that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
 3. **Capacity gate.** Skips a guest if the backup does not fit in the restore storage (free space, minus space reserved by in-flight restores, minus `space_margin_percent`) or the node lacks free RAM.
 4. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`), then puts every NIC on the isolated bridge, sets `onboot=0`, clears `protection` (a backup of a protected guest restores protected, and could then never be destroyed) and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.
@@ -77,7 +77,7 @@ If you run more than one PBP instance against the same cluster, give **each inst
 
 > A guest tagged `pbp` **outside** the range is never touched either. Each run reports it in an "Environment errors" section of the notification (and logs a warning), for example `VM 105 (web) is tagged pbp but outside the PBP range 990000–990049; not touched`, and the run's severity is at least `warning`. Remove the tag or move the guest to resolve it.
 >
-> PBP refuses to run if it finds a guest in the range that does not carry the `pbp` tag. This can also happen after a restore fails part way and leaves a partial, untagged guest behind. PBP will not run until you remove it: run `docker compose exec pbp pbp check`, which names the offending VMID, confirm it is not yours, and remove it on the node with `qm destroy <vmid> --purge` (VM) or `pct destroy <vmid> --purge` (container).
+> PBP refuses to run if it finds a guest in the range that does not carry the `pbp` tag. The one exception is the leftover of a PBP restore that failed before it could be tagged: PBP's state file records the VMID as an in-flight restore, the guest is stopped, and its name (hostname for a container) matches the backup's original config, or it is still locked by the restore. PBP removes such a leftover itself, at once or through the janitor on the next run. Any other untagged guest blocks every run until you remove it: run `docker compose exec pbp pbp check`, which names the offending VMID, confirm it is not yours, and remove it on the node with `qm destroy <vmid> --purge` (VM) or `pct destroy <vmid> --purge` (container).
 
 ### 2. Create the isolated bridge
 
@@ -169,7 +169,15 @@ ssh-keyscan -t ed25519 pve1.example.lan > known_hosts
 
 ### 5. Configure and start
 
-Copy `config.example.yaml` to `config.yaml` and edit it. Put the API token secret in `secrets/pve_token`. Then:
+Create these next to `docker-compose.yml` before the first `docker compose up`:
+
+- [ ] `config.yaml`, copied from `config.example.yaml` and edited
+- [ ] `known_hosts`, from `ssh-keyscan` (step 4)
+- [ ] `secrets/pve_token`, containing the API token secret
+- [ ] `secrets/pve_ssh_key`, the private key from step 4
+- [ ] `logs/`, owned by uid 65532 (`mkdir -p logs && chown 65532:65532 logs`)
+
+Then:
 
 ```
 docker compose up -d
@@ -190,6 +198,7 @@ docker compose exec pbp pbp check                 # preflight only; nothing is r
 docker compose exec pbp pbp run                   # one run now, all guests
 docker compose exec pbp pbp run --guest 105       # one run now, only guest 105's newest backup
 docker compose exec pbp pbp health                # what the Docker healthcheck runs
+docker compose exec pbp pbp version               # build version and Go runtime
 docker compose logs -f pbp                        # logs; per-run files are in ./logs
 ```
 
@@ -197,7 +206,7 @@ docker compose logs -f pbp                        # logs; per-run files are in .
 |-----------|---------|
 | 0 | Success (`check` passed, or the run finished without error) |
 | 1 | Failure: bad config, `check` found a problem, the run ended in `ERROR`, or `run --guest` found no backup |
-| 2 | Usage error (unknown subcommand or flag) |
+| 2 | Usage error (unknown subcommand or flag, or `--guest` that is not a positive integer) |
 | 3 | Busy: another run or check holds the run lock. `run` and `check` both exit 3 and print "a run is already in progress" |
 
 Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp`, overridable with `PBP_STATE_DIR`. With no config mounted, the container exits non-zero and names `/etc/pbp/config.yaml`.
@@ -214,7 +223,7 @@ To route it, create a matcher in Datacenter > Notifications > Notification Match
 
 PBP installs its templates (`pbp-subject.txt.hbs`, `pbp-body.txt.hbs`) into `/etc/pve/notification-templates/default/` on the node during preflight, and updates them if missing or changed. PVE 9 picks up this new template type from there (verified on PVE 9.2), and `/etc/pve` survives package upgrades, so nothing needs reinstalling after an upgrade.
 
-If a target cannot be notified (for example a template fails to render), `PVE::Notify` only logs an `ERROR:` line; PBP treats that as a failed notification, so the run's outcome is `error` and the health check reports it.
+If a target cannot be notified (for example a template fails to render), `PVE::Notify` only logs an `ERROR:` line; PBP treats that as a failed notification, so the run's outcome is `error` and the health check reports it. `PVE::Notify` cannot say which targets succeeded, so this is deliberately conservative: a failure of any one target marks the run's notification as failed, even if others delivered.
 
 `notify.when` is `always` by default, so a missing nightly message is itself a signal; set it to `problems` for quiet success.
 
@@ -267,6 +276,8 @@ See [`config.example.yaml`](config.example.yaml), which documents every key. Sec
 
 ```
 docker build -t pbp:latest .            # multi-stage; static binary on distroless
+docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp a version
+docker run --rm pbp:latest version      # prints the stamped version (default "dev")
 go test ./... && go vet ./...
 ```
 

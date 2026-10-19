@@ -13,6 +13,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/discovery"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/pbv/internal/report"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
@@ -48,6 +49,13 @@ type Options struct {
 	RunID    string
 }
 
+// NewRunID names a run started at t: its UTC start time to the millisecond,
+// so two runs in the same second differ, and its trigger. The ID is safe in a
+// file name.
+func NewRunID(t time.Time, trigger string) string {
+	return t.UTC().Format("20060102T150405.000Z") + "-" + trigger
+}
+
 // Run performs one proofing run (design section 6): preflight, discovery,
 // gated proofing with Cfg.Workers workers, then history and notification.
 // It never panics and always returns a summary.
@@ -60,14 +68,14 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 		Started: start,
 	}
 	if s.ID == "" {
-		s.ID = start.UTC().Format("20060102T150405Z") + "-" + opt.Trigger
+		s.ID = NewRunID(start, opt.Trigger)
 	}
 	log = log.With("run", s.ID)
 	log.Info("run started")
 
 	var runErrs []string
 	var envErrs []string
-	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: "running", Started: start}
+	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: state.OutcomeRunning, Started: start}
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
 		log.Error("record run start", "err", err)
 		runErrs = append(runErrs, "record run: "+err.Error())
@@ -128,21 +136,19 @@ func guarded(log *slog.Logger, fn func() ([]model.GuestResult, []string)) (res [
 	return fn()
 }
 
-// finish logs the summary, notifies and records the run's outcome.
+// finish logs each guest result once, then notifies and records the run's
+// outcome.
 func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 	for _, r := range s.Results {
-		log.Info("guest result", "guest", r.Backup.Key.String(), "volid", r.Backup.VolID,
-			"verdict", r.Verdict, "reason", r.Reason, "temp_vmid", r.TempVMID,
-			"restore", r.RestoreDuration, "boot", r.BootDuration,
-			"failed_units", r.FailedUnits, "ignored_units", r.IgnoredUnits)
+		report.LogGuest(log, r)
 	}
 	sev := s.Severity()
-	outcome := "ok"
+	outcome := state.OutcomeOK
 	switch {
 	case s.RunError != "":
-		outcome = "error"
+		outcome = state.OutcomeError
 	case sev != "info":
-		outcome = "problems"
+		outcome = state.OutcomeProblems
 	}
 	if d.Cfg.Notify.When == "always" || sev != "info" {
 		err := func() (err error) {
@@ -157,7 +163,7 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 		}()
 		if err != nil {
 			log.Error("send notification failed", "err", err)
-			outcome = "error"
+			outcome = state.OutcomeError
 		}
 	}
 	log.Info("run finished", "outcome", outcome, "severity", sev, "run_error", s.RunError)
@@ -244,10 +250,12 @@ type pool struct {
 	errs     []string
 }
 
-// lease is what an admitted job holds until it ends.
+// lease is what an admitted job holds until it ends, and the backup's
+// original config admit read (passed on so the job does not read it again).
 type lease struct {
 	vmid       int
 	space, ram int64
+	orig       map[string]string
 }
 
 func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) []model.GuestResult {
@@ -301,7 +309,7 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 					p.addErr(fmt.Sprintf("internal error: %v", r))
 				}
 			}()
-			results[i] = proofOne(ctx, d, b, l.vmid)
+			results[i] = proofOne(ctx, d, b, l.vmid, l.orig)
 		}()
 	}
 	wg.Wait()
@@ -354,9 +362,15 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 
 	raw, err := d.API.OriginalConfig(ctx, node, b.VolID)
 	if err != nil {
-		return fail(model.Error, "cannot read backup config: "+err.Error())
+		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
+		// Unlike the node-wide gates below, this failure is the backup's
+		// own, so its notes record it (annotate skips a SKIPPED result).
+		// p.mu is not held yet.
+		annotate(d, p.log.With("guest", b.Key.String(), "volid", b.VolID), b, *res)
+		return l, res
 	}
-	needRAM := guestMemoryMiB(b.Key.Kind, raw) * (1 << 20) * 110 / 100
+	orig := sanitize.ParseConfigText(raw)
+	needRAM := guestMemoryMiB(b.Key.Kind, orig) * (1 << 20) * 110 / 100
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -388,7 +402,7 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 	p.inUse[vmid] = true
 	p.spaceRes += b.Size
 	p.ramRes += needRAM
-	return lease{vmid: vmid, space: b.Size, ram: needRAM}, nil
+	return lease{vmid: vmid, space: b.Size, ram: needRAM, orig: orig}, nil
 }
 
 func (p *pool) release(l lease) {
@@ -399,11 +413,11 @@ func (p *pool) release(l lease) {
 	p.ramRes -= l.ram
 }
 
-// guestMemoryMiB reads the "memory" key (MiB) from a backed-up guest config,
+// guestMemoryMiB reads the "memory" key (MiB) from a parsed backed-up config,
 // accepting PVE's "current=<n>[,...]" form, and falls back to the PVE default
 // for the guest kind.
-func guestMemoryMiB(kind model.GuestKind, raw string) int64 {
-	v := sanitize.ParseConfigText(raw)["memory"]
+func guestMemoryMiB(kind model.GuestKind, orig map[string]string) int64 {
+	v := orig["memory"]
 	v, _, _ = strings.Cut(v, ",")
 	v = strings.TrimPrefix(strings.TrimSpace(v), "current=")
 	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {

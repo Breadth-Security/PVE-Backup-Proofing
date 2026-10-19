@@ -382,8 +382,10 @@ logging:
 ## 11. Safety rules (non-negotiable)
 
 1. Never create, modify, start, stop or destroy a guest outside the reserved VMID range.
-2. Never destroy a guest in the range unless it carries the `pbp` tag **and** PBP's state or
-   name pattern confirms ownership.
+2. Destroy a guest in the range only if it carries the `pbp` tag, or — for a restore that
+   failed before it could be tagged — PBP's state records the VMID as an in-flight restore,
+   the guest is stopped, and its name/hostname matches the backup's original config (or it is
+   still locked by the restore).
 3. Never start a restored guest until every NIC is on the verified isolated bridge and host
    passthrough is removed.
 4. Refuse to run if the bridge is not isolated.

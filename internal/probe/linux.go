@@ -26,7 +26,7 @@ func (r *linuxRun) exec(ctx context.Context, argv ...string) (ExecResult, error)
 func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	r.out.Verdict = model.Failed
 	r.out.Reason = reason
-	if res, err := r.ex.run(ctx, []string{"journalctl", "-b", "--no-pager", "-n", "200"}); err == nil {
+	if res, err := r.ex.run(ctx, []string{"journalctl", "-b", "--no-pager", "-n", "200"}); err == nil && res.ExitCode == 0 {
 		r.out.BootLog = res.Stdout
 	}
 	return r.out

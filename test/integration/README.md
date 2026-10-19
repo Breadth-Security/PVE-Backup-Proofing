@@ -47,7 +47,7 @@ The values above are pve1's: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
 ## What each test does
 
 - **TestCheck**: the preflight of `pbp check` (PVE version, isolated bridge,
-  restore storage, no foreign guest in the range, template install, janitor),
+  restore storage, template install, janitor, no foreign guest in the range),
   and that the API reports the bridge as `bridge`/`OVSBridge`.
 - **TestProofSmallLXC**: proofs the container's newest backup. Expects
   `PROVEN`, or `FAILED` naming real units.

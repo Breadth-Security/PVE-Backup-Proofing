@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
@@ -54,7 +55,7 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		case kind == model.KindQEMU && k == "args":
 			p.Unsafe = append(p.Unsafe, "args")
 		case kind == model.KindQEMU && rePCIEtc.MatchString(k):
-			if strings.TrimSpace(v) != "socket" {
+			if !isVirtualDevice(k, v) {
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
 		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
@@ -79,10 +80,16 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 	return p
 }
 
+// SplitList splits a PVE list value (tags, storage content) on ';', ',' or
+// whitespace, dropping empty items.
+func SplitList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) })
+}
+
 // AddTag returns the PVE tag list tags (separated by ';', ',' or spaces)
 // with tag appended unless present, joined with ';'.
 func AddTag(tags, tag string) string {
-	list := strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
+	list := SplitList(tags)
 	if !slices.Contains(list, tag) {
 		list = append(list, tag)
 	}
@@ -92,6 +99,23 @@ func AddTag(tags, tag string) string {
 func (p *Plan) remove(key string, piece model.MissingPiece) {
 	p.Delete = append(p.Delete, key)
 	p.Removed = append(p.Removed, piece)
+}
+
+// isVirtualDevice reports whether the value of key (serial/usb/parallel/
+// hostpci) attaches no host hardware: a socket serial port, or a
+// SPICE-redirected USB device with no host device named.
+func isVirtualDevice(key, v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "socket" {
+		return true
+	}
+	if !strings.HasPrefix(key, "usb") {
+		return false
+	}
+	if host, ok := optValue(v, "host"); ok {
+		return host == "spice"
+	}
+	return firstField(v) == "spice"
 }
 
 func firstField(s string) string {
@@ -106,6 +130,9 @@ func sanitizeNet(v, bridge string) string {
 	var out []string
 	seenBridge := false
 	for _, f := range strings.Split(v, ",") {
+		if f == "" {
+			continue
+		}
 		k, _, _ := strings.Cut(f, "=")
 		// A qemu first field is "<model>=MAC", never one of these keys.
 		switch k {

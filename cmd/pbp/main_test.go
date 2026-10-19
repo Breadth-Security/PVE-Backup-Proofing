@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -132,6 +134,37 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+func TestGuestFlagMustBePositive(t *testing.T) {
+	for _, g := range []string{"0", "-5", "abc", ""} {
+		e := newEnv(t)
+		if code := e.run("run", "--guest", g); code != exitUsage {
+			t.Errorf("--guest %q: exit %d, want %d", g, code, exitUsage)
+		}
+	}
+	e := newEnv(t)
+	if code := e.run("run", "--guest", "105"); code != exitFail || !strings.Contains(e.out.String(), "no backup found for guest 105") {
+		t.Errorf("--guest 105: %d %q", code, e.out)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v1.2.3"
+	e := newEnv(t)
+	// No config is needed, and unknown flags still fail.
+	if code := e.a.main(context.Background(), []string{"version"}); code != exitOK ||
+		e.out.String() != "pbp v1.2.3\n"+runtime.Version()+"\n" {
+		t.Errorf("version: %d %q", code, e.out)
+	}
+	if code := e.a.main(context.Background(), []string{"version", "extra"}); code != exitUsage {
+		t.Errorf("version extra: %d", code)
+	}
+	if !strings.Contains(usage, "pbp version") {
+		t.Errorf("usage omits version: %q", usage)
+	}
+}
+
 func TestBusyLock(t *testing.T) {
 	for _, cmd := range []string{"run", "check"} {
 		t.Run(cmd, func(t *testing.T) {
@@ -194,7 +227,7 @@ func TestRunWiring(t *testing.T) {
 		t.Fatalf("exit %d; out %q err %q", code, e.out, e.errOut)
 	}
 
-	const id = "20261019T020005Z-manual"
+	const id = "20261019T020005.000Z-manual"
 	runs := e.runs()
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Trigger != "manual" {
 		t.Fatalf("runs = %+v", runs)
@@ -209,6 +242,24 @@ func TestRunWiring(t *testing.T) {
 	if !strings.Contains(string(b), `"msg":"guest result"`) || !strings.Contains(string(b), `"verdict":"SKIPPED"`) ||
 		strings.Contains(string(b), "qemu/102") {
 		t.Errorf("run log = %s", b)
+	}
+	if n := strings.Count(string(b), `"msg":"guest result"`); n != 1 {
+		t.Errorf("guest 101 logged %d result records, want exactly 1:\n%s", n, b)
+	}
+	// The record carries the run correlation and precedes "run finished".
+	var rec struct{ Run, Trigger string }
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, `"msg":"guest result"`) {
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rec.Run != id || rec.Trigger != "manual" {
+		t.Errorf("guest record run/trigger = %+v", rec)
+	}
+	if strings.Index(string(b), `"msg":"guest result"`) > strings.Index(string(b), `"msg":"run finished"`) {
+		t.Errorf("guest result logged after run finished:\n%s", b)
 	}
 	ents, _ := os.ReadDir(e.logDir)
 	var names []string
@@ -243,7 +294,7 @@ func TestRunSSHDownIsRunErrorAndUnhealthy(t *testing.T) {
 		t.Errorf("exit %d", code)
 	}
 	runs := e.runs()
-	if len(runs) != 1 || runs[0].Outcome != "error" {
+	if len(runs) != 1 || runs[0].Outcome != state.OutcomeError {
 		t.Fatalf("runs = %+v", runs)
 	}
 	if !strings.Contains(e.out.String(), "connection refused") || !strings.Contains(e.out.String(), "SSH TO THE NODE FAILED") {
@@ -323,6 +374,91 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// The overrun limit is max_run_duration + boot_timeout + probe_timeout + 10m
+// (1h + 5m + 5m + 10m = 1h20m here), not max_run_duration alone.
+func TestHealthOverrunLimitWiring(t *testing.T) {
+	e := newEnv(t)
+	cfg, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = bytes.Replace(cfg, []byte("restore: {storage: local-zfs}"), []byte("restore: {storage: local-zfs, max_run_duration: 1h}"), 1)
+	if err := os.WriteFile(e.cfgPath, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 19, 2, 30, 0, 0, time.Local)
+	e.a.now = func() time.Time { return now }
+	store, err := state.Open(statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := now.Add(-70 * time.Minute) // past 1h, inside 1h20m
+	rec := state.RunRecord{ID: "r1", Trigger: "schedule", Outcome: state.OutcomeRunning, Started: started}
+	if err := store.AppendRun(rec, 5); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.run("health"); code != exitOK {
+		t.Errorf("inside limit: %d %q", code, e.out)
+	}
+	e.a.now = func() time.Time { return now.Add(11 * time.Minute) } // 81m
+	if code := e.run("health"); code != exitFail || e.out.String() != "run overran\n" {
+		t.Errorf("past limit: %d %q", code, e.out)
+	}
+}
+
+func TestReadStartedUnreadable(t *testing.T) {
+	dir := t.TempDir() // a directory where the file should be cannot be read
+	if _, err := readStarted(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Errorf("want error naming %s, got %v", dir, err)
+	}
+	if got, err := readStarted(filepath.Join(dir, "missing")); err != nil || !got.IsZero() {
+		t.Errorf("missing file: %v, %v", got, err)
+	}
+}
+
+func TestWriteStartedIsAtomic(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sub", "daemon.started")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStarted(p)
+	if err != nil || !got.Equal(fixedNow) {
+		t.Errorf("read back %v, %v", got, err)
+	}
+	if es, _ := os.ReadDir(filepath.Dir(p)); len(es) != 1 {
+		t.Errorf("temp file left behind: %v", es)
+	}
+}
+
+// A failed rename (the target is a non-empty directory) returns the error and
+// removes the temp file.
+func TestWriteStartedFailureRemovesTemp(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "daemon.started")
+	if err := os.MkdirAll(filepath.Join(p, "occupied"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStarted(p, fixedNow); err == nil {
+		t.Fatal("want rename error")
+	}
+	if es, _ := os.ReadDir(filepath.Dir(p)); len(es) != 1 {
+		t.Errorf("temp file left behind: %v", es)
+	}
+}
+
+// A corrupt daemon.started is unhealthy and names the file, not zero time.
+func TestHealthCorruptStartTime(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(daemon.StateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(startedPath(), []byte("yesterday-ish\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.run("health"); code != exitFail || !strings.Contains(e.out.String(), startedPath()) {
+		t.Errorf("corrupt: %d %q", code, e.out)
+	}
+}
+
 func TestDaemonWritesStartTime(t *testing.T) {
 	e := newEnv(t)
 	oldLog := slog.Default()
@@ -335,5 +471,8 @@ func TestDaemonWritesStartTime(t *testing.T) {
 	b, err := os.ReadFile(startedPath())
 	if err != nil || strings.TrimSpace(string(b)) != fixedNow.Format(time.RFC3339) {
 		t.Errorf("daemon.started = %q, %v", b, err)
+	}
+	if !strings.Contains(e.out.String(), "version="+version) {
+		t.Errorf("daemon start does not log the version: %q", e.out)
 	}
 }

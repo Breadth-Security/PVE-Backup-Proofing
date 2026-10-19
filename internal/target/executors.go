@@ -36,6 +36,7 @@ type lxcExec struct {
 }
 
 func (e lxcExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	// ctx's deadline bounds the command on the node too (sshx.Runner).
 	cmd := fmt.Sprintf("pct exec %d -- %s", e.vmid, sshx.Quote(argv...))
 	res, err := e.n.ssh.Run(ctx, cmd, nil)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
@@ -147,8 +148,9 @@ func TestSend(t *testing.T) {
 	if err := n.Send(context.Background(), failedSummary()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(gotCmd, "perl -e 'use PVE::Notify;") {
-		t.Fatal(gotCmd)
+	const wantCmd = `perl -e 'use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, '\''pbp'\'', $in->{data}, $in->{fields});'`
+	if gotCmd != wantCmd {
+		t.Fatalf("command = %s\nwant      %s", gotCmd, wantCmd)
 	}
 	var in struct {
 		Severity string
@@ -186,8 +188,8 @@ func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
 			writes[cmd] = string(stdin)
 			return sshx.Result{}, nil
 		}
-		if strings.HasPrefix(cmd, "cat ") {
-			return sshx.Result{ExitCode: 1}, nil
+		if strings.HasPrefix(cmd, "test -e ") {
+			return sshx.Result{ExitCode: exitMissing}, nil
 		}
 		return sshx.Result{}, nil
 	}}
@@ -216,7 +218,7 @@ func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
 func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	f := &sshx.Fake{}
 	f.Handler = func(cmd string, _ []byte) (sshx.Result, error) {
-		if !strings.HasPrefix(cmd, "cat ") || strings.Contains(cmd, "cat >") {
+		if !strings.HasPrefix(cmd, "test -e ") || strings.Contains(cmd, "cat >") {
 			t.Errorf("unexpected write: %s", cmd)
 		}
 		name := "templates/pbp-body.txt.hbs"
@@ -229,8 +231,46 @@ func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	if err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Calls) != 2 {
-		t.Fatal(f.Calls)
+	if len(f.CallLog()) != 2 {
+		t.Fatal(f.CallLog())
+	}
+}
+
+// A template that cannot be read for a reason other than being absent is an
+// error, not a cue to overwrite it. Only the exit code tells "missing" apart:
+// stderr text (here a "No such file" from a file removed between test and
+// cat) never does.
+func TestEnsureTemplatesReadFailure(t *testing.T) {
+	for _, stderr := range []string{"cat: x: Permission denied\n", "cat: x: No such file or directory\n"} {
+		f := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
+			if strings.Contains(cmd, "cat >") {
+				t.Errorf("rewrote a template that could not be read: %s", cmd)
+			}
+			return sshx.Result{ExitCode: 1, Stderr: stderr}, nil
+		}}
+		err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background())
+		if err == nil || !strings.Contains(err.Error(), strings.TrimSpace(stderr)) {
+			t.Errorf("err = %v", err)
+		}
+	}
+}
+
+func TestReadTemplateCmd(t *testing.T) {
+	want := `test -e '/etc/x y.hbs' || exit 3; cat '/etc/x y.hbs'`
+	if got := readTemplateCmd("/etc/x y.hbs"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestTrimStderrCutsOnRuneBoundary(t *testing.T) {
+	// "é" is 2 bytes: a cut at maxStderr would land inside the last one.
+	in := "x" + strings.Repeat("é", maxStderr)
+	got := trimStderr(in)
+	if !utf8.ValidString(got) || len(got) > maxStderr || len(got) < maxStderr-1 {
+		t.Fatalf("len %d, valid %v", len(got), utf8.ValidString(got))
+	}
+	if short := "  short é \n"; trimStderr(short) != "short é" {
+		t.Errorf("short input changed: %q", trimStderr(short))
 	}
 }
 
@@ -266,10 +306,57 @@ func TestTemplateDataKeysAreNotNotifyHelpers(t *testing.T) {
 	}
 }
 
-var reMustache = regexp.MustCompile(`{{\s*([#/]?)([\w-]+)(?:\s+([\w-]+))?\s*}}`)
+// reTag matches one template tag, including the {{{triple}}} form.
+var reTag = regexp.MustCompile(`{{{?[^{}]*}?}}`)
 
-// Every variable a template uses must be provided by TemplateData (top level,
-// or per guest inside #each guests/booted), so nothing renders empty.
+// templateProblems lists what is wrong with a template: a triple-stash tag, a
+// tag with more than one argument (it would be parsed as a multi-argument
+// helper call), or a variable TemplateData does not provide (top level, or
+// per guest inside #each guests/booted), which would render empty.
+func templateProblems(body string, d, guest map[string]any) []string {
+	var problems []string
+	for _, tag := range reTag.FindAllString(body, -1) {
+		if strings.HasPrefix(tag, "{{{") {
+			problems = append(problems, tag+": triple-stash tag")
+			continue
+		}
+		f := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(tag, "{{"), "}}"))
+		if len(f) == 0 {
+			problems = append(problems, tag+": empty tag")
+			continue
+		}
+		sigil, word, args := "", f[0], f[1:]
+		if c := word[0]; c == '#' || c == '/' {
+			sigil, word = word[:1], word[1:]
+		}
+		switch {
+		case len(args) > 1:
+			problems = append(problems, tag+": more than one argument")
+		case sigil == "/" && len(args) > 0:
+			problems = append(problems, tag+": closing tag with argument")
+		case sigil == "/":
+		case sigil == "#" && len(args) == 0:
+			problems = append(problems, tag+": block without argument")
+		case sigil == "#":
+			if _, ok := d[args[0]]; !ok {
+				problems = append(problems, tag+": no such key "+args[0])
+			}
+		case len(args) > 0:
+			problems = append(problems, tag+": helper call with argument")
+		case word == "this":
+		default:
+			_, top := d[word]
+			_, inGuest := guest[word]
+			if !top && !inGuest {
+				problems = append(problems, tag+": no such key")
+			}
+		}
+	}
+	return problems
+}
+
+// Every template tag must be a plain provided variable or a block over a
+// provided list.
 func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 	d := TemplateData(failedSummary(), "pve1")
 	guest := d["guests"].([]map[string]any)[0]
@@ -278,23 +365,34 @@ func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, m := range reMustache.FindAllStringSubmatch(string(b), -1) {
-			sigil, word, arg := m[1], m[2], m[3]
-			switch {
-			case sigil == "/":
-			case sigil == "#":
-				if _, ok := d[arg]; !ok {
-					t.Errorf("%s: block %s %s: no such key", name, word, arg)
-				}
-			case word == "this":
-			default:
-				_, top := d[word]
-				_, inGuest := guest[word]
-				if !top && !inGuest {
-					t.Errorf("%s: {{%s}}: no such key", name, word)
-				}
-			}
+		for _, p := range templateProblems(string(b), d, guest) {
+			t.Errorf("%s: %s", name, p)
 		}
+	}
+}
+
+func TestTemplateGuardCatchesBadTags(t *testing.T) {
+	d := TemplateData(failedSummary(), "pve1")
+	guest := d["guests"].([]map[string]any)[0]
+	for body, want := range map[string]string{
+		"{{{reason}}}":          "triple-stash",
+		"{{table guests name}}": "more than one argument",
+		"{{#each guests name}}": "more than one argument",
+		"{{duration started}}":  "helper call with argument",
+		"{{nope}}":              "no such key",
+		"{{#each nope}}":        "no such key nope",
+		"{{{ reason }}}":        "triple-stash",
+		"{{this x}}":            "helper call with argument",
+		"{{/each junk}}":        "closing tag with argument",
+		"{{#each}}":             "block without argument",
+	} {
+		got := templateProblems(body, d, guest)
+		if len(got) != 1 || !strings.Contains(got[0], want) {
+			t.Errorf("%q: problems %q, want one containing %q", body, got, want)
+		}
+	}
+	if got := templateProblems("{{#each guests}}\n {{guest}} {{this}}\n{{/each}} {{summary}}", d, guest); len(got) != 0 {
+		t.Errorf("valid template flagged: %q", got)
 	}
 }
 
@@ -316,6 +414,21 @@ func TestSendFailsOnNotifyErrorLines(t *testing.T) {
 	}
 	if err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// PVE::Notify cannot say which targets succeeded, so one ERROR line among
+// successful ones still fails Send (conservative: the run is then "error").
+func TestSendFailsOnMixedSuccessAndError(t *testing.T) {
+	stderr := "INFO: notified via target `webhook-ops`\n" +
+		"ERROR: could not notify via target `mail-to-root`: smtp refused\n" +
+		"INFO: notified via target `gotify`\n"
+	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
+		return sshx.Result{Stderr: stderr}, nil
+	}}
+	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
+	if err == nil || !strings.Contains(err.Error(), "mail-to-root") || strings.Contains(err.Error(), "webhook-ops") {
+		t.Fatalf("want an error naming only the failed target, got %v", err)
 	}
 }
 

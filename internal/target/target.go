@@ -31,6 +31,10 @@ var (
 	ErrOutOfRange = errors.New("VMID outside reserved range")
 	// ErrNotOwned: the guest is not tagged "pbp" (or is not the expected kind).
 	ErrNotOwned = errors.New("guest not owned by PBP")
+	// ErrRestoreNotStarted: the node refused the restore request, so no
+	// restore task ran and PBP created no guest at the VMID. Any other
+	// Restore error may have left a (possibly untagged) guest behind.
+	ErrRestoreNotStarted = errors.New("restore not started")
 	// ErrBootFailed: the guest itself did not boot (never reached running,
 	// or a container never accepted exec while SSH worked). Only this boot
 	// error says something about the backup; any other is a node fault.
@@ -46,7 +50,21 @@ func (e bootFailure) Is(target error) bool { return target == ErrBootFailed }
 
 func bootFailed(format string, a ...any) error { return bootFailure{fmt.Sprintf(format, a...)} }
 
-// OwnerTag marks guests PBP created.
+// notStarted is a refused restore request: it matches ErrRestoreNotStarted
+// and keeps the node's message unchanged (it becomes the notes reason).
+type notStarted struct{ err error }
+
+func (e notStarted) Error() string        { return e.err.Error() }
+func (e notStarted) Unwrap() error        { return e.err }
+func (e notStarted) Is(target error) bool { return target == ErrRestoreNotStarted }
+
+// OwnerTag marks guests PBP created. A guest in the reserved range is PBP's
+// if it carries this tag, or (design section 11.2) if it is the leftover of a
+// restore that failed before it could be tagged: the caller's state store
+// records its VMID as an in-flight restore, it is stopped, and its name
+// (hostname for a container) matches the backup's original config or it is
+// still locked by the restore ("lock: create"). Only Destroy applies the
+// second rule.
 const OwnerTag = "pbp"
 
 // BootInfo describes a guest that reached running.
@@ -63,9 +81,13 @@ type BootInfo struct {
 
 // Target is where backups are restored and proofed (design section 5.1).
 type Target interface {
-	// Prepare verifies the node: PVE version, isolated bridge, restore
-	// storage, and that no foreign guest sits in the VMID range.
+	// Prepare verifies the node: PVE version, isolated bridge and restore
+	// storage.
 	Prepare(ctx context.Context) error
+	// CheckRangeClear refuses with ErrForeignInRange, naming the VMIDs, if
+	// any guest in the range is not tagged "pbp". Run it after the janitor,
+	// which removes the untagged leftovers of recorded restores.
+	CheckRangeClear(ctx context.Context) error
 	// Owned lists guests in the range tagged "pbp".
 	Owned(ctx context.Context) ([]pve.GuestRef, error)
 	// StrayTagged lists guests tagged "pbp" whose VMID is outside the
@@ -75,11 +97,14 @@ type Target interface {
 	// AllocateVMID returns the lowest VMID in range that does not exist and
 	// is not in inUse, or ErrNoFreeVMID.
 	AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error)
-	// Restore restores b into vmid (not started) and tags it "pbp".
-	Restore(ctx context.Context, b model.Backup, vmid int) error
+	// Restore restores b into vmid (not started) and tags it "pbp", keeping
+	// origTags (the "tags" of the config stored in the backup). An error
+	// matching ErrRestoreNotStarted means no guest was created; any other
+	// error may have left one.
+	Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error
 	// Sanitize makes the restored guest safe to start and verifies it. It
-	// returns the pieces the proof cannot cover.
-	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, volid string) ([]model.MissingPiece, error)
+	// returns the pieces it removed, which the proof cannot cover.
+	Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error)
 	// Start starts a sanitized guest; it refuses one that is not.
 	Start(ctx context.Context, kind model.GuestKind, vmid int) error
 	// WaitBooted waits until the guest runs and can be looked into. An
@@ -88,7 +113,22 @@ type Target interface {
 	WaitBooted(ctx context.Context, kind model.GuestKind, vmid int, timeout time.Duration) (BootInfo, error)
 	// Executor runs commands inside the guest.
 	Executor(kind model.GuestKind, vmid int) probe.Executor
-	// Destroy stops and removes an owned guest and confirms it is gone. A
-	// guest that does not exist is not an error.
-	Destroy(ctx context.Context, kind model.GuestKind, vmid int) error
+	// Destroy stops and removes the guest at vmid if PBP owns it, and
+	// confirms it is gone. A guest that does not exist is not an error. It
+	// must be in range, of kind and on this node, and tagged "pbp"; or, if
+	// rec names the restore the caller's state store records at vmid, the
+	// stopped, identity-matching leftover of that restore (see OwnerTag). The
+	// zero Recorded allows tagged guests only.
+	Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec Recorded) error
+}
+
+// Recorded is the restore a caller's state store records as started at a
+// VMID. VolID alone decides whether there is a record: an empty VolID (with
+// or without a Name) means none, so Destroy allows tagged guests only.
+type Recorded struct {
+	// VolID is the backup the restore was for.
+	VolID string
+	// Name is the guest's name (hostname for a container) in VolID's
+	// original config, if the caller has it; empty makes Destroy read it.
+	Name string
 }

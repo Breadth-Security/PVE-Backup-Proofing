@@ -91,13 +91,17 @@ func (n *ExistingNode) Prepare(ctx context.Context) error {
 	if !st.Active || !st.Enabled {
 		return fmt.Errorf("restore storage %s is not active and enabled", n.store)
 	}
-	content := splitList(st.Content)
+	content := sanitize.SplitList(st.Content)
 	for _, c := range []string{"images", "rootdir"} {
 		if !slices.Contains(content, c) {
 			return fmt.Errorf("restore storage %s does not hold %s content (has %q)", n.store, c, st.Content)
 		}
 	}
 
+	return nil
+}
+
+func (n *ExistingNode) CheckRangeClear(ctx context.Context) error {
 	guests, err := n.api.Guests(ctx)
 	if err != nil {
 		return fmt.Errorf("list guests: %w", err)
@@ -176,27 +180,35 @@ func (n *ExistingNode) AllocateVMID(ctx context.Context, inUse map[int]bool) (in
 
 // Restore restores b into vmid and, as soon as the restore task succeeds,
 // tags the guest "pbp" so it stays destroyable even if Sanitize then fails.
-func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int) error {
+// The tag goes on in the first config call, built from origTags, so no read
+// precedes it. Until then the guest is PBP's only by the caller's state
+// record (see Destroy).
+func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
 	if err := n.guard(vmid); err != nil {
-		return err
+		return notStarted{err}
 	}
 	kind := b.Key.Kind
 	upid, err := n.api.Restore(ctx, n.node, kind, vmid, b.VolID, n.store)
 	if err != nil {
-		return fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
+		err = fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
+		// Only an API error response counts as a refusal (a transport
+		// failure may hide an accepted request). Should a pveproxy 5xx
+		// follow a forwarded request, its guest is untagged and unrecorded:
+		// foreign, never destroyed (§11.2).
+		var ae *pve.APIError
+		if errors.As(err, &ae) {
+			return notStarted{err}
+		}
+		return err
 	}
 	if err := n.api.WaitTask(ctx, n.node, upid); err != nil {
 		return fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
 	}
-	// Add the owner tag to the restored tags: replacing them would remove
-	// any registered tag, which needs Sys.Modify on "/". Clear protection
-	// (restored from a protected guest's backup) in the same call, so the
-	// guest is destroyable from here on.
-	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
-	if err != nil {
-		return fmt.Errorf("read restored config %d: %w", vmid, err)
-	}
-	set := map[string]string{"tags": sanitize.AddTag(cfg["tags"], OwnerTag), "protection": "0"}
+	// Add the owner tag to the restored tags (the backup's own): replacing
+	// them would remove any registered tag, which needs Sys.Modify on "/".
+	// Clear protection (restored from a protected guest's backup) in the
+	// same call, so the guest is destroyable from here on.
+	set := map[string]string{"tags": sanitize.AddTag(origTags, OwnerTag), "protection": "0"}
 	// LXC has no "name"; renaming its hostname would change the guest itself.
 	if kind == model.KindQEMU {
 		set["name"] = fmt.Sprintf("pbp-%d-%s", b.Key.VMID, b.Time.UTC().Format("200601021504"))
@@ -207,7 +219,7 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int) er
 	return nil
 }
 
-func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, volid string) ([]model.MissingPiece, error) {
+func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
 	if err := n.guard(vmid); err != nil {
 		return nil, err
 	}
@@ -225,19 +237,14 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 	if err := n.verifySanitized(ctx, kind, vmid); err != nil {
 		return nil, err
 	}
-	orig, err := n.api.OriginalConfig(ctx, n.node, volid)
-	if err != nil {
-		return nil, fmt.Errorf("read original config of %s: %w", volid, err)
-	}
-	missing := append([]model.MissingPiece(nil), plan.Removed...)
-	return append(missing, sanitize.MissingFromOriginal(kind, sanitize.ParseConfigText(orig))...), nil
+	return plan.Removed, nil
 }
 
 var reNet = regexp.MustCompile(`^net\d+$`)
 
 // verifySanitized re-reads the live config and checks it is safe to start:
-// tagged "pbp", onboot and protection off, every NIC on the isolated bridge with no VLAN or
-// rate options, and nothing left that Sanitize would remove or refuse.
+// tagged "pbp", onboot and protection off, every NIC on the isolated bridge with no VLAN, rate
+// or MTU options, and nothing left that Sanitize would remove or refuse.
 func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind, vmid int) error {
 	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
 	if err != nil {
@@ -254,7 +261,7 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 			bad = append(bad, fmt.Sprintf("%s not on bridge %s (%s)", k, n.bridge, cfg[k]))
 		}
 	}
-	if !slices.Contains(splitList(cfg["tags"]), OwnerTag) {
+	if !slices.Contains(sanitize.SplitList(cfg["tags"]), OwnerTag) {
 		bad = append(bad, "missing tag pbp")
 	}
 	if cfg["onboot"] != "0" {
@@ -275,7 +282,7 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 }
 
 // onlyBridge reports whether a NIC value has exactly one bridge option equal
-// to bridge and no tag/trunks/rate options.
+// to bridge and no tag/trunks/rate/mtu options.
 func onlyBridge(v, bridge string) bool {
 	bridges := 0
 	for _, f := range strings.Split(v, ",") {
@@ -286,7 +293,7 @@ func onlyBridge(v, bridge string) bool {
 				return false
 			}
 			bridges++
-		case "tag", "trunks", "rate":
+		case "tag", "trunks", "rate", "mtu":
 			return false
 		}
 	}
@@ -306,8 +313,10 @@ func (n *ExistingNode) Start(ctx context.Context, kind model.GuestKind, vmid int
 }
 
 // Destroy hard-stops (proof guests hold nothing worth a clean shutdown),
-// destroys with purge, and confirms the guest is gone.
-func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+// destroys with purge, and confirms the guest is gone. Checks, in order:
+// range, existence, kind and node, then the "pbp" tag or else rec's
+// leftover rule (stopped, then identity; see notLeftover).
+func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec Recorded) error {
 	if err := n.guard(vmid); err != nil {
 		return err
 	}
@@ -325,19 +334,31 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 	if err != nil {
 		return fmt.Errorf("read config %d: %w", vmid, err)
 	}
-	if !slices.Contains(splitList(cfg["tags"]), OwnerTag) {
+	tagged := slices.Contains(sanitize.SplitList(cfg["tags"]), OwnerTag)
+	if !tagged && rec.VolID == "" {
 		return fmt.Errorf("%w: %d has no %q tag", ErrNotOwned, vmid, OwnerTag)
-	}
-	// Owned (in range and tagged): a protected guest, e.g. debris from a
-	// run before protection was cleared at restore, would refuse destroy.
-	if p := cfg["protection"]; p != "" && p != "0" {
-		if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, map[string]string{"protection": "0"}, nil); err != nil {
-			return fmt.Errorf("clear protection %d: %w", vmid, err)
-		}
 	}
 	status, err := n.api.GuestStatus(ctx, n.node, kind, vmid)
 	if err != nil {
 		return fmt.Errorf("status %d: %w", vmid, err)
+	}
+	if !tagged {
+		// PBP tags a guest before it can be started, so an untagged one
+		// that runs is no leftover of PBP's.
+		if status != "stopped" {
+			return fmt.Errorf("%w: %d has no %q tag and is %s", ErrNotOwned, vmid, OwnerTag, status)
+		}
+		if why := n.notLeftover(ctx, kind, cfg, rec); why != "" {
+			return fmt.Errorf("%w: %d has no %q tag and %s", ErrNotOwned, vmid, OwnerTag, why)
+		}
+	}
+	// Owned: a protected guest (restored from a protected guest's backup
+	// whose tag write failed, or debris from a run before protection was
+	// cleared at restore) would refuse destroy.
+	if p := cfg["protection"]; p != "" && p != "0" {
+		if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, map[string]string{"protection": "0"}, nil); err != nil {
+			return fmt.Errorf("clear protection %d: %w", vmid, err)
+		}
 	}
 	if status != "stopped" {
 		if err := n.task(ctx, kind, vmid, "stop", n.api.Stop); err != nil {
@@ -353,6 +374,30 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 		return fmt.Errorf("guest %d still exists after destroy", vmid)
 	}
 	return nil
+}
+
+// notLeftover says why the stopped, untagged guest with config cfg is not
+// the leftover of the recorded restore rec ("" if it is): it must still be
+// locked by the restore ("lock: create") or carry the same non-empty name
+// (hostname for a container) as rec's backup. The name is rec.Name, or read
+// from rec.VolID's original config; an unreadable one is a reason (fail
+// safe).
+func (n *ExistingNode) notLeftover(ctx context.Context, kind model.GuestKind, cfg map[string]string, rec Recorded) string {
+	if cfg["lock"] == "create" {
+		return ""
+	}
+	want := rec.Name
+	if want == "" {
+		raw, err := n.api.OriginalConfig(ctx, n.node, rec.VolID)
+		if err != nil {
+			return fmt.Sprintf("the original config of %s cannot be read (%v)", rec.VolID, err)
+		}
+		want = sanitize.GuestName(kind, sanitize.ParseConfigText(raw))
+	}
+	if got := sanitize.GuestName(kind, cfg); want == "" || got != want {
+		return fmt.Sprintf("its name %q does not match %q from %s", got, want, rec.VolID)
+	}
+	return ""
 }
 
 // task runs a guest operation and waits for its task to finish.
@@ -378,11 +423,6 @@ func (n *ExistingNode) find(ctx context.Context, vmid int) (pve.GuestRef, bool, 
 		}
 	}
 	return pve.GuestRef{}, false, nil
-}
-
-// splitList splits a PVE list value on ';', ',' or whitespace.
-func splitList(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
 }
 
 var reHTTPCode = regexp.MustCompile(`\b(401|403|500)\b`)

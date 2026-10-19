@@ -130,7 +130,9 @@ func (c *capture) Send(_ context.Context, s model.RunSummary) error {
 // kindAPI hides backups of other guest kinds that share the subject's VMID.
 // A reused VMID leaves such backups behind (on pve1, VMID 110 has backups of
 // a long-gone VM and of the current container), and "run --guest" proofs
-// every kind with that VMID; the tests proof exactly one backup.
+// every kind with that VMID; the tests proof exactly one backup. This relies
+// on run.Options.OnlyVMID selecting by VMID alone: without the filter the
+// other kinds' backups would be proofed too.
 type kindAPI struct {
 	pve.API
 	key model.GuestKey
@@ -628,7 +630,7 @@ wait:
 			continue
 		}
 		for _, j := range st.InFlight {
-			if j.Stage == "started" {
+			if j.Stage == state.StageStarted {
 				job = j
 				break wait
 			}

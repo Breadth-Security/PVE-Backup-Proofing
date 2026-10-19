@@ -10,16 +10,32 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
 
-const sep = " · "
+const (
+	linePrefix = "PBP "
+	sep        = " · "
+	// timeLayout is how a line shows when the verdict was reached, and
+	// timePattern matches it (TestLineRoundTrips guards against drift).
+	timeLayout  = "2006-01-02 15:04"
+	timePattern = `\d{4}-\d{2}-\d{2} \d{2}:\d{2}`
+)
 
 // maxReason caps the reason in a notes line, in characters (runes), so the
 // line stays readable as the backup's comment. Notifications keep the full
 // reason.
 const maxReason = 200
 
+// linePattern matches the start of a PBP line carrying one of verdicts.
+func linePattern(verdicts ...model.Verdict) *regexp.Regexp {
+	alt := make([]string, len(verdicts))
+	for i, v := range verdicts {
+		alt[i] = string(v)
+	}
+	return regexp.MustCompile(`^` + linePrefix + `(` + strings.Join(alt, "|") + `) ` + timePattern + regexp.QuoteMeta(sep))
+}
+
 var (
-	pbpLine    = regexp.MustCompile(`^PBP (PROVEN|FAILED|BOOTED|SKIPPED|ERROR) \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
-	provenLine = regexp.MustCompile(`^PBP PROVEN \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
+	pbpLine    = linePattern(model.Proven, model.Failed, model.Booted, model.Skipped, model.Error)
+	provenLine = linePattern(model.Proven)
 	lineBreak  = regexp.MustCompile(`[ \t]*[\r\n][ \t\r\n]*`)
 )
 
@@ -32,7 +48,7 @@ func Line(v model.Verdict, at time.Time, reason string) string {
 	if r := []rune(reason); len(r) > maxReason {
 		reason = string(r[:maxReason-1]) + "…"
 	}
-	return "PBP " + string(v) + " " + at.Format("2006-01-02 15:04") + sep + reason
+	return linePrefix + string(v) + " " + at.Format(timeLayout) + sep + reason
 }
 
 // Merge puts pbpLine on the first line of existing, dropping any previous PBP

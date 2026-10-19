@@ -6,18 +6,23 @@ import (
 	"net/url"
 )
 
+// StorageStatus is the state of one storage on a node.
 type StorageStatus struct {
 	Active, Enabled bool
 	Avail, Total    int64
 	Content         string
 }
 
+// NodeMemory is a node's memory in bytes.
 type NodeMemory struct{ Total, Available int64 }
 
+// NetIface describes one network interface of a node; fields the interface
+// does not have are empty.
 type NetIface struct {
 	Iface, Type, BridgePorts, OVSPorts, Address, CIDR, Address6, CIDR6 string
 }
 
+// StorageStatus returns the status of a storage on a node.
 func (c *Client) StorageStatus(ctx context.Context, node, storage string) (StorageStatus, error) {
 	var r struct {
 		Active  flexBool `json:"active"`
@@ -33,6 +38,7 @@ func (c *Client) StorageStatus(ctx context.Context, node, storage string) (Stora
 	return StorageStatus{Active: bool(r.Active), Enabled: bool(r.Enabled), Avail: int64(r.Avail), Total: int64(r.Total), Content: r.Content}, nil
 }
 
+// NodeMemory returns the node's total and available memory.
 func (c *Client) NodeMemory(ctx context.Context, node string) (NodeMemory, error) {
 	var r struct {
 		Memory struct {
@@ -46,6 +52,7 @@ func (c *Client) NodeMemory(ctx context.Context, node string) (NodeMemory, error
 	return NodeMemory{Total: int64(r.Memory.Total), Available: int64(r.Memory.Available)}, nil
 }
 
+// NetIface returns the named network interface of a node.
 func (c *Client) NetIface(ctx context.Context, node, iface string) (NetIface, error) {
 	var r struct {
 		Iface       string `json:"iface"`

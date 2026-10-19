@@ -17,6 +17,9 @@ var templateFS embed.FS
 const (
 	templateDir = "/etc/pve/notification-templates/default"
 	maxStderr   = 2048
+	// exitMissing is the exit code of the template read when the file does
+	// not exist (see readTemplateCmd).
+	exitMissing = 3
 
 	notifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
 )
@@ -40,12 +43,17 @@ func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
 			return fmt.Errorf("report: embedded template %s: %w", name, err)
 		}
 		path := templateDir + "/" + name
-		res, err := p.SSH.Run(ctx, "cat "+sshx.Quote(path), nil)
+		res, err := p.SSH.Run(ctx, readTemplateCmd(path), nil)
 		if err != nil {
 			return fmt.Errorf("report: read %s: %w", path, err)
 		}
 		if res.ExitCode == 0 && res.Stdout == string(want) {
 			continue
+		}
+		if res.ExitCode != 0 && res.ExitCode != exitMissing {
+			// Not merely missing: overwriting what cannot be read could
+			// clobber a template this process cannot see.
+			return fmt.Errorf("report: read %s: exit %d: %s", path, res.ExitCode, trimStderr(res.Stderr))
 		}
 		cmd := "mkdir -p " + sshx.Quote(templateDir) + " && cat > " + sshx.Quote(path)
 		res, err = p.SSH.Run(ctx, cmd, want)
@@ -57,6 +65,13 @@ func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// readTemplateCmd reads path, exiting with exitMissing if it does not exist,
+// so a missing file is told apart from an unreadable one by exit code alone.
+func readTemplateCmd(path string) string {
+	q := sshx.Quote(path)
+	return "test -e " + q + " || exit " + fmt.Sprint(exitMissing) + "; cat " + q
 }
 
 // Send delivers the run summary via PVE::Notify::notify.
@@ -90,10 +105,12 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	return nil
 }
 
+// trimStderr trims s and cuts it to at most maxStderr bytes, dropping any
+// bytes that do not form valid UTF-8 (including a character cut in half).
 func trimStderr(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > maxStderr {
-		s = s[:maxStderr]
+		s = strings.ToValidUTF8(s[:maxStderr], "")
 	}
 	return s
 }

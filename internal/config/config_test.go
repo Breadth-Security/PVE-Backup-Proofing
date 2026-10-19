@@ -32,6 +32,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) || !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore()) {
 		t.Fatal("example lists drift from defaults")
 	}
+	if len(c.Checks.Guests) == 0 || len(c.Checks.Profiles) == 0 || len(c.Checks.Profiles[0].Ports) == 0 {
+		t.Fatalf("example config lacks guests/profiles/ports: %+v", c.Checks)
+	}
 	if c.Target.VMIDRange != [2]int{990000, 990049} || c.Checks.Guests[0].Match.VMID != 105 || c.Checks.Profiles[0].Ports[0] != 8080 {
 		t.Fatalf("nested decode wrong: %+v", c)
 	}
@@ -108,6 +111,16 @@ func TestValidateErrors(t *testing.T) {
 		{"probe timeout unitless", RS, "restore: {storage: local-zfs, probe_timeout: 600}", "restore.probe_timeout"},
 		{"command timeout short", "sources:", "checks: {command_timeout: 500ms}\nsources:", "checks.command_timeout"},
 		{"command timeout unitless", "sources:", "checks: {command_timeout: 60}\nsources:", "checks.command_timeout"},
+		{"range too high", "[990000, 990049]", "[990000, 1000000000]", "target.vmid_range"},
+		{"profile no name", "sources:", "checks: {profiles: [{unit: x.service}]}\nsources:", "checks.profiles[0].name"},
+		{"profile no unit", "sources:", "checks: {profiles: [{name: x}]}\nsources:", "checks.profiles[0].unit"},
+		{"profile duplicate", "sources:", "checks: {profiles: [{name: x, unit: a}, {name: x, unit: b}]}\nsources:", "checks.profiles[1].name"},
+		{"profile port zero", "sources:", "checks: {profiles: [{name: x, unit: a, ports: [80, 0]}]}\nsources:", "checks.profiles[0].ports[1]"},
+		{"profile port high", "sources:", "checks: {profiles: [{name: x, unit: a, ports: [65536]}]}\nsources:", "checks.profiles[0].ports[0]"},
+		{"guest empty match", "sources:", "checks: {guests: [{match: {}, services: [a]}]}\nsources:", "checks.guests[0].match"},
+		{"guest vmid negative", "sources:", "checks: {guests: [{match: {vmid: -1, name: x}}]}\nsources:", "checks.guests[0].match.vmid"},
+		{"guest vmid too high", "sources:", "checks: {guests: [{match: {vmid: 1000000000}}]}\nsources:", "checks.guests[0].match.vmid"},
+		{"guest port", "sources:", "checks: {guests: [{match: {vmid: 5}, ports: [70000]}]}\nsources:", "checks.guests[0].ports[0]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,6 +147,40 @@ func TestValidateErrors(t *testing.T) {
 				t.Fatalf("want validation line starting %q, got %v", tc.key+": ", inner)
 			}
 		})
+	}
+}
+
+func TestEmptyConfigFile(t *testing.T) {
+	for name, body := range map[string]string{"empty": "", "comments only": "# nothing\n"} {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "c.yaml")
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(p)
+			if err == nil || err.Error() != "config "+p+" is empty" {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+// A null list (key present, no value) falls back to the default; only an
+// explicit [] means none.
+func TestNullIgnoreListsUseDefaults(t *testing.T) {
+	c, err := loadStr(t, minimal+"checks:\n  ignore_units:\n  windows_ignore_services: ~\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) || !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore()) {
+		t.Fatalf("null lists must default: %+v", c.Checks)
+	}
+}
+
+// A profile or guest with no checks is valid (the unit is just required active).
+func TestChecklessProfileAndGuestValid(t *testing.T) {
+	if _, err := loadStr(t, minimal+"checks: {profiles: [{name: x, unit: a}], guests: [{match: {name: web}}, {match: {vmid: 999999999}}]}\n"); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -14,7 +14,9 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target/bridgetest"
 )
 
 const (
@@ -43,30 +45,16 @@ func healthyFake() *pvefake.Fake {
 
 // Live bridge-state commands Prepare runs over SSH.
 var (
-	cmdIPv6   = "cat '/proc/sys/net/ipv6/conf/" + bridge + "/disable_ipv6'"
-	cmdAddr   = "ip -j addr show dev '" + bridge + "'"
-	cmdMaster = "ip -j link show master '" + bridge + "'"
-	cmdOVS    = "ovs-vsctl list-ports '" + bridge + "'"
+	cmdIPv6   = bridgetest.For(bridge).IPv6
+	cmdAddr   = bridgetest.For(bridge).Addr
+	cmdMaster = bridgetest.For(bridge).Master
+	cmdOVS    = bridgetest.For(bridge).OVS
 )
 
 // isolatedBridge answers the live bridge checks as an isolated bridge with
 // IPv6 disabled, no addresses and no members; overrides replace answers.
 func isolatedBridge(overrides map[string]sshx.Result) *sshx.Fake {
-	answers := map[string]sshx.Result{
-		cmdIPv6:   {Stdout: "1\n"},
-		cmdAddr:   {Stdout: `[{"ifindex":9,"ifname":"` + bridge + `","flags":["BROADCAST","MULTICAST","UP"],"addr_info":[]}]` + "\n"},
-		cmdMaster: {Stdout: "[]\n"},
-		cmdOVS:    {Stdout: ""},
-	}
-	for k, v := range overrides {
-		answers[k] = v
-	}
-	return &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
-		if r, ok := answers[cmd]; ok {
-			return r, nil
-		}
-		return sshx.Result{ExitCode: 127, Stderr: "unexpected command " + cmd}, nil
-	}}
+	return bridgetest.Isolated(bridge, overrides)
 }
 
 // newTarget builds an ExistingNode with fast polling and registers the safety
@@ -115,6 +103,16 @@ func guest(kind model.GuestKind, vmid int, status string, tags ...string) pve.Gu
 	return pve.GuestRef{Key: model.GuestKey{Kind: kind, VMID: vmid}, Node: node, Status: status, Tags: tags}
 }
 
+// leftover seeds an untagged qemu guest at vmid with cfg, and vmVol's
+// original config.
+func leftover(vmid int, status string, cfg map[string]string) func(*pvefake.Fake) {
+	return func(f *pvefake.Fake) {
+		f.BackupConfigs[vmVol] = vmConf
+		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, vmid, status)}
+		f.Configs[vmid] = cfg
+	}
+}
+
 func TestPrepare(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -130,8 +128,8 @@ func TestPrepare(t *testing.T) {
 		{name: "isolated ovs bridge", setup: func(f *pvefake.Fake) {
 			f.Ifaces[bridge] = pve.NetIface{Iface: bridge, Type: "OVSBridge"}
 		}},
-		{name: "owned guest in range is fine", setup: func(f *pvefake.Fake) {
-			f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990001, "stopped", "pbp"), guest(model.KindQEMU, 100, "running")}
+		{name: "guests are not Prepare's concern", setup: func(f *pvefake.Fake) {
+			f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990003, "stopped")}
 		}},
 		{name: "real pve1 vmbr0", want: ErrNotIsolated, setup: func(f *pvefake.Fake) {
 			f.Ifaces[bridge] = pve.NetIface{Iface: "vmbr0", Type: "OVSBridge", OVSPorts: "enp66s0f0 ovsport_host ovsport_dev"}
@@ -149,9 +147,6 @@ func TestPrepare(t *testing.T) {
 			f.Ifaces[bridge] = pve.NetIface{Iface: bridge, Type: "eth"}
 		}},
 		{name: "pve 8", want: ErrVersion, setup: func(f *pvefake.Fake) { f.VersionString = "8.4.1" }},
-		{name: "foreign guest in range", want: ErrForeignInRange, text: "990003", setup: func(f *pvefake.Fake) {
-			f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990003, "stopped")}
-		}},
 		{name: "storage inactive", text: "storage", setup: func(f *pvefake.Fake) {
 			f.Storage[store] = pve.StorageStatus{Enabled: true, Content: "images,rootdir"}
 		}},
@@ -282,6 +277,49 @@ func TestPrepareLiveIsolation(t *testing.T) {
 	}
 }
 
+// Any untagged guest in the range is foreign, whatever its state or name:
+// the untagged leftovers of recorded restores are the janitor's to remove
+// (Destroy with a Recorded) before this check runs.
+func TestCheckRangeClear(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		guests []pve.GuestRef
+		text   string // "" = clear
+	}{
+		{name: "empty"},
+		{name: "tagged in range and untagged outside", guests: []pve.GuestRef{
+			guest(model.KindQEMU, 990001, "stopped", "pbp"), guest(model.KindLXC, 990002, "running", "web", "pbp"),
+			guest(model.KindQEMU, 100, "running"), guest(model.KindQEMU, 990050, "stopped")}},
+		{name: "untagged stopped guest", text: "qemu/990003", guests: []pve.GuestRef{guest(model.KindQEMU, 990003, "stopped")}},
+		{name: "every untagged guest named", text: "qemu/990000, lxc/990049", guests: []pve.GuestRef{
+			guest(model.KindQEMU, 990000, "running"), guest(model.KindQEMU, 990001, "stopped", "pbp"),
+			guest(model.KindLXC, 990049, "stopped", "web")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := healthyFake()
+			f.GuestList = tc.guests
+			err := newTarget(t, f, f, nil).CheckRangeClear(ctx)
+			if tc.text == "" {
+				if err != nil {
+					t.Fatalf("CheckRangeClear: %v", err)
+				}
+			} else if !errors.Is(err, ErrForeignInRange) || !strings.Contains(err.Error(), tc.text) {
+				t.Errorf("err = %v, want ErrForeignInRange naming %s", err, tc.text)
+			}
+			if n := countMutating(f.CallLog()); n != 0 {
+				t.Errorf("CheckRangeClear made %d mutating calls", n)
+			}
+		})
+	}
+	f := healthyFake()
+	f.Fail["Guests"] = errors.New("boom")
+	if err := newTarget(t, f, f, nil).CheckRangeClear(ctx); err == nil || errors.Is(err, ErrForeignInRange) {
+		t.Errorf("list failure: err = %v", err)
+	}
+}
+
 func TestOwned(t *testing.T) {
 	f := healthyFake()
 	f.GuestList = []pve.GuestRef{
@@ -362,6 +400,12 @@ const (
 	ctConf = "hostname: web\nostype: debian\nrootfs: local-lvm:subvol-201-disk-0,size=8G\nmp0: /srv/share,mp=/mnt/share\nnet0: name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=dhcp\n"
 )
 
+// origTags is the tags of the backup's original config, as the run passes
+// them to Restore.
+func origTags(f *pvefake.Fake, volid string) string {
+	return sanitize.ParseConfigText(f.BackupConfigs[volid])["tags"]
+}
+
 func vmBackup() model.Backup {
 	return model.Backup{Storage: "PBS", VolID: vmVol, Key: model.GuestKey{Kind: model.KindQEMU, VMID: 101},
 		Time: time.Date(2026, 7, 26, 6, 0, 3, 0, time.UTC)}
@@ -372,7 +416,7 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	cfg := f.Configs[990000]
@@ -386,19 +430,18 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	want := []string{
 		"Restore pve1 qemu 990000 " + vmVol + " " + store,
 		"WaitTask pve1 UPID:pve1:fake:restore:990000:",
-		"GuestConfig pve1 qemu 990000",
-		"SetGuestConfig pve1 qemu 990000",
+		"SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]", // tags come from the backup's config: no read first
 	}
 	if !slices.Equal(calls, want) {
 		t.Errorf("calls = %q", calls)
 	}
 	// A later sanitize failure still leaves a guest Destroy accepts.
 	f.Fail["SetGuestConfig"] = errors.New("boom")
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err == nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err == nil {
 		t.Fatal("Sanitize should fail")
 	}
 	delete(f.Fail, "SetGuestConfig")
-	if err := n.Destroy(ctx, model.KindQEMU, 990000); err != nil {
+	if err := n.Destroy(ctx, model.KindQEMU, 990000, Recorded{}); err != nil {
 		t.Fatalf("Destroy after failed sanitize: %v", err)
 	}
 	if len(f.GuestList) != 0 {
@@ -414,21 +457,22 @@ func TestRestoreClearsProtection(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["protection"]; got != "0" {
 		t.Errorf("protection after restore = %q", got)
 	}
-	if got := f.CallLog(); slices.Index(got, "SetGuestConfig pve1 qemu 990000") != len(got)-1 {
+	want := "SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]"
+	if got := f.CallLog(); slices.Index(got, want) != len(got)-1 {
 		t.Errorf("want one SetGuestConfig as the last call, got %q", got)
 	}
 	f.Fail["SetGuestConfig"] = errors.New("boom")
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err == nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err == nil {
 		t.Fatal("Sanitize should fail")
 	}
 	delete(f.Fail, "SetGuestConfig")
-	if err := n.Destroy(ctx, model.KindQEMU, 990000); err != nil {
+	if err := n.Destroy(ctx, model.KindQEMU, 990000, Recorded{}); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 }
@@ -452,10 +496,10 @@ func TestSanitizeVerifiesProtectionCleared(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
 	n := newTarget(t, protectionKeepingAPI{f}, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "protection") {
 		t.Fatalf("err = %v, want protection verification failure", err)
 	}
@@ -466,7 +510,7 @@ func TestRestoreFailures(t *testing.T) {
 	t.Run("out of range", func(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 101)
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 101, origTags(f, vmVol))
 		if !errors.Is(err, ErrOutOfRange) {
 			t.Errorf("err = %v", err)
 		}
@@ -478,7 +522,7 @@ func TestRestoreFailures(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
 		f.Fail["WaitTask"] = &pve.TaskError{UPID: "x", ExitStatus: "error", Log: []string{"decryption failed: missing key"}}
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000)
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
 		var te *pve.TaskError
 		if !errors.As(err, &te) {
 			t.Fatalf("err = %v, want TaskError", err)
@@ -491,6 +535,50 @@ func TestRestoreFailures(t *testing.T) {
 				t.Errorf("tagged after failed restore: %q", c)
 			}
 		}
+		if errors.Is(err, ErrRestoreNotStarted) {
+			t.Error("a failed restore task may have left a guest; it must not say none was created")
+		}
+	})
+	t.Run("refused request created no guest", func(t *testing.T) {
+		f := healthyFake()
+		f.BackupConfigs[vmVol] = vmConf
+		f.Fail["Restore"] = &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu", Message: "unable to create VM 990000 - VM 990000 already exists"}
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		if !errors.Is(err, ErrRestoreNotStarted) {
+			t.Fatalf("err = %v, want ErrRestoreNotStarted", err)
+		}
+		if err.Error() != "restore "+vmVol+" to 990000: pve api /nodes/pve1/qemu: 500: unable to create VM 990000 - VM 990000 already exists" {
+			t.Errorf("message changed: %q", err)
+		}
+		if ClassifyRestoreError(err) != model.Error {
+			t.Errorf("classified %q", ClassifyRestoreError(err))
+		}
+	})
+	// A transport failure may hide an accepted request: a guest may exist.
+	t.Run("lost request may have created a guest", func(t *testing.T) {
+		f := healthyFake()
+		f.BackupConfigs[vmVol] = vmConf
+		f.Fail["Restore"] = errors.New("read tcp: connection reset by peer")
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		if err == nil || errors.Is(err, ErrRestoreNotStarted) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("out of range is not started", func(t *testing.T) {
+		f := healthyFake()
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 100, "")
+		if !errors.Is(err, ErrRestoreNotStarted) || !errors.Is(err, ErrOutOfRange) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("failed tag write leaves a guest", func(t *testing.T) {
+		f := healthyFake()
+		f.BackupConfigs[vmVol] = vmConf
+		f.Fail["SetGuestConfig"] = errors.New("403 permission denied")
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		if err == nil || errors.Is(err, ErrRestoreNotStarted) {
+			t.Errorf("err = %v", err)
+		}
 	})
 }
 
@@ -502,13 +590,13 @@ func TestRestoreKeepsOriginalTags(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "tags: development;web\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
 		t.Errorf("tags after restore = %q", got)
 	}
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err != nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
@@ -521,10 +609,10 @@ func TestSanitize(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	missing, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol)
+	missing, err := n.Sanitize(ctx, model.KindQEMU, 990000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,10 +626,9 @@ func TestSanitize(t *testing.T) {
 	if cfg["onboot"] != "0" || cfg["tags"] != "pbp" {
 		t.Errorf("onboot=%q tags=%q", cfg["onboot"], cfg["tags"])
 	}
-	want := []model.MissingPiece{
-		{Kind: "passthrough", Key: "hostpci0"},
-		{Kind: "excluded-disk", Key: "scsi1", Detail: "backup=0"},
-	}
+	// Only what Sanitize removed: pieces the backup excludes (scsi1,
+	// backup=0) are the caller's to add from the original config.
+	want := []model.MissingPiece{{Kind: "passthrough", Key: "hostpci0"}}
 	if !slices.Equal(missing, want) {
 		t.Errorf("missing = %+v", missing)
 	}
@@ -553,13 +640,13 @@ func TestSanitizeLXCBindMount(t *testing.T) {
 	f.BackupConfigs[ctVol] = ctConf
 	n := newTarget(t, f, f, nil)
 	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
-	if err := n.Restore(ctx, b, 990001); err != nil {
+	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := f.Configs[990001]["hostname"]; !ok || f.Configs[990001]["hostname"] != "web" {
 		t.Errorf("LXC hostname must not be renamed: %q", f.Configs[990001]["hostname"])
 	}
-	missing, err := n.Sanitize(ctx, model.KindLXC, 990001, ctVol)
+	missing, err := n.Sanitize(ctx, model.KindLXC, 990001)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,10 +663,10 @@ func TestSanitizeUnsafe(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "args: -device foo\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "args") {
 		t.Fatalf("err = %v", err)
 	}
@@ -612,10 +699,10 @@ func TestSanitizeVerifiesBridge(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, bridgeIgnoringAPI{f}, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
 	if err == nil || !strings.Contains(err.Error(), "net0") {
 		t.Fatalf("err = %v, want net0 verification failure", err)
 	}
@@ -629,15 +716,30 @@ func TestSanitizeVerifiesBridge(t *testing.T) {
 	}
 }
 
+// A NIC still carrying an MTU fails verification even on the right bridge.
+func TestSanitizeVerifiesMTUCleared(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = strings.Replace(vmConf, "bridge=vmbr0,tag=2", "bridge="+bridge+",mtu=1500", 1)
+	n := newTarget(t, bridgeIgnoringAPI{f}, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "net0") {
+		t.Fatalf("err = %v, want net0 verification failure", err)
+	}
+}
+
 func TestStartAfterSanitize(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err != nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Start(ctx, model.KindQEMU, 990000); err != nil {
@@ -657,7 +759,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 100, "running", "pbp")}
 		f.Configs[100] = map[string]string{"tags": "pbp"}
-		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 100)
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 100, Recorded{})
 		if !errors.Is(err, ErrOutOfRange) {
 			t.Errorf("err = %v", err)
 		}
@@ -669,7 +771,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990003, "running")}
 		f.Configs[990003] = map[string]string{"name": "someone-elses"}
-		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003)
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{})
 		if !errors.Is(err, ErrNotOwned) {
 			t.Errorf("err = %v", err)
 		}
@@ -684,14 +786,14 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990003, "stopped", "pbp")}
 		f.Configs[990003] = map[string]string{"tags": "pbp"}
-		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003)
-		if err == nil || countMutating(f.CallLog()) != 0 {
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{})
+		if !errors.Is(err, ErrNotOwned) || countMutating(f.CallLog()) != 0 {
 			t.Errorf("err = %v calls = %q", err, f.CallLog())
 		}
 	})
 	t.Run("absent is a no-op", func(t *testing.T) {
 		f := healthyFake()
-		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990004); err != nil {
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990004, Recorded{}); err != nil {
 			t.Errorf("err = %v", err)
 		}
 		if n := countMutating(f.CallLog()); n != 0 {
@@ -702,7 +804,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990005, "running", "pbp")}
 		f.Configs[990005] = map[string]string{"tags": "pbp;web"}
-		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990005); err != nil {
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990005, Recorded{}); err != nil {
 			t.Fatal(err)
 		}
 		var muts []string
@@ -724,7 +826,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990006, "stopped", "pbp")}
 		f.Configs[990006] = map[string]string{"tags": "pbp"}
-		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990006); err != nil {
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990006, Recorded{}); err != nil {
 			t.Fatal(err)
 		}
 		for _, c := range f.CallLog() {
@@ -737,7 +839,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990008, "running", "pbp")}
 		f.Configs[990008] = map[string]string{"tags": "pbp", "protection": "1"}
-		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990008); err != nil {
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990008, Recorded{}); err != nil {
 			t.Fatal(err)
 		}
 		var muts []string
@@ -746,7 +848,7 @@ func TestDestroy(t *testing.T) {
 				muts = append(muts, c)
 			}
 		}
-		want := []string{"SetGuestConfig pve1 qemu 990008", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
+		want := []string{"SetGuestConfig pve1 qemu 990008 set=map[protection:0] del=[]", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
 		if !slices.Equal(muts, want) {
 			t.Errorf("mutating calls = %q", muts)
 		}
@@ -758,7 +860,7 @@ func TestDestroy(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990009, "stopped")}
 		f.Configs[990009] = map[string]string{"protection": "1"}
-		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990009)
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990009, Recorded{})
 		if !errors.Is(err, ErrNotOwned) || countMutating(f.CallLog()) != 0 || f.Configs[990009]["protection"] != "1" {
 			t.Errorf("err = %v calls = %q", err, f.CallLog())
 		}
@@ -768,9 +870,135 @@ func TestDestroy(t *testing.T) {
 		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990007, "stopped", "pbp")}
 		f.Configs[990007] = map[string]string{"tags": "pbp"}
 		api := undeadAPI{f}
-		if err := newTarget(t, api, f, nil).Destroy(ctx, model.KindQEMU, 990007); err == nil {
+		if err := newTarget(t, api, f, nil).Destroy(ctx, model.KindQEMU, 990007, Recorded{}); err == nil {
 			t.Error("Destroy reported success while guest still exists")
 		}
+	})
+}
+
+// Destroy with a Recorded (the state store records an in-flight restore at
+// the VMID) also removes an untagged guest (a restore that failed before
+// tagging), but only a stopped one (PBP starts nothing it has not tagged)
+// whose name/hostname matches the backup's original config or that is still
+// locked by the restore. Range, kind and node checks still apply.
+func TestDestroyRecorded(t *testing.T) {
+	rec := Recorded{VolID: vmVol}
+	ctx := context.Background()
+	destroyed := func(t *testing.T, f *pvefake.Fake, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.GuestList) != 0 {
+			t.Error("guest not destroyed")
+		}
+	}
+	refused := func(t *testing.T, f *pvefake.Fake, err error, text string) {
+		t.Helper()
+		if !errors.Is(err, ErrNotOwned) || !strings.Contains(err.Error(), text) {
+			t.Errorf("err = %v, want ErrNotOwned mentioning %q", err, text)
+		}
+		if countMutating(f.CallLog()) != 0 || len(f.GuestList) != 1 {
+			t.Errorf("SAFETY: guest touched: calls = %q", f.CallLog())
+		}
+	}
+	t.Run("untagged stopped guest matching name destroyed", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"name": "delta1", "protection": "1"})(f)
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec))
+	})
+	t.Run("untagged container matching hostname destroyed", func(t *testing.T) {
+		f := healthyFake()
+		f.BackupConfigs[ctVol] = ctConf
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990003, "stopped")}
+		f.Configs[990003] = map[string]string{"hostname": "web"}
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990003, Recorded{VolID: ctVol}))
+	})
+	t.Run("untagged guest locked by restore destroyed", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"lock": "create"})(f)
+		delete(f.BackupConfigs, vmVol) // the lock alone suffices
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec))
+	})
+	t.Run("untagged guest with another name refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"name": "someone-elses"})(f)
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "does not match")
+	})
+	t.Run("untagged guest without a name refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{})(f)
+		f.BackupConfigs[vmVol] = "memory: 512\n" // the backup has no name either
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "does not match")
+	})
+	t.Run("unreadable original config refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		f.Fail["OriginalConfig"] = errors.New("pbs unreachable")
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "cannot be read")
+	})
+	t.Run("untagged running guest refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "running", map[string]string{"name": "delta1"})(f)
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "running")
+	})
+	t.Run("tagged running guest destroyed", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990004, "running", "pbp")}
+		f.Configs[990004] = map[string]string{"tags": "pbp"}
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990004, Recorded{VolID: ctVol}))
+	})
+	t.Run("outside range refused without any call", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 100, "stopped")}
+		f.Configs[100] = map[string]string{}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 100, rec)
+		if !errors.Is(err, ErrOutOfRange) || len(f.CallLog()) != 0 {
+			t.Errorf("err = %v calls = %q", err, f.CallLog())
+		}
+	})
+	t.Run("kind mismatch refused", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990003, "stopped")}
+		f.Configs[990003] = map[string]string{"lock": "create"}
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "expected qemu")
+	})
+	t.Run("other node refused", func(t *testing.T) {
+		f := healthyFake()
+		g := guest(model.KindQEMU, 990003, "stopped")
+		g.Node = "pve2"
+		f.GuestList = []pve.GuestRef{g}
+		f.Configs[990003] = map[string]string{"lock": "create"}
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "pve2")
+	})
+	t.Run("absent is a no-op", func(t *testing.T) {
+		f := healthyFake()
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990004, rec); err != nil || countMutating(f.CallLog()) != 0 {
+			t.Errorf("err = %v calls = %q", err, f.CallLog())
+		}
+	})
+	// A caller that has the backup's original config passes the name, and
+	// Destroy does not read the config again.
+	t.Run("caller's name matching destroyed without reading the backup", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		f.Fail["OriginalConfig"] = errors.New("must not be read")
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{VolID: vmVol, Name: "delta1"}))
+		if slices.ContainsFunc(f.CallLog(), func(c string) bool { return strings.HasPrefix(c, "OriginalConfig") }) {
+			t.Errorf("original config read: %q", f.CallLog())
+		}
+	})
+	t.Run("caller's name not matching refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{VolID: vmVol, Name: "web"}), "does not match")
+	})
+	t.Run("container compared by hostname, not name", func(t *testing.T) {
+		f := healthyFake()
+		f.BackupConfigs[ctVol] = ctConf
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990003, "stopped")}
+		f.Configs[990003] = map[string]string{"name": "web", "hostname": "other"}
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990003, Recorded{VolID: ctVol}), "does not match")
 	})
 }
 

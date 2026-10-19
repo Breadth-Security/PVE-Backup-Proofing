@@ -114,9 +114,10 @@ func (c *Client) GuestConfig(ctx context.Context, node string, kind model.GuestK
 			}
 			lines := make([]string, 0, len(pairs))
 			for _, p := range pairs {
-				if len(p) == 2 {
-					lines = append(lines, p[0]+": "+p[1])
+				if len(p) != 2 {
+					return nil, fmt.Errorf("pve api config key %s: entry %q is not a [key, value] pair", k, p)
 				}
+				lines = append(lines, p[0]+": "+p[1])
 			}
 			out[k] = strings.Join(lines, "\n")
 		default:

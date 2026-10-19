@@ -40,8 +40,9 @@ checks:
   command_timeout: 60s         # default; at least 1s. Bounds each command run inside a guest;
                                # a command that times out fails its check ("check timed out").
                                # Exception: waiting for boot to settle uses probe_timeout instead
-  # Units ignored when judging "no failed units". Omit the key to get this
-  # default list; set it (even to []) to use exactly your own list.
+  # Units ignored when judging "no failed units". Omit the key (or leave
+  # it empty/null) to get this default list; set it, even to [], to use exactly
+  # your own list. Only an explicit [] means "ignore nothing".
   ignore_units:
     - systemd-networkd-wait-online.service  # fails because the proof network has no uplink
     - NetworkManager-wait-online.service    # fails because the proof network has no uplink

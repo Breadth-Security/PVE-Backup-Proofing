@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -107,17 +108,14 @@ type Logging struct {
 
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
-// explicit zero or empty list is kept (and validated) rather than replaced.
+// explicit zero is kept (and validated) rather than replaced. The ignore
+// lists are defaulted after decoding instead (see orDefault).
 func defaults() Config {
 	return Config{
 		Workers: 1,
 		Target:  Target{Type: "existing-node", SSH: SSH{User: "root", Port: 22}},
 		Restore: Restore{SpaceMarginPercent: 10, BootTimeout: 5 * time.Minute, ProbeTimeout: 5 * time.Minute},
-		Checks: Checks{
-			CommandTimeout:        time.Minute,
-			IgnoreUnits:           DefaultIgnoreUnits(),
-			WindowsIgnoreServices: DefaultWindowsIgnore(),
-		},
+		Checks:  Checks{CommandTimeout: time.Minute},
 		Notify:  Notify{When: "always"},
 		Logging: Logging{Dir: "/var/log/pbp", RetainRuns: 30},
 	}
@@ -137,12 +135,26 @@ func Load(path string) (Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Config{}, fmt.Errorf("config %s is empty", path)
+		}
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.Checks.IgnoreUnits = orDefault(c.Checks.IgnoreUnits, DefaultIgnoreUnits)
+	c.Checks.WindowsIgnoreServices = orDefault(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore)
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// orDefault returns list, or def() when list is nil: the key is absent or
+// null. Only an explicit [] (empty, not nil) means "none".
+func orDefault(list []string, def func() []string) []string {
+	if list == nil {
+		return def()
+	}
+	return list
 }
 
 func (c Config) validate() error {
@@ -166,8 +178,8 @@ func (c Config) validate() error {
 	if t.Bridge == "" {
 		bad("target.bridge", "required")
 	}
-	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo {
-		bad("target.vmid_range", "need 100 <= lo <= hi, got [%d, %d]", lo, hi)
+	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi > maxVMID {
+		bad("target.vmid_range", "need 100 <= lo <= hi <= %d, got [%d, %d]", maxVMID, lo, hi)
 	}
 	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported)")
@@ -197,12 +209,59 @@ func (c Config) validate() error {
 	if c.Notify.When != "always" && c.Notify.When != "problems" {
 		bad("notify.when", "must be \"always\" or \"problems\", got %q", c.Notify.When)
 	}
+	c.validateChecks(bad)
 	return errors.Join(errs...)
+}
+
+// reporter records one validation error against a config key path.
+type reporter func(key, format string, a ...any)
+
+// maxVMID is the largest VMID Proxmox accepts.
+const maxVMID = 999999999
+
+// validateChecks validates the user profiles and per-guest checks. A profile
+// or guest with no checks is valid: a profile then only requires its unit to
+// be active.
+func (c Config) validateChecks(bad reporter) {
+	seen := map[string]bool{}
+	for i, p := range c.Checks.Profiles {
+		key := fmt.Sprintf("checks.profiles[%d]", i)
+		switch {
+		case p.Name == "":
+			bad(key+".name", "required")
+		case seen[p.Name]:
+			bad(key+".name", "duplicate profile name %q", p.Name)
+		default:
+			seen[p.Name] = true
+		}
+		if p.Unit == "" {
+			bad(key+".unit", "required")
+		}
+		p.validate(bad, key)
+	}
+	for i, g := range c.Checks.Guests {
+		key := fmt.Sprintf("checks.guests[%d]", i)
+		if m := g.Match; m.VMID == 0 && m.Name == "" && m.Tag == "" {
+			bad(key+".match", "set at least one of vmid, name or tag")
+		} else if m.VMID < 0 || m.VMID > maxVMID {
+			bad(key+".match.vmid", "must be 1..%d, got %d", maxVMID, m.VMID)
+		}
+		g.validate(bad, key)
+	}
+}
+
+// validate checks that every port is a valid TCP port, naming key in errors.
+func (cs CheckSet) validate(bad reporter, key string) {
+	for j, port := range cs.Ports {
+		if port < 1 || port > 65535 {
+			bad(fmt.Sprintf("%s.ports[%d]", key, j), "must be 1..65535, got %d", port)
+		}
+	}
 }
 
 // duration validates a duration key against a minimum (at least 1s: a
 // smaller value is almost certainly a unit typo).
-func duration(bad func(key, format string, a ...any), key string, d, min time.Duration) {
+func duration(bad reporter, key string, d, min time.Duration) {
 	if d < min {
 		bad(key, "must be >= %s, got %s (check the unit)", min, d)
 	}

@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -282,5 +283,42 @@ func TestSanitizeClearsProtection(t *testing.T) {
 		if p := Sanitize(kind, map[string]string{}, br); p.Set["protection"] != "0" {
 			t.Errorf("%s: protection not forced off when absent: %+v", kind, p.Set)
 		}
+	}
+}
+
+func TestSplitList(t *testing.T) {
+	for in, want := range map[string][]string{
+		"":                   nil,
+		"pbp":                {"pbp"},
+		"a;b,c d\te":         {"a", "b", "c", "d", "e"},
+		" ;a;; ,b ":          {"a", "b"},
+		"images,rootdir,iso": {"images", "rootdir", "iso"},
+	} {
+		if got := SplitList(in); !slices.Equal(got, want) {
+			t.Errorf("SplitList(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A SPICE-redirected USB device attaches no host hardware.
+func TestSanitizeUSBSpiceKept(t *testing.T) {
+	p := Sanitize(model.KindQEMU, map[string]string{
+		"usb0": "spice", "usb1": "host=spice,usb3=1", "usb2": "host=1234:5678",
+		"usb3": "spice,host=1234:5678", "hostpci0": "spice",
+	}, br)
+	if want := []string{"hostpci0", "usb2", "usb3"}; !reflect.DeepEqual(p.Delete, want) {
+		t.Errorf("Delete = %v, want %v", p.Delete, want)
+	}
+	if len(p.Removed) != 3 {
+		t.Errorf("Removed = %v", p.Removed)
+	}
+}
+
+func TestSanitizeNetEmpty(t *testing.T) {
+	if got := sanitizeNet("", br); got != "bridge="+br {
+		t.Errorf("got %q", got)
+	}
+	if got := sanitizeNet("virtio=AA,,tag=2", br); got != "virtio=AA,bridge="+br {
+		t.Errorf("got %q", got)
 	}
 }

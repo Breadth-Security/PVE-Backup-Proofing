@@ -10,13 +10,16 @@ import (
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
 // Janitor finishes the teardown of jobs a crashed run left in the state
 // store, then destroys any other guest PBP owns (in the VMID range and tagged
-// "pbp"). Target.Destroy enforces range and tag, so a guest it refuses is
-// left alone and its entry kept. An entry is removed only once every step for
-// it succeeded. The returned error joins every failure.
+// "pbp"). For a job whose restore may have started, Target.Destroy gets the
+// job's record, so it also removes that restore's untagged leftover (design
+// section 11.2). A guest the target refuses is left alone and its entry
+// kept. An entry is removed only once every step for it succeeded. The
+// returned error joins every failure.
 func Janitor(ctx context.Context, d Deps) error {
 	log := logger(d)
 	var errs []error
@@ -45,7 +48,7 @@ func Janitor(ctx context.Context, d Deps) error {
 			continue // its job's cleanup failed above and was reported
 		}
 		log.Warn("janitor: destroying leftover guest", "guest", g.Key.String(), "name", g.Name)
-		if err := d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID); err != nil {
+		if err := d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID, target.Recorded{}); err != nil {
 			log.Error("janitor: destroy leftover guest", "guest", g.Key.String(), "err", err)
 			errs = append(errs, fmt.Errorf("leftover %s: %w", g.Key, err))
 		}
@@ -54,15 +57,24 @@ func Janitor(ctx context.Context, d Deps) error {
 }
 
 // cleanupJob undoes what the recorded stage says may have happened: destroy
-// the guest unless already destroyed, restore the backup's protected flag,
-// then drop the entry.
+// the guest unless already destroyed (and record that at once, so a failure
+// below never leaves an empty VMID recorded as an in-flight restore), restore
+// the backup's protected flag, then drop the entry.
 func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	log := logger(d).With("vmid", j.TempVMID, "volid", j.VolID, "stage", j.Stage)
 	var errs []error
-	if j.Stage != stageDestroyed {
+	if j.Stage != state.StageDestroyed {
 		log.Warn("janitor: destroying guest of crashed job")
-		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID); err != nil {
+		// Only the record of a restore that may have started makes an
+		// untagged guest at the VMID PBP's.
+		var rec target.Recorded
+		if j.MayHaveGuest() {
+			rec.VolID = j.VolID
+		}
+		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID, rec); err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
+		} else if err := d.Store.SetStage(j.TempVMID, state.StageDestroyed, false); err != nil {
+			errs = append(errs, fmt.Errorf("record %d destroyed: %w", j.TempVMID, err))
 		}
 	}
 	if j.ProtectedOrig != nil && !*j.ProtectedOrig {

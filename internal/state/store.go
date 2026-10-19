@@ -11,11 +11,49 @@ import (
 	"sync"
 	"time"
 
+	"git.breadthanalytics.com/tdiana/pbv/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
 
+// Job stages, in order. Each is recorded before the step it names.
+const (
+	// StageProtected: the backup is (being) protected; no guest exists yet.
+	StageProtected = "protected"
+	// StageRestored: a restore into TempVMID may have started, so a guest
+	// there may be PBP's even before it carries the "pbp" tag.
+	StageRestored = "restored"
+	// StageStarted: the guest may have been started.
+	StageStarted = "started"
+	// StageDestroyed: the guest was confirmed gone.
+	StageDestroyed = "destroyed"
+)
+
+// Run outcomes.
+const (
+	OutcomeRunning  = "running"
+	OutcomeOK       = "ok"
+	OutcomeProblems = "problems"
+	OutcomeError    = "error"
+)
+
+// ErrDurability: the new state file was renamed into place (and the store
+// holds the new state) but the directory could not be synced, so the rename
+// may not survive a power loss.
+var ErrDurability = errors.New("state: not durable")
+
+// syncDir fsyncs a directory.
+func syncDir(dir string) error {
+	// #nosec G304 -- dir is the state file's own directory, not user input
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }() // read-only directory handle
+	return d.Sync()
+}
+
 // Job is a temporary guest that must be cleaned up if the run crashes.
-// Stage is one of protected|restored|started|destroyed.
+// Stage is one of the Stage constants.
 type Job struct {
 	TempVMID      int
 	Kind          model.GuestKind
@@ -25,7 +63,14 @@ type Job struct {
 	Stage         string
 }
 
-// RunRecord summarises one run. Outcome is one of running|ok|problems|error.
+// MayHaveGuest reports whether a restore PBP started may have created a guest
+// at TempVMID, so that a guest there is PBP's even without the "pbp" tag
+// (design section 11.2: ownership confirmed by state).
+func (j Job) MayHaveGuest() bool {
+	return j.Stage == StageRestored || j.Stage == StageStarted
+}
+
+// RunRecord summarises one run. Outcome is one of the Outcome constants.
 type RunRecord struct {
 	ID, Trigger, Outcome string
 	Started, Ended       time.Time
@@ -44,6 +89,9 @@ type Store struct {
 	mu    sync.Mutex
 	path  string
 	state State
+	// syncDir fsyncs the state file's directory; a field so tests can make
+	// it fail.
+	syncDir func(dir string) error
 }
 
 func newState() State {
@@ -56,7 +104,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("state: create dir for %s: %w", path, err)
 	}
-	s := &Store{path: path, state: newState()}
+	s := &Store{path: path, state: newState(), syncDir: syncDir}
 	// #nosec G304 -- path is PBP's own state file under the fixed state directory, not user input
 	b, err := os.ReadFile(path)
 	switch {
@@ -120,7 +168,9 @@ func (s *Store) Snapshot() State {
 }
 
 // Update runs fn on a copy of the state and persists it. If fn or the write
-// fails, neither memory nor the file changes.
+// fails, neither memory nor the file changes. Once the new file is in place
+// memory holds the new state too, even if the directory sync then fails
+// (ErrDurability).
 func (s *Store) Update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,11 +184,34 @@ func (s *Store) Update(fn func(*State) error) error {
 	if c.LastProven == nil {
 		c.LastProven = map[string]time.Time{}
 	}
-	if err := s.write(c); err != nil {
-		return err
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("state: marshal: %w", err)
+	}
+	if err := fsutil.WriteFileAtomic(s.path, b, 0o600); err != nil {
+		return fmt.Errorf("state: %w", err)
 	}
 	s.state = c
+	if err := s.syncDir(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("%w: fsync dir: %w", ErrDurability, err)
+	}
 	return nil
+}
+
+// SetStage records stage for the InFlight job at vmid. It never creates an
+// entry: a missing one is an error if mustExist, else nothing is written.
+func (s *Store) SetStage(vmid int, stage string, mustExist bool) error {
+	return s.Update(func(st *State) error {
+		job, ok := st.InFlight[vmid]
+		switch {
+		case ok:
+			job.Stage = stage
+			st.InFlight[vmid] = job
+		case mustExist:
+			return fmt.Errorf("state: no in-flight job at %d", vmid)
+		}
+		return nil
+	})
 }
 
 // AppendRun records r (replacing any record with the same ID in place) and
@@ -161,45 +234,4 @@ func (s *Store) AppendRun(r RunRecord, retain int) error {
 		}
 		return nil
 	})
-}
-
-func (s *Store) write(st State) (err error) {
-	b, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("state: marshal: %w", err)
-	}
-	tmp := s.path + ".tmp"
-	// #nosec G304 -- tmp is the state file path plus ".tmp"; the path is PBP's own state file, not user input
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("state: open %s: %w", tmp, err)
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp) // best-effort cleanup; err is already being returned
-		}
-	}()
-	if _, err = f.Write(b); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("state: write %s: %w", tmp, err)
-	}
-	if err = f.Sync(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("state: fsync %s: %w", tmp, err)
-	}
-	if err = f.Close(); err != nil {
-		return fmt.Errorf("state: close %s: %w", tmp, err)
-	}
-	if err = os.Rename(tmp, s.path); err != nil {
-		return fmt.Errorf("state: rename to %s: %w", s.path, err)
-	}
-	d, err := os.Open(filepath.Dir(s.path))
-	if err != nil {
-		return fmt.Errorf("state: open dir: %w", err)
-	}
-	defer func() { _ = d.Close() }() // read-only directory handle
-	if err = d.Sync(); err != nil {
-		return fmt.Errorf("state: fsync dir: %w", err)
-	}
-	return nil
 }
