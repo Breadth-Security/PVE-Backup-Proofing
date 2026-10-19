@@ -2,78 +2,68 @@ package report
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
 
-const (
-	templateDir = "/etc/pve/notification-templates/default"
-	maxStderr   = 2048
-	// exitMissing is the exit code of the template read when the file does
-	// not exist (see readTemplateCmd).
-	exitMissing = 3
+// NotifyScript sends one notification through PVE::Notify: a
+// {severity, data, fields} JSON payload on stdin, template name pbp. The
+// node helper runs it; the daemon never sends it.
+const NotifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
 
-	// NotifyScript sends one notification through PVE::Notify: a
-	// {severity, data, fields} JSON payload on stdin, template name pbp.
-	NotifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
-)
+// InstallHint tells the operator how to fix missing or outdated templates.
+const InstallHint = `run "pbp node install-templates" as root on the node`
 
-var templateFiles = []string{"pbp-subject.txt.hbs", "pbp-body.txt.hbs"}
-
-// PVENotifier sends summaries through the node's own notification system.
+// PVENotifier sends summaries through the node's own notification system,
+// by way of the `pbp node` helper.
 type PVENotifier struct {
-	SSH  sshx.Runner
-	Node string
+	Helper sshx.Helper
+	Node   string
 }
 
 var _ Notifier = (*PVENotifier)(nil)
 
-// EnsureTemplates installs the embedded templates on the node when missing
-// or different.
-func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
+// CheckTemplates compares the templates installed on the node (their sha256,
+// as the helper reports them) with the embedded ones. It writes nothing: a
+// missing or different template is an error naming each such file and how
+// to install them.
+func (p *PVENotifier) CheckTemplates(ctx context.Context) error {
+	installed, err := p.Helper.Templates(ctx)
+	if err != nil {
+		return fmt.Errorf("report: read installed templates: %w", err)
+	}
 	embedded := Templates()
-	for _, name := range templateFiles {
-		want, ok := embedded[name]
-		if !ok {
-			return fmt.Errorf("report: embedded template %s missing", name)
+	names := make([]string, 0, len(embedded))
+	for name := range embedded {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	var bad []string
+	for _, name := range names {
+		sum := sha256.Sum256(embedded[name])
+		switch got := installed[name]; got {
+		case hex.EncodeToString(sum[:]):
+		case "":
+			bad = append(bad, name+" is missing")
+		default:
+			bad = append(bad, name+" differs from this version's")
 		}
-		path := templateDir + "/" + name
-		res, err := p.SSH.Run(ctx, readTemplateCmd(path), nil)
-		if err != nil {
-			return fmt.Errorf("report: read %s: %w", path, err)
-		}
-		if res.ExitCode == 0 && res.Stdout == string(want) {
-			continue
-		}
-		if res.ExitCode != 0 && res.ExitCode != exitMissing {
-			// Not merely missing: overwriting what cannot be read could
-			// clobber a template this process cannot see.
-			return fmt.Errorf("report: read %s: exit %d: %s", path, res.ExitCode, trimStderr(res.Stderr))
-		}
-		cmd := "mkdir -p " + sshx.Quote(templateDir) + " && cat > " + sshx.Quote(path)
-		res, err = p.SSH.Run(ctx, cmd, want)
-		if err != nil {
-			return fmt.Errorf("report: write %s: %w", path, err)
-		}
-		if res.ExitCode != 0 {
-			return fmt.Errorf("report: write %s: exit %d: %s", path, res.ExitCode, trimStderr(res.Stderr))
-		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("report: notification templates on the node: %s; %s", strings.Join(bad, ", "), InstallHint)
 	}
 	return nil
 }
 
-// readTemplateCmd reads path, exiting with exitMissing if it does not exist,
-// so a missing file is told apart from an unreadable one by exit code alone.
-func readTemplateCmd(path string) string {
-	q := sshx.Quote(path)
-	return "test -e " + q + " || exit " + fmt.Sprint(exitMissing) + "; cat " + q
-}
-
-// Send delivers the run summary via PVE::Notify::notify.
+// Send delivers the run summary through the helper's notify request, which
+// hands it to PVE::Notify::notify.
 func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	payload, err := json.Marshal(map[string]any{
 		"severity": s.Severity(),
@@ -83,33 +73,8 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	if err != nil {
 		return fmt.Errorf("report: encode notification: %w", err)
 	}
-	res, err := p.SSH.Run(ctx, "perl -e "+sshx.Quote(NotifyScript), payload)
-	if err != nil {
+	if err := p.Helper.Notify(ctx, payload); err != nil {
 		return fmt.Errorf("report: send notification: %w", err)
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("report: send notification: exit %d: %s", res.ExitCode, trimStderr(res.Stderr))
-	}
-	// PVE::Notify logs a target it could not notify (including a template
-	// that failed to render) as an "ERROR:" line and still exits 0.
-	var errs []string
-	for _, line := range strings.Split(res.Stderr, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "ERROR:") {
-			errs = append(errs, strings.TrimSpace(line))
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("report: send notification: %s", trimStderr(strings.Join(errs, "; ")))
-	}
 	return nil
-}
-
-// trimStderr trims s and cuts it to at most maxStderr bytes, dropping any
-// bytes that do not form valid UTF-8 (including a character cut in half).
-func trimStderr(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > maxStderr {
-		s = strings.ToValidUTF8(s[:maxStderr], "")
-	}
-	return s
 }

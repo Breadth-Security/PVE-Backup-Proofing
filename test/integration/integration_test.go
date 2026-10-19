@@ -81,7 +81,7 @@ func setup(t *testing.T) *env {
 			envErr = err
 			return
 		}
-		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, tgt: target.NewExistingNode(cfg, api, ssh)}
+		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, tgt: target.NewExistingNode(cfg, api, sshx.Helper{R: ssh})}
 	})
 	if envErr != nil {
 		t.Fatal(envErr)
@@ -113,7 +113,7 @@ func envStr(t *testing.T, name string) string {
 }
 
 // capture records summaries instead of sending them, so test runs do not
-// notify the node's real targets. EnsureTemplates is real.
+// notify the node's real targets. CheckTemplates is real.
 type capture struct {
 	*report.PVENotifier
 	mu   sync.Mutex
@@ -159,7 +159,7 @@ func (e *env) deps(t *testing.T, stateDir string, cfg config.Config) run.Deps {
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	return run.Deps{
 		Cfg: cfg, API: e.api, Target: e.tgt, Store: store, Log: log, Now: time.Now,
-		Notifier: &capture{PVENotifier: &report.PVENotifier{SSH: e.ssh, Node: cfg.Target.Node}},
+		Notifier: &capture{PVENotifier: &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: cfg.Target.Node}},
 	}
 }
 
@@ -406,15 +406,15 @@ wait $LP || true
 cat "$OUT"
 `
 
-// TestNotificationRenders installs the templates and renders a full summary
+// TestNotificationRenders checks the templates are installed and renders a full summary
 // with the node's proxmox-notify (no delivery). This proves the new "pbp"
 // template type is found in /etc/pve/notification-templates/default/ and
 // that hyphenated variables work in #if and #each.
 func TestNotificationRenders(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	n := &report.PVENotifier{SSH: e.ssh, Node: e.cfg.Target.Node}
-	if err := n.EnsureTemplates(ctx); err != nil {
+	n := &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: e.cfg.Target.Node}
+	if err := n.CheckTemplates(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s := fullSummary()
@@ -462,8 +462,8 @@ func TestNotificationDelivers(t *testing.T) {
 		t.Skip("PBP_IT_LIVE_NOTIFY != 1")
 	}
 	ctx := context.Background()
-	n := &report.PVENotifier{SSH: e.ssh, Node: e.cfg.Target.Node}
-	if err := n.EnsureTemplates(ctx); err != nil {
+	n := &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: e.cfg.Target.Node}
+	if err := n.CheckTemplates(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s := fullSummary()

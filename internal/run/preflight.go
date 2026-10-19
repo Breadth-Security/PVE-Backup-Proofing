@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Preflight checks the target node, installs the notification templates,
+// Preflight checks the target node, checks the notification templates,
 // cleans up after any crashed run (design section 6 step 1) and then checks
 // that no foreign guest sits in the VMID range. The range check comes last:
 // the janitor first removes the untagged leftovers of recorded restores,
@@ -15,7 +15,7 @@ func Preflight(ctx context.Context, d Deps) error {
 	if err := d.Target.Prepare(ctx); err != nil {
 		return fmt.Errorf("target: %w", err)
 	}
-	if err := d.Notifier.EnsureTemplates(ctx); err != nil {
+	if err := d.Notifier.CheckTemplates(ctx); err != nil {
 		return fmt.Errorf("notification templates: %w", err)
 	}
 	if err := Janitor(ctx, d); err != nil {

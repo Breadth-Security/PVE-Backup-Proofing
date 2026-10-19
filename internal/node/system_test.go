@@ -284,6 +284,21 @@ func TestRealNotify(t *testing.T) {
 			t.Errorf("%+v: no error", a)
 		}
 	}
+
+	// INFO lines are not errors.
+	info := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + report.NotifyScript: {stderr: "INFO: skipping disabled matcher 'x'\n"}}}
+	if err := (&RealSystem{bins: fakeBins(t), run: info.run}).Notify(context.Background(), []byte(payload)); err != nil {
+		t.Errorf("INFO line: %v", err)
+	}
+	// PVE::Notify cannot say which targets succeeded, so one ERROR line
+	// among successful ones still fails, naming only the failed target.
+	mixed := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + report.NotifyScript: {stderr: "INFO: notified via target `webhook-ops`\n" +
+		"ERROR: could not notify via target `mail-to-root`: smtp refused\n" +
+		"INFO: notified via target `gotify`\n"}}}
+	err := (&RealSystem{bins: fakeBins(t), run: mixed.run}).Notify(context.Background(), []byte(payload))
+	if err == nil || !strings.Contains(err.Error(), "mail-to-root") || strings.Contains(err.Error(), "webhook-ops") {
+		t.Errorf("want an error naming only the failed target, got %v", err)
+	}
 }
 
 func TestRealTemplateHashes(t *testing.T) {

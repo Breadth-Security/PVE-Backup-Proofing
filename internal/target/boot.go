@@ -80,9 +80,10 @@ func (n *ExistingNode) waitRunning(ctx, tctx context.Context, kind model.GuestKi
 	return bootFailed("guest %d not running after %s (status %q)", vmid, timeout, last)
 }
 
-// waitLXC waits until "pct exec true" succeeds. A container that keeps
-// answering with a non-zero exit while SSH works did not boot; one that
-// could not be reached over SSH is a transport fault.
+// waitLXC waits until "true" runs in the container (the helper's exec). A
+// container that keeps answering with a non-zero exit while the helper
+// works did not boot; one the helper could not reach, or refused (see
+// execErr), is a node fault.
 func (n *ExistingNode) waitLXC(ctx, tctx context.Context, vmid int, timeout time.Duration) (BootInfo, error) {
 	exec := n.Executor(model.KindLXC, vmid)
 	var lastExit string

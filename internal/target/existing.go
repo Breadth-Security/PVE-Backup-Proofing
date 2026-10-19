@@ -18,10 +18,11 @@ import (
 )
 
 // ExistingNode restores onto a PVE node that also runs production guests.
-// It uses the API only; restore and config changes have no SSH fallback yet.
+// Restore and config changes go through the API; container exec and the
+// bridge's live state go through the restricted `pbp node` helper.
 type ExistingNode struct {
 	api    pve.API
-	ssh    sshx.Runner
+	helper sshx.Helper
 	node   string
 	bridge string
 	store  string
@@ -36,10 +37,12 @@ type ExistingNode struct {
 
 var _ Target = (*ExistingNode)(nil)
 
-func NewExistingNode(cfg config.Config, api pve.API, ssh sshx.Runner) *ExistingNode {
+// NewExistingNode returns the target for cfg's node, reached through api and
+// the node's helper.
+func NewExistingNode(cfg config.Config, api pve.API, helper sshx.Helper) *ExistingNode {
 	return &ExistingNode{
 		api:         api,
-		ssh:         ssh,
+		helper:      helper,
 		node:        cfg.Target.Node,
 		bridge:      cfg.Target.Bridge,
 		store:       cfg.Restore.Storage,

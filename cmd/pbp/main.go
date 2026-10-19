@@ -126,11 +126,12 @@ func assemble(cfg config.Config, api pve.API, apiErr error, ssh sshx.Runner, ssh
 		w.sshErr = sshErr
 		ssh = downRunner{sshErr}
 	}
-	w.target = target.NewExistingNode(cfg, api, ssh)
+	helper := sshx.Helper{R: ssh}
+	w.target = target.NewExistingNode(cfg, api, helper)
 	if err := w.setupErr(); err != nil {
 		w.target = unreachable{Target: w.target, err: err}
 	}
-	w.notifier = &report.PVENotifier{SSH: ssh, Node: cfg.Target.Node}
+	w.notifier = &report.PVENotifier{Helper: helper, Node: cfg.Target.Node}
 	return w
 }
 

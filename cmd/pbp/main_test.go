@@ -35,7 +35,7 @@ type fakeNotifier struct {
 	sent []model.RunSummary
 }
 
-func (n *fakeNotifier) EnsureTemplates(context.Context) error { return nil }
+func (n *fakeNotifier) CheckTemplates(context.Context) error { return nil }
 
 func (n *fakeNotifier) Send(_ context.Context, s model.RunSummary) error {
 	n.mu.Lock()

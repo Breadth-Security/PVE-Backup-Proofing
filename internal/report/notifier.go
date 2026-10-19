@@ -8,8 +8,11 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
-// Notifier installs PBP's notification templates and sends run summaries.
+// Notifier checks PBP's notification templates on the node and sends run
+// summaries.
 type Notifier interface {
-	EnsureTemplates(ctx context.Context) error
+	// CheckTemplates fails if the node's templates are missing or differ
+	// from the embedded ones. It changes nothing on the node.
+	CheckTemplates(ctx context.Context) error
 	Send(ctx context.Context, s model.RunSummary) error
 }

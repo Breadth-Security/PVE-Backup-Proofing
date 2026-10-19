@@ -30,18 +30,18 @@ const (
 
 // fakeNotifier records what the runner asks of the notification system.
 type fakeNotifier struct {
-	mu        sync.Mutex
-	ensureErr error
-	sendErr   error
-	ensured   int
-	sent      []model.RunSummary
+	mu       sync.Mutex
+	checkErr error
+	sendErr  error
+	checked  int
+	sent     []model.RunSummary
 }
 
-func (n *fakeNotifier) EnsureTemplates(context.Context) error {
+func (n *fakeNotifier) CheckTemplates(context.Context) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.ensured++
-	return n.ensureErr
+	n.checked++
+	return n.checkErr
 }
 
 func (n *fakeNotifier) Send(_ context.Context, s model.RunSummary) error {
@@ -287,7 +287,7 @@ func TestRunPreflightNotIsolated(t *testing.T) {
 func TestRunPreflightTemplatesFailure(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
 	f.add("pbs", model.KindQEMU, 101, 1024, "")
-	f.notif.ensureErr = errors.New("permission denied")
+	f.notif.checkErr = errors.New("permission denied")
 
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 	if !strings.Contains(s.RunError, "permission denied") || len(f.tgt.restores()) != 0 {
