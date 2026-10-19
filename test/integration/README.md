@@ -94,6 +94,11 @@ pvesh set /nodes/pve1/network                                  # applies with if
 
 The API reports it as `type: bridge`, `bridge_ports: ""`, no address.
 
+Preflight also requires IPv6 disabled on the bridge (see the main README):
+add `post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6` to the
+`vmbr99` stanza and run that `echo` once. **Not yet done on pve1**: until it
+is, `pbp check` and the suite refuse the bridge with `bridge is not isolated`.
+
 **User, role, token.** User `pbp@pve`, role `PBPProofer`, token
 `pbp@pve!proof` (privilege separated). A privilege-separated token gets the
 intersection of the user's and the token's permissions, so the ACLs are

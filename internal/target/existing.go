@@ -80,6 +80,9 @@ func (n *ExistingNode) Prepare(ctx context.Context) error {
 	if why := notIsolated(iface); why != "" {
 		return fmt.Errorf("%w: %s %s", ErrNotIsolated, n.bridge, why)
 	}
+	if err := n.checkLiveIsolation(ctx, iface); err != nil {
+		return err
+	}
 
 	st, err := n.api.StorageStatus(ctx, n.node, n.store)
 	if err != nil {

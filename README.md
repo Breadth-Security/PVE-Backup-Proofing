@@ -57,7 +57,8 @@ Your own notes are preserved below it. A previous PBP line is replaced, never st
 - A dedicated, isolated bridge on that node (see below) and a reserved VMID range.
 - Docker with Compose on any host that can reach the node's API (8006) and SSH (22).
 - **Root-equivalent SSH access to the PVE node.** This is stated plainly: PBP holds root-equivalent access to one PVE node. It is needed because:
-  - `pct exec` (checking inside containers) has no API equivalent, and
+  - `pct exec` (checking inside containers) has no API equivalent,
+  - the bridge's live state (IPv6, addresses, members) is not in the API, and
   - arbitrary notifications can only be sent with `PVE::Notify` on the node itself; the notifications REST API can only send a fixed test message.
 
   Use a dedicated key, pin the host key in `known_hosts`, and treat the PBP host and its secrets accordingly. A restricted wrapper is a possible later improvement, not part of v1.
@@ -76,7 +77,11 @@ If you run more than one PBP instance against the same cluster, give **each inst
 
 ### 2. Create the isolated bridge
 
-Restored guests are plugged into a bridge that has no physical ports, no bond members and no IP address. They can talk to each other but not to your network, so a restored copy of a server cannot take over its production twin's address or reach anything real. PBP verifies this at every preflight and refuses to run otherwise.
+Restored guests are plugged into a bridge that has no physical ports, no bond members, no IP address and IPv6 disabled. They can talk to each other but not to your network or the node, so a restored copy of a server cannot take over its production twin's address or reach anything real. PBP verifies this at every preflight and refuses to run otherwise.
+
+**Why IPv6 must be disabled on the bridge.** Even with no address configured, the kernel gives every interface with IPv6 enabled a link-local address (`fe80::...`). The PVE API does not show it, but a proof guest on the bridge could use it to reach the node's own SSH and web UI. Worse, a restored router or firewall guest that sends IPv6 router advertisements could give the node a SLAAC address and a route through the bridge. With `disable_ipv6` set, the node has no presence on the bridge at all.
+
+At every preflight PBP reads the bridge's live state on the node over SSH and refuses to run unless `/proc/sys/net/ipv6/conf/<bridge>/disable_ipv6` is `1`, the bridge has no address of any kind, and its only members are interfaces of guests in the reserved VMID range (`tapN...`, `vethN...`, `fwprN...`, `fwlnN...`): no physical NIC, bond, VLAN, OVS internal port, or production guest.
 
 PBP does not create the bridge; you do. Name it in `target.bridge`. PVE requires bridge names of the form vmbrN (here `vmbr99`).
 
@@ -88,9 +93,10 @@ iface vmbr99 inet manual
         bridge-ports none
         bridge-stp off
         bridge-fd 0
+        post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6
 ```
 
-No `address` line, no gateway, and `bridge-ports none` so that nothing is attached.
+No `address` line, no gateway, `bridge-ports none` so that nothing is attached, and the `post-up` line disables IPv6 on the bridge every time it comes up.
 
 **Open vSwitch bridge.** Create an `OVSBridge` with no `ovs_ports` and no address, either in the GUI (Node > System > Network > Create > OVS Bridge, leaving "Bridge ports" empty), or in `/etc/network/interfaces`:
 
@@ -98,9 +104,12 @@ No `address` line, no gateway, and `bridge-ports none` so that nothing is attach
 auto vmbr99
 iface vmbr99 inet manual
         ovs_type OVSBridge
+        post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6
 ```
 
-Then apply with `ifreload -a`. Do not add `ovs_ports`, an address, or an OVS port/bond for a physical NIC.
+Then apply with `ifreload -a`. Do not add `ovs_ports`, an address, or an OVS port/bond for a physical NIC. If you create the bridge in the GUI, add the `post-up` line to its stanza in `/etc/network/interfaces` afterwards.
+
+To disable IPv6 on an existing bridge right away (the `post-up` line covers reboots and reloads), run `echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6` on the node, then `docker compose exec pbp pbp check`.
 
 ### 3. Create an API token
 

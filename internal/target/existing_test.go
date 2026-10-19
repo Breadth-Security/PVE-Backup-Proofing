@@ -3,6 +3,7 @@ package target
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,12 +41,40 @@ func healthyFake() *pvefake.Fake {
 	return f
 }
 
+// Live bridge-state commands Prepare runs over SSH.
+var (
+	cmdIPv6   = "cat '/proc/sys/net/ipv6/conf/" + bridge + "/disable_ipv6'"
+	cmdAddr   = "ip -j addr show dev '" + bridge + "'"
+	cmdMaster = "ip -j link show master '" + bridge + "'"
+	cmdOVS    = "ovs-vsctl list-ports '" + bridge + "'"
+)
+
+// isolatedBridge answers the live bridge checks as an isolated bridge with
+// IPv6 disabled, no addresses and no members; overrides replace answers.
+func isolatedBridge(overrides map[string]sshx.Result) *sshx.Fake {
+	answers := map[string]sshx.Result{
+		cmdIPv6:   {Stdout: "1\n"},
+		cmdAddr:   {Stdout: `[{"ifindex":9,"ifname":"` + bridge + `","flags":["BROADCAST","MULTICAST","UP"],"addr_info":[]}]` + "\n"},
+		cmdMaster: {Stdout: "[]\n"},
+		cmdOVS:    {Stdout: ""},
+	}
+	for k, v := range overrides {
+		answers[k] = v
+	}
+	return &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
+		if r, ok := answers[cmd]; ok {
+			return r, nil
+		}
+		return sshx.Result{ExitCode: 127, Stderr: "unexpected command " + cmd}, nil
+	}}
+}
+
 // newTarget builds an ExistingNode with fast polling and registers the safety
 // invariant: no mutating call may ever target a VMID outside the range.
 func newTarget(t *testing.T, api pve.API, fake *pvefake.Fake, ssh sshx.Runner) *ExistingNode {
 	t.Helper()
 	if ssh == nil {
-		ssh = &sshx.Fake{}
+		ssh = isolatedBridge(nil)
 	}
 	n := NewExistingNode(testConfig(), api, ssh)
 	n.statusPoll, n.agentPoll, n.lxcExecPoll, n.execPoll = time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond
@@ -150,6 +179,91 @@ func TestPrepare(t *testing.T) {
 			}
 			if tc.want != nil && !errors.Is(err, tc.want) {
 				t.Errorf("err = %v, want %v", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.text) {
+				t.Errorf("err %q does not mention %q", err, tc.text)
+			}
+			if n := countMutating(f.CallLog()); n != 0 {
+				t.Errorf("Prepare made %d mutating calls", n)
+			}
+		})
+	}
+}
+
+// The API shows configuration only. Prepare also checks the bridge's live
+// state on the node: IPv6 disabled (no link-local address a guest could use
+// to reach the node, no SLAAC from a restored router), no addresses at all,
+// and no members but proof-guest interfaces.
+func TestPrepareLiveIsolation(t *testing.T) {
+	ctx := context.Background()
+	members := func(names ...string) sshx.Result {
+		var parts []string
+		for i, n := range names {
+			parts = append(parts, fmt.Sprintf(`{"ifindex":%d,"ifname":"%s","master":"%s"}`, 20+i, n, bridge))
+		}
+		return sshx.Result{Stdout: "[" + strings.Join(parts, ",") + "]\n"}
+	}
+	tests := []struct {
+		name     string
+		ovs      bool
+		answers  map[string]sshx.Result
+		sshErr   error
+		wantErr  bool
+		isolated bool // the error is ErrNotIsolated
+		text     string
+	}{
+		{name: "isolated, no members"},
+		{name: "proof guest members", answers: map[string]sshx.Result{
+			cmdMaster: members("tap990000i0", "veth990001i0", "fwpr990002p0", "fwln990002i0")}},
+		{name: "empty member output", answers: map[string]sshx.Result{cmdMaster: {Stdout: ""}}},
+		{name: "ipv6 enabled", answers: map[string]sshx.Result{cmdIPv6: {Stdout: "0\n"}},
+			wantErr: true, isolated: true, text: "IPv6"},
+		{name: "ipv6 state unreadable", answers: map[string]sshx.Result{cmdIPv6: {ExitCode: 1, Stderr: "No such file or directory"}},
+			wantErr: true, isolated: true, text: "No such file"},
+		{name: "link-local address", answers: map[string]sshx.Result{cmdAddr: {Stdout: `[{"ifname":"` + bridge + `","addr_info":[{"family":"inet6","local":"fe80::1","prefixlen":64,"scope":"link"}]}]`}},
+			wantErr: true, isolated: true, text: "fe80::1"},
+		{name: "ipv4 address", answers: map[string]sshx.Result{cmdAddr: {Stdout: `[{"ifname":"` + bridge + `","addr_info":[{"family":"inet","local":"10.9.9.1","prefixlen":24}]}]`}},
+			wantErr: true, isolated: true, text: "10.9.9.1"},
+		{name: "physical uplink", answers: map[string]sshx.Result{cmdMaster: members("tap990000i0", "eno1")},
+			wantErr: true, isolated: true, text: "eno1"},
+		{name: "bond uplink", answers: map[string]sshx.Result{cmdMaster: members("bond0")},
+			wantErr: true, isolated: true, text: "bond0"},
+		{name: "vlan uplink", answers: map[string]sshx.Result{cmdMaster: members("eno1.20")},
+			wantErr: true, isolated: true, text: "eno1.20"},
+		{name: "production guest plugged in", answers: map[string]sshx.Result{cmdMaster: members("tap100i0")},
+			wantErr: true, isolated: true, text: "tap100i0"},
+		{name: "unparseable member list", answers: map[string]sshx.Result{cmdMaster: {Stdout: "garbage"}},
+			wantErr: true, isolated: true},
+		{name: "ip fails", answers: map[string]sshx.Result{cmdAddr: {ExitCode: 1, Stderr: "Device does not exist"}},
+			wantErr: true, isolated: true, text: "Device does not exist"},
+		{name: "ssh transport error", sshErr: errors.New("ssh: connection lost"), wantErr: true, text: "connection lost"},
+		{name: "ovs isolated", ovs: true},
+		{name: "ovs proof guest ports", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nfwpr990001p0\n"}}},
+		{name: "ovs internal port", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nmgmt0\n"}},
+			wantErr: true, isolated: true, text: "mgmt0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := healthyFake()
+			if tc.ovs {
+				f.Ifaces[bridge] = pve.NetIface{Iface: bridge, Type: "OVSBridge"}
+			}
+			ssh := isolatedBridge(tc.answers)
+			if tc.sshErr != nil {
+				ssh.Handler = func(string, []byte) (sshx.Result, error) { return sshx.Result{}, tc.sshErr }
+			}
+			err := newTarget(t, f, f, ssh).Prepare(ctx)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Prepare succeeded, want error")
+			}
+			if errors.Is(err, ErrNotIsolated) != tc.isolated {
+				t.Errorf("err = %v, ErrNotIsolated = %v, want %v", err, errors.Is(err, ErrNotIsolated), tc.isolated)
 			}
 			if !strings.Contains(err.Error(), tc.text) {
 				t.Errorf("err %q does not mention %q", err, tc.text)
