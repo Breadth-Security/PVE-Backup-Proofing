@@ -62,3 +62,16 @@ func TestZeroValueRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStrayTagged(t *testing.T) {
+	f := New(990000, 990002)
+	f.StrayGuests = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindLXC, VMID: 210}}}
+	got, err := f.StrayTagged(context.Background())
+	if err != nil || len(got) != 1 || got[0].Key.VMID != 210 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	f.StrayErr = errors.New("x")
+	if _, err := f.StrayTagged(context.Background()); err == nil {
+		t.Error("want error")
+	}
+}

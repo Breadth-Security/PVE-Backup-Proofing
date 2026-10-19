@@ -812,3 +812,32 @@ func TestClassifyRestoreError(t *testing.T) {
 		}
 	}
 }
+
+func TestStrayTagged(t *testing.T) {
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{
+		guest(model.KindQEMU, 990000, "stopped", "pbp"),     // in range: owned, not stray
+		guest(model.KindQEMU, 105, "running", "web", "pbp"), // stray
+		guest(model.KindLXC, 210, "running", "pbp"),         // stray
+		guest(model.KindQEMU, 106, "running", "web"),        // untagged, outside: fine
+		guest(model.KindQEMU, 990050, "stopped", "pbp"),     // just above range: stray
+	}
+	got, err := newTarget(t, f, f, nil).StrayTagged(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int
+	for _, g := range got {
+		ids = append(ids, g.Key.VMID)
+	}
+	if !slices.Equal(ids, []int{105, 210, 990050}) {
+		t.Errorf("stray = %v", ids)
+	}
+	if n := countMutating(f.CallLog()); n != 0 {
+		t.Errorf("StrayTagged made %d mutating calls", n)
+	}
+	f.Fail["Guests"] = errors.New("boom")
+	if _, err := newTarget(t, f, f, nil).StrayTagged(context.Background()); err == nil {
+		t.Error("want error")
+	}
+}

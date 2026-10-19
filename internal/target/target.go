@@ -68,6 +68,10 @@ type Target interface {
 	Prepare(ctx context.Context) error
 	// Owned lists guests in the range tagged "pbp".
 	Owned(ctx context.Context) ([]pve.GuestRef, error)
+	// StrayTagged lists guests tagged "pbp" whose VMID is outside the
+	// reserved range, on any node. PBP never touches them; the run reports
+	// them. Read-only.
+	StrayTagged(ctx context.Context) ([]pve.GuestRef, error)
 	// AllocateVMID returns the lowest VMID in range that does not exist and
 	// is not in inUse, or ErrNoFreeVMID.
 	AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error)

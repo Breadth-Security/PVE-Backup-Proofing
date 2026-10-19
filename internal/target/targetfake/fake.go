@@ -34,6 +34,12 @@ type Fake struct {
 	// OwnedErr is returned by Owned.
 	OwnedErr error
 
+	// StrayGuests are pbp-tagged guests outside the range, returned by
+	// StrayTagged.
+	StrayGuests []pve.GuestRef
+	// StrayErr is returned by StrayTagged.
+	StrayErr error
+
 	// RestoreErr fails Restore for a VMID. A failed restore creates no guest.
 	RestoreErr map[int]error
 	// SanitizeErr fails Sanitize for a VMID.
@@ -89,6 +95,16 @@ func (f *Fake) Owned(ctx context.Context) ([]pve.GuestRef, error) {
 		return nil, f.OwnedErr
 	}
 	return slices.Clone(f.OwnedGuests), nil
+}
+
+func (f *Fake) StrayTagged(ctx context.Context) ([]pve.GuestRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("StrayTagged")
+	if f.StrayErr != nil {
+		return nil, f.StrayErr
+	}
+	return slices.Clone(f.StrayGuests), nil
 }
 
 // exists reports whether vmid is live or a not-yet-destroyed owned guest.

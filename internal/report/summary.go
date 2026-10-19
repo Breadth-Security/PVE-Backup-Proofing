@@ -31,17 +31,19 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 			notCovered = append(notCovered, n.LogLine())
 		}
 	}
+	envErrs := append([]string{}, s.EnvironmentErrors...)
 	return map[string]any{
-		"node":        node,
-		"run-id":      s.ID,
-		"started":     s.Started.Format(time.RFC3339),
-		"elapsed":     s.Ended.Sub(s.Started).Round(time.Second).String(),
-		"counts":      counts,
-		"summary":     summaryLine(counts),
-		"guests":      guests,
-		"booted":      booted,
-		"not-covered": notCovered,
-		"run-error":   s.RunError,
+		"node":               node,
+		"run-id":             s.ID,
+		"started":            s.Started.Format(time.RFC3339),
+		"elapsed":            s.Ended.Sub(s.Started).Round(time.Second).String(),
+		"counts":             counts,
+		"summary":            summaryLine(counts),
+		"guests":             guests,
+		"booted":             booted,
+		"not-covered":        notCovered,
+		"run-error":          s.RunError,
+		"environment-errors": envErrs,
 	}
 }
 

@@ -46,6 +46,18 @@ func TestSeverity(t *testing.T) {
 		{[]Verdict{Booted, Failed}, "", "error"},
 		{nil, "ssh unreachable", "error"},
 	}
+	envOnly := RunSummary{EnvironmentErrors: []string{"x"}, Results: []GuestResult{{Verdict: Proven}}}
+	if got := envOnly.Severity(); got != "warning" {
+		t.Errorf("environment errors alone: got %s want warning", got)
+	}
+	envFailed := RunSummary{EnvironmentErrors: []string{"x"}, Results: []GuestResult{{Verdict: Failed}}}
+	if got := envFailed.Severity(); got != "error" {
+		t.Errorf("environment errors plus FAILED: got %s want error", got)
+	}
+	envRunErr := RunSummary{EnvironmentErrors: []string{"x"}, RunError: "boom"}
+	if got := envRunErr.Severity(); got != "error" {
+		t.Errorf("environment errors plus run error: got %s want error", got)
+	}
 	for _, c := range cases {
 		s := RunSummary{RunError: c.runErr}
 		for _, v := range c.vs {

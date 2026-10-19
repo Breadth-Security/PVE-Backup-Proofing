@@ -143,6 +143,20 @@ func (n *ExistingNode) Owned(ctx context.Context) ([]pve.GuestRef, error) {
 	return out, nil
 }
 
+func (n *ExistingNode) StrayTagged(ctx context.Context) ([]pve.GuestRef, error) {
+	guests, err := n.api.Guests(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []pve.GuestRef
+	for _, g := range guests {
+		if !n.inRange(g.Key.VMID) && slices.Contains(g.Tags, OwnerTag) {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
 func (n *ExistingNode) AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error) {
 	guests, err := n.api.Guests(ctx)
 	if err != nil {

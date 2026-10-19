@@ -335,3 +335,32 @@ func TestBodyBootedSection(t *testing.T) {
 		t.Error("old booted title still present")
 	}
 }
+
+func TestEnvironmentErrorsInTemplateData(t *testing.T) {
+	s := failedSummary()
+	d := TemplateData(s, "pve1")
+	if got, ok := d["environment-errors"].([]string); !ok || len(got) != 0 {
+		t.Fatalf("empty summary: %#v", d["environment-errors"])
+	}
+	s.EnvironmentErrors = []string{"VM 105 (web) is tagged pbp but outside the PBP range 990000–990049; not touched"}
+	d = TemplateData(s, "pve1")
+	if got := d["environment-errors"].([]string); len(got) != 1 || got[0] != s.EnvironmentErrors[0] {
+		t.Fatalf("got %#v", got)
+	}
+	if _, err := json.Marshal(d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The body shows an "Environment errors" section only when there are any.
+func TestBodyEnvironmentErrorsSection(t *testing.T) {
+	b, err := templateFS.ReadFile("templates/pbp-body.txt.hbs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	const want = "{{#if environment-errors}}\n\nEnvironment errors:\n{{#each environment-errors}}\n  {{this}}\n{{/each}}\n{{/if}}"
+	if !strings.Contains(body, want) {
+		t.Errorf("body lacks the guarded Environment errors section:\n%s", body)
+	}
+}

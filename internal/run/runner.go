@@ -66,6 +66,7 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 	log.Info("run started")
 
 	var runErrs []string
+	var envErrs []string
 	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: "running", Started: start}
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
 		log.Error("record run start", "err", err)
@@ -76,15 +77,44 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 				log.Error("preflight failed", "err", err)
 				return nil, []string{"preflight: " + err.Error()}
 			}
+			envErrs = strayTaggedErrors(ctx, d, log)
 			return execute(ctx, d, opt, start, log)
 		})
 		s.Results = results
 		runErrs = append(runErrs, errs...)
 	}
+	s.EnvironmentErrors = envErrs
 	s.RunError = strings.Join(runErrs, "; ")
 	s.Ended = d.Now()
 	finish(d, log, s, rec)
 	return s
+}
+
+// strayTaggedErrors reports guests tagged "pbp" outside the VMID range. PBP
+// never touches them; they are environment errors in the run summary. A
+// failed check is itself reported and the run continues.
+func strayTaggedErrors(ctx context.Context, d Deps, log *slog.Logger) []string {
+	stray, err := d.Target.StrayTagged(ctx)
+	if err != nil {
+		log.Warn("could not check for stray pbp-tagged guests", "err", err)
+		return []string{"could not check for stray pbp-tagged guests: " + err.Error()}
+	}
+	lo, hi := d.Cfg.Target.VMIDRange[0], d.Cfg.Target.VMIDRange[1]
+	var out []string
+	for _, g := range stray {
+		kind := "VM"
+		if g.Key.Kind == model.KindLXC {
+			kind = "CT"
+		}
+		who := fmt.Sprintf("%s %d", kind, g.Key.VMID)
+		if g.Name != "" {
+			who += " (" + g.Name + ")"
+		}
+		msg := fmt.Sprintf("%s is tagged pbp but outside the PBP range %d–%d; not touched", who, lo, hi)
+		log.Warn(msg, "guest", g.Key.String(), "node", g.Node)
+		out = append(out, msg)
+	}
+	return out
 }
 
 // guarded runs fn, turning a panic into a run error.

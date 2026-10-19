@@ -6,6 +6,13 @@ Result: {{summary}}
 
 Run error: {{run-error}}
 {{/if}}
+{{#if environment-errors}}
+
+Environment errors:
+{{#each environment-errors}}
+  {{this}}
+{{/each}}
+{{/if}}
 
 Guests:
 {{#each guests}}

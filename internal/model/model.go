@@ -104,6 +104,9 @@ type RunSummary struct {
 	Started, Ended time.Time
 	Results        []GuestResult
 	RunError       string
+	// EnvironmentErrors are problems with the node PBP found but did not
+	// act on (e.g. a pbp-tagged guest outside the VMID range).
+	EnvironmentErrors []string
 }
 
 func (s RunSummary) Counts() map[Verdict]int {
@@ -116,7 +119,7 @@ func (s RunSummary) Counts() map[Verdict]int {
 
 // Severity is "error" if the run errored or any guest FAILED, "warning" if
 // any guest was BOOTED/ERROR or SKIPPED for a reason other than already
-// proven, else "info".
+// proven or there are environment errors, else "info".
 func (s RunSummary) Severity() string {
 	if s.RunError != "" {
 		return "error"
@@ -132,7 +135,7 @@ func (s RunSummary) Severity() string {
 			warn = warn || !r.AlreadyProven
 		}
 	}
-	if warn {
+	if warn || len(s.EnvironmentErrors) > 0 {
 		return "warning"
 	}
 	return "info"

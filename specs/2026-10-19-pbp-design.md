@@ -274,8 +274,10 @@ mount points excluded from backup, bind mounts and passthrough devices removed b
 ### 8.3 Notification via the PVE node
 - One summary per run, sent on the target node via SSH calling `PVE::Notify::notify(severity,
   "pbp", data, fields)`, so it uses whatever targets/matchers the operator already has.
-- The summary includes a "not covered by backup" section (§7.8).
-- Severity: `info` all PROVEN; `warning` any BOOTED/SKIPPED/ERROR; `error` any FAILED or
+- The summary includes a "not covered by backup" section (§7.8) and, when non-empty, an
+  "Environment errors" section (pbp-tagged guests outside the VMID range, §11; a failed check
+  for them).
+- Severity: `info` all PROVEN; `warning` any BOOTED/SKIPPED/ERROR or any environment error; `error` any FAILED or
   run-level failure.
 - Metadata fields include `type=pbp` and `hostname` so operators can route via matchers.
 - Template files `pbp-subject.txt.hbs`, `pbp-body.txt.hbs` (and optionally `.html.hbs`) installed
@@ -376,6 +378,8 @@ logging:
 5. Only modify backup attributes `notes` and `protected`, and always restore `protected` to its
    original value.
 6. All teardown is crash-recoverable via the state store + janitor.
+7. A guest tagged `pbp` outside the reserved range is never touched; it is reported as an
+   environment error in the run summary.
 
 ## 12. Testing
 
