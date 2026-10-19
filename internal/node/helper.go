@@ -108,17 +108,22 @@ func Serve(ctx context.Context, cfg Config, sys System, version string, request 
 	return nodeproto.ExitRefused
 }
 
-func writeMarker(w *lineTracker, nonce string, f *failure) {
-	reason := singleLine(f.reason)
+// MarkerLine renders the helper's final stderr line (without newline) for a
+// failure of the given kind. With an empty nonce it is the plain
+// `pbp-node: <kind>: <reason>` form.
+func MarkerLine(kind, nonce, reason string) string {
+	reason = singleLine(reason)
 	if reason == "" {
 		reason = "unspecified"
 	}
-	line := ""
 	if nonce == "" {
-		line = "pbp-node: " + f.kind + ": " + reason
-	} else {
-		line = nodeproto.Marker(f.kind, nonce, reason)
+		return "pbp-node: " + kind + ": " + reason
 	}
+	return nodeproto.Marker(kind, nonce, reason)
+}
+
+func writeMarker(w *lineTracker, nonce string, f *failure) {
+	line := MarkerLine(f.kind, nonce, f.reason)
 	if w.midLine {
 		line = "\n" + line
 	}

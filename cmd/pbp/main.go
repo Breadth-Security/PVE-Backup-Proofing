@@ -78,7 +78,7 @@ type app struct {
 
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
-		stdin: os.Stdin, nodeSys: node.NewSystem(), audit: newSyslogAudit(),
+		stdin: os.Stdin, nodeSys: node.NewSystem(),
 		euid: os.Geteuid, templateDir: node.DefaultTemplateDir}
 }
 

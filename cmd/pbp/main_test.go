@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/daemon"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
@@ -517,10 +519,7 @@ func TestNodeNoRequest(t *testing.T) {
 		if set {
 			t.Setenv("SSH_ORIGINAL_COMMAND", "")
 		} else {
-			if v, ok := os.LookupEnv("SSH_ORIGINAL_COMMAND"); ok {
-				t.Setenv("SSH_ORIGINAL_COMMAND", v)
-				_ = os.Unsetenv("SSH_ORIGINAL_COMMAND")
-			}
+			unsetenv(t, "SSH_ORIGINAL_COMMAND")
 		}
 		if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
 			t.Errorf("set=%v: exit %d", set, code)
@@ -532,6 +531,129 @@ func TestNodeNoRequest(t *testing.T) {
 		if len(au.got) != 0 {
 			t.Errorf("set=%v: audited a non-request: %v", set, au.got)
 		}
+	}
+}
+
+// unsetenv removes key for the test and restores it afterwards.
+func unsetenv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	_ = os.Unsetenv(key)
+}
+
+// stubSys is a node.System whose failures echo secrets, as subprocess stderr
+// can.
+type stubSys struct{ secret string }
+
+func (s stubSys) CTConfig(context.Context, int) (map[string]string, error) {
+	return map[string]string{"tags": "pbp"}, nil
+}
+func (s stubSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, errors.New("pct failed running " + s.secret)
+}
+func (s stubSys) BridgeState(context.Context, string) (nodeproto.BridgeState, error) {
+	return nodeproto.BridgeState{}, errors.New("ovs: " + s.secret)
+}
+func (s stubSys) Notify(context.Context, []byte) error { return errors.New("ERROR: " + s.secret) }
+func (s stubSys) TemplateHashes() (map[string]string, error) {
+	return nil, errors.New("hash " + s.secret)
+}
+
+func TestNodeErrorReasonsNotAudited(t *testing.T) {
+	const secret = "hunter2-secret"
+	cases := map[string]struct {
+		req   nodeproto.Request
+		stdin string
+	}{
+		"notify": {nodeproto.Request{Op: "notify"}, `{"severity":"info"}`},
+		"pct":    {nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}}, ""},
+		"bridge": {nodeproto.Request{Op: "bridge"}, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, au := nodeEnv(t)
+			e.a.nodeSys = stubSys{secret}
+			e.a.stdin = strings.NewReader(c.stdin)
+			c.req.Deadline, c.req.Nonce = time.Now().Add(time.Minute), nodeproto.NewNonce()
+			enc, err := nodeproto.Encode(c.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+			if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+				t.Fatalf("exit %d, stderr %q", code, e.errOut)
+			}
+			if len(au.got) != 2 || au.got[0].Outcome != "received" || au.got[1].Outcome != "error" {
+				t.Fatalf("audit %+v", au.got)
+			}
+			for _, g := range au.got {
+				if strings.Contains(formatAudit(g), secret) {
+					t.Errorf("audit leaks subprocess text: %+v", g)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeExit250WithoutMarkerIsError(t *testing.T) {
+	e, au := nodeEnv(t)
+	e.a.nodeSys = execSys{stubSys{}, 250}
+	req := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"x"},
+		Deadline: time.Now().Add(time.Minute), Nonce: nodeproto.NewNonce()}
+	enc, _ := nodeproto.Encode(req)
+	t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(au.got) != 2 || au.got[1].Outcome != "error" || au.got[1].Reason == "" {
+		t.Errorf("audit %+v", au.got)
+	}
+}
+
+type execSys struct {
+	stubSys
+	exit int
+}
+
+func (s execSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return s.exit, nil
+}
+
+func TestNodeConfigOverrideIgnoredAsRoot(t *testing.T) {
+	for _, root := range []bool{false, true} {
+		e, au := nodeEnv(t)
+		if root {
+			e.a.euid = func() int { return 0 }
+		}
+		req, _ := nodeRequest(t, "version", time.Now().Add(time.Minute))
+		t.Setenv("SSH_ORIGINAL_COMMAND", req)
+		code := e.a.main(context.Background(), []string{"node"})
+		if root {
+			// /etc/pbp/node.yaml is used; the temp override must not be.
+			if _, err := os.Stat(node.DefaultConfigPath); err == nil {
+				t.Skip("host has a real /etc/pbp/node.yaml")
+			}
+			if code != 250 || len(au.got) != 1 || au.got[0].Outcome != "refused" {
+				t.Errorf("root: exit %d audit %+v", code, au.got)
+			}
+		} else if code != 0 {
+			t.Errorf("non-root: exit %d", code)
+		}
+	}
+}
+
+func TestNodeUnparseableRequestMissingConfig(t *testing.T) {
+	e, au := nodeEnv(t)
+	t.Setenv("PBP_NODE_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("SSH_ORIGINAL_COMMAND", "rm -rf /")
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.HasPrefix(e.errOut.String(), "pbp-node: refused: ") || strings.Count(e.errOut.String(), "\n") != 1 {
+		t.Errorf("stderr %q", e.errOut)
+	}
+	if len(au.got) != 1 || au.got[0].Outcome != "refused" {
+		t.Errorf("audit %+v", au.got)
 	}
 }
 
@@ -548,7 +670,8 @@ func TestNodeVersionRequest(t *testing.T) {
 	if e.out.String() != "v0.2.1\n" || e.errOut.Len() != 0 {
 		t.Errorf("stdout %q stderr %q", e.out, e.errOut)
 	}
-	want := []auditEntry{{Outcome: "ok", Op: "version", Client: "192.0.2.7"}}
+	want := []auditEntry{{Outcome: "received", Op: "version", Client: "192.0.2.7"},
+		{Outcome: "ok", Op: "version", Client: "192.0.2.7"}}
 	if !slices.Equal(au.got, want) {
 		t.Errorf("audit %+v, want %+v", au.got, want)
 	}
@@ -585,11 +708,16 @@ func TestNodeRefusalsAreAudited(t *testing.T) {
 	if !ok || kind != "refused" {
 		t.Errorf("stderr %q", e.errOut)
 	}
-	if len(au.got) != 1 || au.got[0].Outcome != "refused" || au.got[0].Op != "exec" || au.got[0].VMID != 101 || au.got[0].Reason == "" {
+	if len(au.got) != 2 || au.got[0].Outcome != "received" || au.got[0].VMID != 101 {
 		t.Fatalf("audit %+v", au.got)
 	}
-	if strings.Contains(formatAudit(au.got[0]), secret) {
-		t.Errorf("audit leaks argv: %+v", au.got[0])
+	if g := au.got[1]; g.Outcome != "refused" || g.Op != "exec" || g.VMID != 101 || g.Reason == "" {
+		t.Fatalf("audit %+v", au.got)
+	}
+	for _, g := range au.got {
+		if strings.Contains(formatAudit(g), secret) {
+			t.Errorf("audit leaks argv: %+v", g)
+		}
 	}
 }
 
@@ -622,6 +750,27 @@ func TestNodeInstallTemplates(t *testing.T) {
 		}
 		if !strings.Contains(e.errOut.String(), "usage:") {
 			t.Errorf("stderr %q", e.errOut)
+		}
+	})
+	t.Run("refused over ssh with empty command as root", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		t.Setenv("SSH_ORIGINAL_COMMAND", "")
+		if code := e.a.main(context.Background(), []string{"node", "install-templates"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates")
+		}
+	})
+	t.Run("extra argument refused", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		if code := e.a.main(context.Background(), []string{"node", "install-templates", "extra"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates")
 		}
 	})
 	t.Run("refused as non-root", func(t *testing.T) {

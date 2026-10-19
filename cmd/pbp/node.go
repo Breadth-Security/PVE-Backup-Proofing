@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
@@ -24,7 +25,7 @@ const msgNoRequest = "pbp-node: refused: no request (pbp node runs only as an SS
 // auditEntry is one helper request for the node's journal. It never holds
 // argv or notify payloads, which may contain secrets.
 type auditEntry struct {
-	Outcome string // "ok", or a nodeproto.Kind* value
+	Outcome string // "received", "ok", or a nodeproto.Kind* value
 	Op      string
 	VMID    int // 0 when the request has none
 	Reason  string
@@ -42,7 +43,8 @@ func (noAudit) Log(auditEntry) {}
 // pbp-node).
 type syslogAudit struct{ w *syslog.Writer }
 
-// newSyslogAudit falls back to a no-op logger if syslog is unavailable.
+// newSyslogAudit falls back to a no-op logger if syslog is unavailable. It is
+// called only on the node path, so daemon/run/check never open syslog.
 func newSyslogAudit() auditLog {
 	w, err := syslog.New(syslog.LOG_AUTH|syslog.LOG_INFO, "pbp-node")
 	if err != nil {
@@ -51,13 +53,26 @@ func newSyslogAudit() auditLog {
 	return syslogAudit{w}
 }
 
+// auditTimeout bounds how long a request waits for syslog; auditing is best
+// effort and never blocks a request.
+const auditTimeout = 500 * time.Millisecond
+
 func (s syslogAudit) Log(e auditEntry) {
 	line := formatAudit(e)
-	if e.Outcome == "ok" {
-		_ = s.w.Info(line)
-		return
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		switch e.Outcome {
+		case "ok", "received":
+			_ = s.w.Info(line)
+		default:
+			_ = s.w.Warning(line)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(auditTimeout):
 	}
-	_ = s.w.Warning(line)
 }
 
 func formatAudit(e auditEntry) string {
@@ -140,37 +155,58 @@ func (a *app) nodeMain(ctx context.Context, args []string) int {
 
 	req, perr := nodeproto.Parse(request)
 	entry := auditEntry{Outcome: "ok", Op: req.Op, VMID: req.VMID, Client: clientAddr()}
+	if a.audit == nil {
+		a.audit = newSyslogAudit()
+	}
 
 	cfg, err := node.LoadConfig(a.nodeConfigPath())
 	if err != nil {
 		reason := cleanField(strings.Join(strings.Fields(err.Error()), " "), 300)
-		if perr == nil {
-			fprintln(a.stderr, nodeproto.Marker(nodeproto.KindRefused, req.Nonce, reason))
-		} else {
-			fprintln(a.stderr, "pbp-node: refused: "+reason)
-		}
-		entry.Outcome, entry.Reason = nodeproto.KindRefused, reason
+		nonce := req.Nonce // empty when the request did not parse
+		fprintln(a.stderr, node.MarkerLine(nodeproto.KindRefused, nonce, reason))
+		entry.Outcome, entry.Reason = nodeproto.KindRefused, "node config unusable"
 		a.audit.Log(entry)
 		return nodeproto.ExitRefused
+	}
+
+	if perr == nil {
+		receipt := entry
+		receipt.Outcome = "received"
+		a.audit.Log(receipt)
 	}
 
 	errw := &tailWriter{w: a.stderr}
 	code := node.Serve(ctx, cfg, a.nodeSys, version, request, a.stdin, a.stdout, errw)
 
-	if perr != nil {
+	switch {
+	case perr != nil:
 		// The parse error can echo request text, so log a fixed reason.
 		entry.Outcome, entry.Reason = nodeproto.KindRefused, "invalid request"
-	} else if code == nodeproto.ExitRefused {
-		if kind, reason, ok := nodeproto.HelperFailure(code, errw.last+"\n", req.Nonce); ok {
+	case code == nodeproto.ExitRefused:
+		kind, reason, ok := nodeproto.HelperFailure(code, errw.last+"\n", req.Nonce)
+		switch {
+		case !ok:
+			entry.Outcome, entry.Reason = nodeproto.KindError, "exit 250 without helper marker"
+		case kind == nodeproto.KindRefused:
+			// Refusal reasons are helper-authored fixed strings.
 			entry.Outcome, entry.Reason = kind, cleanField(reason, 300)
+		case kind == nodeproto.KindTimeout:
+			entry.Outcome, entry.Reason = kind, "timed out"
+		default:
+			// Error reasons may echo subprocess stderr (payload text, commands).
+			entry.Outcome, entry.Reason = kind, "helper error"
 		}
 	}
 	a.audit.Log(entry)
 	return code
 }
 
+// nodeConfigPath is /etc/pbp/node.yaml. PBP_NODE_CONFIG overrides it for tests
+// only when not running as root: the sudoers rule for the helper must keep
+// env_reset with env_keep exactly "SSH_ORIGINAL_COMMAND SSH_CONNECTION", and
+// as root the override is ignored regardless.
 func (a *app) nodeConfigPath() string {
-	if p := os.Getenv("PBP_NODE_CONFIG"); p != "" {
+	if p := os.Getenv("PBP_NODE_CONFIG"); p != "" && a.euid() != 0 {
 		return p
 	}
 	return node.DefaultConfigPath
