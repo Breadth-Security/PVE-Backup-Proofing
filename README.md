@@ -309,3 +309,12 @@ go vet ./... && go vet -tags integration ./... && go test -race ./...
 ```
 
 An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site.
+
+*Note that this repo is synced from a local Gitea repo, upon commits. This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
+
+## License
+
+PBP is licensed under the [Apache License, Version 2.0](LICENSE).
+The Go modules it depends on (golang.org/x/crypto, gopkg.in/yaml.v3,
+github.com/robfig/cron) and the container base image it ships on
+(distroless) are distributed under their own licenses.
