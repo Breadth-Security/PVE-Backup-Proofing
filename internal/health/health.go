@@ -42,10 +42,15 @@ func OverrunLimit(maxRun, bootTimeout, probeTimeout time.Duration) time.Duration
 
 // Evaluate reports whether PBP is healthy at now. It is unhealthy when the
 // last finished run ended in a run-level error, when the newest run is still
-// running after maxRun (24h if 0), or when the scheduled time following the
-// newest run's end (its start if no end was recorded; startedAt, the
-// daemon's start, if there are no runs) passed more than 30 minutes ago. A zero startedAt with no runs is healthy.
+// running for longer than limit (normally OverrunLimit's result; a limit <= 0
+// means 24h), or when the scheduled time following the newest run's end (its
+// start if no end was recorded; startedAt, the daemon's start, if there are
+// no runs) passed more than 30 minutes ago. A zero startedAt with no runs is
+// healthy.
 func Evaluate(st state.State, now time.Time, sched cron.Schedule, limit time.Duration, startedAt time.Time) (ok bool, reason string) {
+	if limit <= 0 {
+		limit = defaultMaxRun
+	}
 	runs := st.Runs
 	for i := len(runs) - 1; i >= 0; i-- {
 		if runs[i].Outcome == state.OutcomeRunning {
