@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd pbp >/dev/null; then
+        adduser --system --group --no-create-home --home /var/lib/pbp \
+            --shell /usr/sbin/nologin pbp
+    fi
+
+    install -d -m 0750 -o root -g pbp /etc/pbp
+    install -d -m 0700 -o pbp -g pbp /var/lib/pbp
+    install -d -m 0750 -o pbp -g pbp /var/log/pbp
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        systemctl enable pbp.service || true
+        # Never start without a config; the unit's ConditionPathExists would
+        # skip it anyway, but stay explicit.
+        if [ -f /etc/pbp/config.yaml ]; then
+            if [ -n "$2" ]; then
+                systemctl try-restart pbp.service || true
+            else
+                systemctl start pbp.service || true
+            fi
+        fi
+    fi
+fi
+
+exit 0

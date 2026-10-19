@@ -1,0 +1,4 @@
+# Go builds a static binary on purpose (same build as the Docker image).
+pbp: statically-linked-binary [usr/bin/pbp]
+# No man page yet; `pbp` prints its usage.
+pbp: no-manual-page [usr/bin/pbp]
