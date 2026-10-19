@@ -272,7 +272,14 @@ go test ./... && go vet ./...
 
 ## Code scanning
 
-Five workflows in [`.gitea/workflows/`](.gitea/workflows/) scan the code: Trivy, govulncheck, gosec, staticcheck and golangci-lint. Each runs on every pull request, on pushes to `main` and weekly (Monday 06:17 UTC), and each **blocks** the pull request when it reports a finding. Tool versions are pinned in the workflow files. To run them locally from the repository root:
+Workflows in [`.gitea/workflows/`](.gitea/workflows/) check every pull request and every push to `main`, and each **blocks** the pull request when it fails:
+
+- **test**: `go vet` (with and without the `integration` tag) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
+- **Scanners**: Trivy, govulncheck, gosec, staticcheck and golangci-lint check the code and dependencies. gitleaks checks the **whole git history** for committed secrets; Trivy only sees the current files. The scanners also run weekly (Monday 06:17 UTC), so newly published vulnerabilities are caught in code that hasn't changed.
+
+The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the test workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
+
+Tool versions are pinned in the workflow files. To run them locally from the repository root:
 
 ```
 # govulncheck
@@ -292,6 +299,12 @@ go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --buil
 # Trivy (vulnerabilities, secrets, misconfigurations)
 docker run --rm -v "$PWD":/src:ro aquasec/trivy:0.76.0 fs --exit-code 1 --ignore-unfixed \
   --scanners vuln,secret,misconfig --skip-dirs /src/.superpowers /src
+
+# gitleaks (full git history)
+docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact /repo
+
+# vet and race tests
+go vet ./... && go vet -tags integration ./... && go test -race ./...
 ```
 
 An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site.

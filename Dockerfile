@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26 AS build
+# Pinned to the `toolchain` in go.mod (the test workflow checks they match).
+FROM golang:1.26.9 AS build
 ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# Refuse to build an image from code that fails vet or the race-enabled
+# tests (the race detector needs cgo, which the golang image provides).
+RUN go vet ./... && CGO_ENABLED=1 go test -race -count=1 ./...
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/pbp ./cmd/pbp
 # Empty state and log directories, copied below with uid 65532 ownership so
 # named volumes mounted there inherit it.
