@@ -266,6 +266,8 @@ docker compose exec pbp pbp check
 
 `pbp check` validates the config and your access and runs the full preflight, without restoring anything. Fix everything it reports before you rely on the schedule.
 
+`docker compose up` builds the image from this checkout and stamps it with the version in the top-level `VERSION` file (for example `0.2.0`; `docker compose exec pbp pbp version` shows it). The helper on the node must share its major.minor, so install the `.deb` of the same release there. An image built with `--build-arg VERSION=dev` is a `dev` build, which the helper refuses unless it is a `dev` build too.
+
 Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroless `nonroot`). The secret files and `config.yaml` must be readable by that user (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is. A bind mount hides that ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first. Run logs are created readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root or as that uid, for example `sudo less logs/run-*.log`.
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
@@ -406,6 +408,7 @@ When a failed unit can be traced to one of these (for example a `.mount` unit fo
 | `pbp-node: refused: out-of-range`, `untagged` or `not-container` | The guest is outside the helper's `vmid_range`, has no `pbp` tag, or is not an LXC container. By design. If the range itself is wrong, fix `node.yaml` and `target.vmid_range` together. |
 | `vmid_range differs` or `bridge differs` | `/etc/pbp/node.yaml` and `config.yaml` disagree; the message gives both values. Make them equal. Nothing is restored until they match. |
 | `helper 0.2.1 is not compatible with daemon 0.1.x` | The daemon and the helper must share major.minor. Upgrade the `.deb` on the node (or the daemon) to match. A `dev` build is compatible only with a `dev` build. |
+| `helper 0.2.0 is not compatible with daemon dev` (or the reverse) | One side is a `dev` build: a binary from a plain `go build`, or an image built with `--build-arg VERSION=dev`. A `dev` build is compatible only with a `dev` build. Rebuild the image without the build argument (it then takes its version from the `VERSION` file) or with `--build-arg VERSION=<release>`, and install the matching `.deb` on the node. |
 | `notification templates on the node: ... run "pbp node install-templates" as root on the node` | Install or refresh the templates (step 6). |
 | `pbp-node: timeout` on long probe commands | `request_timeout` in `node.yaml` is below what the command needs; keep it at or above `restore.probe_timeout`. |
 | Access stopped working after a node cleanup | `apt purge pbp` on the node deletes the `pbp` user and its `authorized_keys`. Reinstall and redo steps 3 and 4. |
@@ -426,12 +429,14 @@ See [`config.example.yaml`](config.example.yaml), which documents every key. Sec
 ## Building
 
 ```
-docker build -t pbp:latest .            # multi-stage; static binary on distroless
-docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp a version
-docker run --rm pbp:latest version      # prints the stamped version (default "dev")
+docker build -t pbp:latest .            # multi-stage; static binary on distroless, version from VERSION
+docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp another version
+docker run --rm pbp:latest version      # prints the stamped version (VERSION, e.g. 0.2.0, unless overridden)
 go test ./... && go vet ./...
 packaging/build.sh 1.2.3 dist           # .debs, tarballs and SHA256SUMS for amd64 and arm64
 ```
+
+The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build uses when no `--build-arg VERSION` is given. Bump it before tagging a release: the `release` workflow fails a tag `v<version>` whose `MAJOR.MINOR.PATCH` differs from it (`v0.2.0-rc1` needs `0.2.0`). A plain `go build` without `-ldflags "-X main.version=..."` is a `dev` build.
 
 `packaging/build.sh` needs Go, `envsubst` (gettext-base) and network access for the pinned nfpm. The `release` workflow runs it when a tag `v<version>` is pushed, runs lintian on the packages (errors fail the job) and creates the Gitea release with the packages, tarballs and `SHA256SUMS` attached. Run it by hand (workflow dispatch) for a dry run that builds but publishes nothing. It authenticates with the job's automatic token; if your Gitea refuses that (HTTP 401/403), create a token with the `write:repository` scope and store it as the repository secret `RELEASE_TOKEN`, which is used in preference when set.
 

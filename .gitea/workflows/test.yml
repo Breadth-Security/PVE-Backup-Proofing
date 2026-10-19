@@ -46,6 +46,10 @@ jobs:
           [ "go$image" = "$want" ] || { echo "Dockerfile builds with golang:$image, go.mod pins $want"; exit 1; }
       - name: go mod verify
         run: go mod verify
+      - name: Version file and tag mapping
+        run: |
+          packaging/versionfile_test.sh
+          packaging/debversion_test.sh
       - name: go vet
         run: |
           go vet ./...

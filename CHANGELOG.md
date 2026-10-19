@@ -8,7 +8,8 @@ Behaviour changes:
 
 - `target.ssh.user` defaults to `pbp`. `root` is rejected by config validation.
 - The node needs `/etc/pbp/node.yaml` (`vmid_range`, `bridge`, optional `request_timeout`, default 15m). `pbp check` and preflight fail if it differs from `target.vmid_range` and `target.bridge`.
-- The daemon and the helper must share major.minor (`0.2.x` with `0.2.y`).
+- The daemon and the helper must share major.minor (`0.2.x` with `0.2.y`). A `dev` build is compatible only with a `dev` build.
+- A Docker build without `--build-arg VERSION` (including `docker compose build`) is stamped from the new top-level `VERSION` file instead of `dev`. The release workflow fails a tag whose version disagrees with it.
 - PBP no longer installs the notification templates itself. Run `pbp node install-templates` as root on the node; preflight only checks them.
 - `pbp check` has new steps: node helper version, config, `request_timeout` and refusal.
 - The `.deb` is unchanged for daemon-only hosts (the `pbp` user keeps the `nologin` shell). On a node, `apt purge pbp` deletes the `pbp` user and PBP's access.
