@@ -724,7 +724,7 @@ func TestRunRecord(t *testing.T) {
 
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 
-	if during.Outcome != "running" || during.ID != "20261019T021400Z-schedule" {
+	if during.Outcome != "running" || during.ID != "20261019T021400.000Z-schedule" {
 		t.Errorf("record during run = %+v", during)
 	}
 	rec := f.lastRun(t)
@@ -747,7 +747,7 @@ func TestRunRetainRuns(t *testing.T) {
 		f.run(context.Background(), Options{Trigger: "schedule"})
 		f.clock.advance(time.Hour)
 	}
-	if runs := f.store.Snapshot().Runs; len(runs) != 2 || runs[1].ID != "20261019T041400Z-schedule" {
+	if runs := f.store.Snapshot().Runs; len(runs) != 2 || runs[1].ID != "20261019T041400.000Z-schedule" {
 		t.Errorf("runs = %+v", runs)
 	}
 }
@@ -845,5 +845,17 @@ func TestRunDispatcherPanicWaitsForJobs(t *testing.T) {
 	}
 	if len(f.tgt.Live) != 0 {
 		t.Errorf("guest left behind: %v", f.tgt.Live)
+	}
+}
+
+// Two runs started in the same second get distinct IDs (and log files).
+func TestNewRunIDHasMilliseconds(t *testing.T) {
+	t0 := time.Date(2026, 10, 19, 2, 14, 0, 0, time.FixedZone("CEST", 2*3600))
+	a, b := NewRunID(t0, "manual"), NewRunID(t0.Add(7*time.Millisecond), "manual")
+	if a != "20261019T001400.000Z-manual" || b != "20261019T001400.007Z-manual" {
+		t.Errorf("ids = %q, %q", a, b)
+	}
+	if strings.ContainsAny(a, "/\\: ") {
+		t.Errorf("id %q is not filename-safe", a)
 	}
 }

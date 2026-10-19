@@ -48,6 +48,13 @@ type Options struct {
 	RunID    string
 }
 
+// NewRunID names a run started at t: its UTC start time to the millisecond,
+// so two runs in the same second differ, and its trigger. The ID is safe in a
+// file name.
+func NewRunID(t time.Time, trigger string) string {
+	return t.UTC().Format("20060102T150405.000Z") + "-" + trigger
+}
+
 // Run performs one proofing run (design section 6): preflight, discovery,
 // gated proofing with Cfg.Workers workers, then history and notification.
 // It never panics and always returns a summary.
@@ -60,7 +67,7 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 		Started: start,
 	}
 	if s.ID == "" {
-		s.ID = start.UTC().Format("20060102T150405Z") + "-" + opt.Trigger
+		s.ID = NewRunID(start, opt.Trigger)
 	}
 	log = log.With("run", s.ID)
 	log.Info("run started")

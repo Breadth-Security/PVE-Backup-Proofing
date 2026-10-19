@@ -244,7 +244,7 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 // runOnce performs one run with real wiring. The caller holds the run lock.
 // Logs go to stdout and to the run's own JSON log file.
 func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) model.RunSummary {
-	opt.RunID = a.now().UTC().Format("20060102T150405Z") + "-" + opt.Trigger
+	opt.RunID = run.NewRunID(a.now(), opt.Trigger)
 	f, logErr := report.OpenRunLog(cfg.Logging.Dir, opt.RunID)
 	var log *slog.Logger
 	if logErr != nil {

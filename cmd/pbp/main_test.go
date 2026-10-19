@@ -194,7 +194,7 @@ func TestRunWiring(t *testing.T) {
 		t.Fatalf("exit %d; out %q err %q", code, e.out, e.errOut)
 	}
 
-	const id = "20261019T020005Z-manual"
+	const id = "20261019T020005.000Z-manual"
 	runs := e.runs()
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Trigger != "manual" {
 		t.Fatalf("runs = %+v", runs)
