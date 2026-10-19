@@ -1,0 +1,34 @@
+PBP backup proofing run {{run-id}} on {{node}}
+Started: {{started}}
+Duration: {{elapsed}}
+Result: {{summary}}
+{{#if run-error}}
+
+Run error: {{run-error}}
+{{/if}}
+{{#if environment-errors}}
+
+Environment errors:
+{{#each environment-errors}}
+  {{this}}
+{{/each}}
+{{/if}}
+
+Guests:
+{{#each guests}}
+  {{guest}} {{name}}: {{verdict}} - {{reason}}
+{{/each}}
+{{#if booted}}
+
+Guests PBP could not look inside (booted only):
+{{#each booted}}
+  {{guest}} {{name}}: {{reason}}
+{{/each}}
+{{/if}}
+{{#if not-covered}}
+
+Not covered by backup:
+{{#each not-covered}}
+  {{this}}
+{{/each}}
+{{/if}}

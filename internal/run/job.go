@@ -1,0 +1,325 @@
+// Package run drives proofing runs: it takes selected backups through the
+// protect, restore, sanitize, boot, probe and teardown lifecycle (design
+// section 6) and records every step so a crash can be cleaned up.
+package run
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
+	"strings"
+	"time"
+
+	"git.breadthanalytics.com/tdiana/pbv/internal/config"
+	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
+	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
+	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
+	"git.breadthanalytics.com/tdiana/pbv/internal/report"
+	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/pbv/internal/state"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+)
+
+// Cleanup timeouts. Each cleanup step runs on its own fresh context so that a
+// shutdown (cancelled run context) still destroys the guest, restores the
+// backup's protected flag and writes the verdict, and so one slow step cannot
+// starve the next.
+const (
+	destroyTimeout   = 5 * time.Minute
+	unprotectTimeout = 2 * time.Minute
+	notesTimeout     = 2 * time.Minute
+)
+
+// InFlight stages, in order. Each is recorded before the step it names.
+const (
+	stageProtected = "protected"
+	stageRestored  = "restored"
+	stageStarted   = "started"
+	stageDestroyed = "destroyed"
+)
+
+// Deps is what a run needs. Now supplies every timestamp.
+type Deps struct {
+	Cfg      config.Config
+	API      pve.API
+	Target   target.Target
+	Store    *state.Store
+	Log      *slog.Logger
+	Now      func() time.Time
+	Notifier report.Notifier
+}
+
+// job tracks what proofOne has done so teardown undoes exactly that.
+type job struct {
+	d    Deps
+	b    model.Backup
+	vmid int
+	log  *slog.Logger
+	// protectSet: PBP asked to set protected (the original was false).
+	protectSet bool
+	// restoreTried: a guest may exist at vmid.
+	restoreTried bool
+}
+
+// proofOne proofs backup b in the temporary guest vmid and always tears it
+// down again, then writes the verdict to the backup's notes. A panic while
+// proofing becomes an ERROR verdict; teardown still runs.
+func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int) (res model.GuestResult) {
+	log := d.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	j := &job{d: d, b: b, vmid: vmid, log: log.With("guest", b.Key.String(), "vmid", vmid, "volid", b.VolID)}
+	res = model.GuestResult{Backup: b, TempVMID: vmid}
+
+	defer func() {
+		if p := recover(); p != nil {
+			j.log.Error("panic while proofing", "panic", p, "stack", string(debug.Stack()))
+			res.Verdict, res.Reason = model.Error, fmt.Sprintf("internal error: %v", p)
+		} else if ctx.Err() != nil {
+			res.Verdict, res.Reason = model.Error, "cancelled"
+		}
+		j.teardown(&res)
+		if err := j.safely("notes", func() error { j.annotate(res); return nil }); err != nil {
+			res.Verdict, res.Reason = model.Error, "internal error: "+err.Error()
+		}
+	}()
+	j.prove(ctx, &res)
+	return res
+}
+
+// prove runs §6 steps 5–8 and sets the verdict and reason on res.
+func (j *job) prove(ctx context.Context, res *model.GuestResult) {
+	d, b, kind := j.d, j.b, j.b.Key.Kind
+	fail := func(v model.Verdict, format string, args ...any) {
+		res.Verdict, res.Reason = v, fmt.Sprintf(format, args...)
+	}
+
+	orig := b.Protected
+	err := d.Store.Update(func(st *state.State) error {
+		st.InFlight[j.vmid] = state.Job{
+			TempVMID: j.vmid, Kind: kind, VolID: b.VolID, Storage: b.Storage,
+			ProtectedOrig: &orig, Stage: stageProtected,
+		}
+		return nil
+	})
+	if err != nil {
+		fail(model.Error, "record job: %v", err)
+		return
+	}
+	if !orig {
+		j.protectSet = true
+		if err := j.setProtected(ctx, true); err != nil {
+			fail(model.Error, "protect backup: %v", err)
+			return
+		}
+	}
+
+	if err := j.setStage(stageRestored); err != nil {
+		fail(model.Error, "record job: %v", err)
+		return
+	}
+	j.restoreTried = true
+	t0 := d.Now()
+	err = d.Target.Restore(ctx, b, j.vmid)
+	res.RestoreDuration = d.Now().Sub(t0)
+	if err != nil {
+		fail(target.ClassifyRestoreError(err), "restore failed: %v", err)
+		return
+	}
+
+	missing, err := d.Target.Sanitize(ctx, kind, j.vmid, b.VolID)
+	if errors.Is(err, target.ErrUnsafe) {
+		fail(model.Error, "unsafe config: %s", strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "))
+		return
+	}
+	if err != nil {
+		fail(model.Error, "sanitize failed: %v", err)
+		return
+	}
+
+	guest, err := j.originalIdentity(ctx)
+	if err != nil {
+		fail(model.Error, "read original config: %v", err)
+		return
+	}
+	res.Name = guest.Name
+
+	if err := j.setStage(stageStarted); err != nil {
+		fail(model.Error, "record job: %v", err)
+		return
+	}
+	if err := d.Target.Start(ctx, kind, j.vmid); err != nil {
+		fail(model.Error, "start failed: %v", err)
+		return
+	}
+	boot, err := d.Target.WaitBooted(ctx, kind, j.vmid, d.Cfg.Restore.BootTimeout)
+	res.BootDuration = boot.Duration
+	switch {
+	case errors.Is(err, target.ErrBootFailed):
+		fail(model.Failed, "did not boot: %v", err)
+		return
+	case err != nil:
+		// A node, API or SSH fault while waiting: not the backup's fault.
+		fail(model.Error, "boot check error: %v", err)
+		return
+	case boot.AgentMissing:
+		res.AgentMissing = true
+		fail(model.Booted, "guest agent missing")
+		return
+	case boot.ExecBlocked:
+		fail(model.Booted, "agent cannot run commands")
+		return
+	}
+
+	// restore.probe_timeout bounds everything run inside the guest; a probe
+	// cut short by it is ERROR, never FAILED.
+	pctx := ctx
+	if t := d.Cfg.Restore.ProbeTimeout; t > 0 {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, t)
+		defer cancel()
+	}
+	out := probe.Run(pctx, d.Target.Executor(kind, j.vmid), probe.Input{
+		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
+	})
+	res.Verdict, res.Reason = out.Verdict, out.Reason
+	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits
+	res.NotCovered, res.Checks, res.BootLog = out.NotCovered, out.Checks, out.BootLog
+}
+
+// originalIdentity reads the guest's name and tags from the config stored in
+// the backup: the restored guest is renamed and re-tagged "pbp".
+func (j *job) originalIdentity(ctx context.Context) (probe.GuestInfo, error) {
+	raw, err := j.d.API.OriginalConfig(ctx, j.d.Cfg.Target.Node, j.b.VolID)
+	if err != nil {
+		return probe.GuestInfo{}, err
+	}
+	cfg := sanitize.ParseConfigText(raw)
+	g := probe.GuestInfo{VMID: j.b.Key.VMID, Name: cfg["name"]}
+	if g.Name == "" {
+		g.Name = cfg["hostname"]
+	}
+	for _, t := range strings.Split(cfg["tags"], ";") {
+		if t = strings.TrimSpace(t); t != "" {
+			g.Tags = append(g.Tags, t)
+		}
+	}
+	return g, nil
+}
+
+// teardown destroys the guest and restores the backup's protected flag. The
+// InFlight entry is removed only when both succeed; otherwise the janitor
+// finishes the job. A failed destroy turns PROVEN into ERROR (so the guest
+// is proofed again next run) and otherwise only notes it in the reason, as
+// does a failed unprotect.
+func (j *job) teardown(res *model.GuestResult) {
+	clean := true
+	if j.restoreTried {
+		err := j.safely("destroy", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
+			defer cancel()
+			return j.d.Target.Destroy(ctx, j.b.Key.Kind, j.vmid)
+		})
+		if err != nil {
+			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
+			if res.Verdict == model.Proven {
+				res.Verdict, res.Reason = model.Error, "cleanup failed: destroy (booted ok)"
+			} else {
+				res.Reason += "; cleanup failed: destroy"
+			}
+			clean = false
+		} else if err := j.safely("record destroyed", func() error { return j.setStage(stageDestroyed) }); err != nil {
+			j.log.Error("record destroyed stage", "err", err)
+		}
+	}
+	if j.protectSet {
+		err := j.safely("unprotect", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), unprotectTimeout)
+			defer cancel()
+			return j.setProtected(ctx, false)
+		})
+		if err != nil {
+			j.log.Error("restore backup protected flag failed; left for the janitor", "err", err)
+			res.Reason += "; cleanup failed: unprotect"
+			clean = false
+		}
+	}
+	if !clean {
+		return
+	}
+	err := j.safely("remove job", func() error {
+		return j.d.Store.Update(func(st *state.State) error {
+			delete(st.InFlight, j.vmid)
+			return nil
+		})
+	})
+	if err != nil {
+		j.log.Error("remove finished job from state", "err", err)
+	}
+}
+
+// panicError is a recovered panic value turned into an error.
+type panicError struct{ v any }
+
+func (e panicError) Error() string { return fmt.Sprint(e.v) }
+
+// safely runs one cleanup step so that a panic in it is logged with its
+// stack and returned as an error, letting the remaining steps still run.
+func (j *job) safely(step string, fn func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			j.log.Error("panic during "+step, "panic", p, "stack", string(debug.Stack()))
+			err = panicError{p}
+		}
+	}()
+	return fn()
+}
+
+// annotate writes the verdict line to the backup's notes and records PROVEN
+// times. A failed notes write is logged; it never changes the verdict.
+func (j *job) annotate(res model.GuestResult) {
+	if res.Verdict == model.Skipped {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), notesTimeout)
+	defer cancel()
+	at := j.d.Now()
+	// The listed notes are only the first line on PBS; merge into the full
+	// notes, and write nothing if they cannot be read.
+	node := j.d.Cfg.Target.Node
+	if full, err := j.d.API.VolumeNotes(ctx, node, j.b.Storage, j.b.VolID); err != nil {
+		j.log.Error("read backup notes failed; notes not written", "verdict", res.Verdict, "err", err)
+	} else {
+		text := notes.Merge(full, notes.Line(res.Verdict, at, res.Reason))
+		if err := j.d.API.SetVolumeAttrs(ctx, node, j.b.Storage, j.b.VolID, &text, nil); err != nil {
+			j.log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
+		}
+	}
+	if res.Verdict != model.Proven {
+		return
+	}
+	err := j.d.Store.Update(func(st *state.State) error {
+		st.LastProven[j.b.Key.String()] = at
+		return nil
+	})
+	if err != nil {
+		j.log.Error("record last proven", "err", err)
+	}
+}
+
+func (j *job) setProtected(ctx context.Context, v bool) error {
+	return j.d.API.SetVolumeAttrs(ctx, j.d.Cfg.Target.Node, j.b.Storage, j.b.VolID, nil, &v)
+}
+
+func (j *job) setStage(stage string) error {
+	return j.d.Store.Update(func(st *state.State) error {
+		job := st.InFlight[j.vmid]
+		job.Stage = stage
+		st.InFlight[j.vmid] = job
+		return nil
+	})
+}

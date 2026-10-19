@@ -1,0 +1,86 @@
+# PBP example configuration. Mount at /etc/pbp/config.yaml.
+# Secrets are referenced by file path, never inline.
+
+schedule: "0 2 * * *"          # cron, container TZ
+workers: 1                     # default 1
+
+target:
+  type: existing-node          # default; future: provisioned-host
+  node: pve1
+  api:
+    url: https://pve1.example.lan:8006
+    token_id: pbp@pve!proof
+    token_secret_file: /run/secrets/pve_token
+    tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"  # or ca_file; never skip-verify
+    # ca_file: /etc/pbp/pve-ca.pem
+  ssh:
+    host: pve1.example.lan
+    user: root                 # default
+    port: 22                   # default
+    key_file: /run/secrets/pve_ssh_key
+    known_hosts_file: /etc/pbp/known_hosts
+  bridge: vmbr99             # operator-created, no ports, no IP; PBP verifies
+  vmid_range: [990000, 990049]
+
+sources:
+  storages: [pbs-main]         # PBS-type storages visible on the node
+
+selection: {}                  # reserved for future scoping; v1 = newest per guest
+
+restore:
+  storage: local-zfs
+  space_margin_percent: 10     # default; 0..100
+  boot_timeout: 5m             # default; at least 30s. Durations need a unit (s, m, h)
+  probe_timeout: 5m            # default; at least 30s. Bounds all checks inside one booted
+                               # guest; a probe cut short is ERROR, never FAILED
+  reproof: false
+  # max_run_duration: 6h       # unset or 0 = no limit; otherwise at least 1s
+
+checks:
+  command_timeout: 60s         # default; at least 1s. Bounds each command run inside a guest;
+                               # a command that times out fails its check ("check timed out")
+  # Units ignored when judging "no failed units". Omit the key to get this
+  # default list; set it (even to []) to use exactly your own list.
+  ignore_units:
+    - systemd-networkd-wait-online.service  # fails because the proof network has no uplink
+    - NetworkManager-wait-online.service    # fails because the proof network has no uplink
+    - chronyd.service                       # fails because the proof network has no uplink (no time source)
+    - chrony.service                        # fails because the proof network has no uplink (no time source)
+    - systemd-timesyncd.service             # fails because the proof network has no uplink (no time source)
+    - ntp.service                           # fails because the proof network has no uplink (no time source)
+    - ntpd.service                          # fails because the proof network has no uplink (no time source)
+    - ntpsec.service                        # fails because the proof network has no uplink (no time source)
+    - remote-fs.target                      # fails because the proof network has no uplink (network mounts)
+    - nfs-client.target                     # fails because the proof network has no uplink (NFS servers unreachable)
+    - rpc-statd.service                     # fails because the proof network has no uplink (NFS)
+    - cloud-init.service                    # fails because the proof network has no uplink (metadata source unreachable)
+    - cloud-init-network.service            # fails because the proof network has no uplink
+    - cloud-final.service                   # fails because the proof network has no uplink (follows cloud-init)
+    - cloud-config.service                  # fails because the proof network has no uplink (follows cloud-init)
+  # Windows services ignored for the same reason (or because they need Microsoft/online services).
+  windows_ignore_services:
+    - sppsvc            # software protection: needs activation servers, no uplink
+    - gupdate           # Google Update: fails because the proof network has no uplink
+    - edgeupdate        # Edge Update: fails because the proof network has no uplink
+    - MapsBroker        # downloaded maps manager: delayed-start, often stopped
+    - RemoteRegistry    # disabled/stopped by default on modern Windows
+    - CDPSvc            # connected devices platform: needs network
+    - tiledatamodelsvc  # tile data model: frequently stops after start
+    - wuauserv          # Windows Update: no uplink
+    - BITS              # background transfer: no uplink
+    - W32Time           # time sync: no time source without an uplink
+  profiles:
+    - name: myapp
+      unit: "myapp*.service"
+      ports: [8080]
+      commands: ["curl -sf http://127.0.0.1:8080/health"]
+  guests:
+    - match: { vmid: 105 }
+      services: [postgresql]
+
+notify:
+  when: always                 # always | problems
+
+logging:
+  dir: /var/log/pbp
+  retain_runs: 30              # default; at least 1

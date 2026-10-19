@@ -1,0 +1,128 @@
+package sanitize
+
+import (
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+
+	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+)
+
+// Plan is the set of config changes that make a restored guest safe.
+type Plan struct {
+	Set     map[string]string // keys to write (always includes every net key)
+	Delete  []string          // keys to remove, sorted
+	Removed []model.MissingPiece
+	Unsafe  []string // reasons the guest cannot be made safe by config edits
+}
+
+var (
+	reNet      = regexp.MustCompile(`^net\d+$`)
+	rePCIEtc   = regexp.MustCompile(`^(hostpci|usb|parallel|serial)\d+$`)
+	reVirtiofs = regexp.MustCompile(`^virtiofs\d+$`)
+	reRNG      = regexp.MustCompile(`^rng\d+$`)
+	reDev      = regexp.MustCompile(`^dev\d+$`)
+	reMP       = regexp.MustCompile(`^mp\d+$`)
+)
+
+// Sanitize computes the plan for a restored guest config. Disk keys are kept,
+// and so is "startup": with onboot=0 it has no effect, and changing it on a VM
+// needs Sys.Modify on "/".
+//
+// HA resources and replication jobs need no handling: both are keyed by VMID
+// and the restore uses a fresh VMID, so none can exist for the restored copy
+// (design section 6 step 7 is satisfied by construction).
+func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) Plan {
+	// Tags are added to, never replaced: removing a registered tag needs
+	// Sys.Modify on "/". Protection is cleared: a protected copy could never
+	// be destroyed.
+	p := Plan{Set: map[string]string{"onboot": "0", "protection": "0", "tags": AddTag(restored["tags"], "pbp")}}
+	keys := make([]string, 0, len(restored))
+	for k := range restored {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := restored[k]
+		switch {
+		case reNet.MatchString(k):
+			p.Set[k] = sanitizeNet(v, bridge)
+		case k == "hookscript":
+			p.Delete = append(p.Delete, k)
+		case kind == model.KindQEMU && k == "args":
+			p.Unsafe = append(p.Unsafe, "args")
+		case kind == model.KindQEMU && rePCIEtc.MatchString(k):
+			if strings.TrimSpace(v) != "socket" {
+				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			}
+		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
+			// ivshmem with a name would attach to the production guest's host shm.
+			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+		case kind == model.KindQEMU && reRNG.MatchString(k):
+			if src, _ := optValue(v, "source"); src == "/dev/hwrng" {
+				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			}
+		case kind == model.KindLXC && reDev.MatchString(k):
+			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+		case kind == model.KindLXC && reMP.MatchString(k):
+			if strings.HasPrefix(firstField(v), "/") {
+				path, _ := optValue(v, "mp")
+				p.remove(k, model.MissingPiece{Kind: "bind-mount", Key: k, Path: path})
+			}
+		case kind == model.KindLXC && k == "lxc":
+			p.Unsafe = append(p.Unsafe, "raw lxc.* config")
+		}
+	}
+	sort.Strings(p.Delete)
+	return p
+}
+
+// AddTag returns the PVE tag list tags (separated by ';', ',' or spaces)
+// with tag appended unless present, joined with ';'.
+func AddTag(tags, tag string) string {
+	list := strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
+	if !slices.Contains(list, tag) {
+		list = append(list, tag)
+	}
+	return strings.Join(list, ";")
+}
+
+func (p *Plan) remove(key string, piece model.MissingPiece) {
+	p.Delete = append(p.Delete, key)
+	p.Removed = append(p.Removed, piece)
+}
+
+func firstField(s string) string {
+	f, _, _ := strings.Cut(s, ",")
+	return f
+}
+
+// sanitizeNet forces the isolated bridge and drops VLAN/trunk/rate options
+// and the MTU (PVE refuses an MTU above the isolated bridge's), preserving the
+// order of everything else.
+func sanitizeNet(v, bridge string) string {
+	var out []string
+	seenBridge := false
+	for _, f := range strings.Split(v, ",") {
+		k, _, _ := strings.Cut(f, "=")
+		// A qemu first field is "<model>=MAC", never one of these keys.
+		switch k {
+		case "tag", "trunks", "rate", "mtu":
+			continue
+		case "bridge":
+			if seenBridge {
+				continue
+			}
+			seenBridge = true
+			out = append(out, "bridge="+bridge)
+			continue
+		}
+		out = append(out, f)
+	}
+	if !seenBridge {
+		out = append(out, "bridge="+bridge)
+	}
+	return strings.Join(out, ",")
+}

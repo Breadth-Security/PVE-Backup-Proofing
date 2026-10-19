@@ -1,0 +1,11 @@
+.git
+.superpowers
+specs
+logs
+*.test
+coverage.out
+secrets
+config.yaml
+known_hosts
+*.pem
+*.key
