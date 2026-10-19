@@ -102,23 +102,45 @@ Then apply with `ifreload -a`. Do not add `ovs_ports`, an address, or an OVS por
 
 ### 3. Create an API token
 
-On the node, create a user and a token (Datacenter > Permissions), for example user `pbp@pve` and token `proof`, giving the token id `pbp@pve!proof`. Use a **privilege-separated** token and grant the privileges to the token itself.
+On the node, create a user, a role and a **privilege-separated** token, for example user `pbp@pve` and token `proof`, giving the token id `pbp@pve!proof`. A privilege-separated token only gets the permissions that **both** the user and the token have, so grant the ACLs to both:
 
-Privileges the token needs (**to be confirmed against a live node; this list may change**):
+```
+pveum user add pbp@pve
+pveum role add PBPProofer --privs "VM.Allocate,VM.Audit,VM.Backup,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit,VM.GuestAgent.Unrestricted,Datastore.AllocateSpace,Datastore.Audit,Sys.Audit,SDN.Use"
+pveum user token add pbp@pve proof --privsep 1        # prints the secret once
+for p in /vms /storage/<restore storage> /storage/<each PBS storage> /nodes/<node> /sdn/zones/localnetwork; do
+  pveum acl modify $p --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer
+done
+```
 
-| Privilege | Where |
-|-----------|-------|
-| `Datastore.Allocate`, `Datastore.AllocateSpace` | the restore storage (`/storage/<restore storage>`) |
-| `Datastore.Audit` | the source PBS storage(s), to list backups and read and write their notes |
-| `VM.Allocate` | the VMID range, or `/vms` |
-| `VM.Config.*` (Disk, CPU, Memory, Network, Options, Cloudinit, ...) | as above |
-| `VM.PowerMgmt` | as above |
-| `VM.Monitor` and `VM.GuestAgent.*` | as above, to talk to the guest agent |
-| `VM.Audit` | as above |
-| `Sys.Audit` | `/nodes/<node>`, for node version, memory and bridge checks |
-| `SDN.Use` | the isolated bridge (`/sdn/zones/localnetwork/<bridge>`) |
+This list was confirmed against PVE 9.2 (the integration suite, see `test/integration/README.md`):
 
-Put the token secret in a file (see Secrets below). Prefer a token that is scoped as tightly as these paths allow; the VMID range is the boundary PBP itself enforces, but Proxmox permissions are a second line.
+| Privilege | Path | Needed for |
+|-----------|------|------------|
+| `VM.Allocate` | `/vms` | restore into a new VMID, destroy with purge |
+| `VM.Backup` | `/vms` | read the config inside a backup (`vzdump/extractconfig`), restore from a backup, and write `notes`/`protected` on backup volumes |
+| `VM.Audit` | `/vms` | list guests (PBP must see every guest in the VMID range), read configs and status |
+| `VM.Config.Network`, `VM.Config.Options`, `VM.Config.HWType` | `/vms` | sanitize: NICs, tags, name, `onboot`, hookscript, removing `rng`/USB/PCI devices |
+| `VM.PowerMgmt` | `/vms` | start and stop the temporary guest |
+| `VM.GuestAgent.Audit`, `VM.GuestAgent.Unrestricted` | `/vms` | agent ping and OS info; running the checks through the agent |
+| `Datastore.AllocateSpace`, `Datastore.Audit` | the restore storage and each PBS storage | allocate restored disks; list backups and read and write their notes and `protected` flag |
+| `Sys.Audit` | `/nodes/<node>` | node version, memory and the bridge check |
+| `SDN.Use` | `/sdn/zones/localnetwork` | see below |
+
+`Datastore.Allocate` is **not** needed and should not be granted: on a PBS storage it allows deleting any backup.
+
+`SDN.Use` is needed on the bridges the **original** guests use, not only on the isolated bridge: PVE checks the backed-up NIC configuration (for example `bridge=vmbr0,tag=2`) when it restores, before PBP can move the NICs to the isolated bridge. Granting it on `/sdn/zones/localnetwork` covers every local bridge and VLAN. The restored guest is never started until every NIC is on the isolated bridge.
+
+`/vms` cannot be narrowed to the VMID range in PVE's permission model, so the token could act on every guest. The reserved range is enforced by PBP itself; the token is the second line, not the first.
+
+Guests PBP cannot proof with this token (each ends `ERROR`, never started; the backup is not blamed):
+
+- **Privileged containers**: restoring one needs `Sys.Modify` on `/`.
+- **Containers with raw `lxc.*` keys, `devN` passthrough or a hookscript**, and **VMs with non-mapped (raw) PCI or USB passthrough**: changing those keys is reserved to `root@pam`. VMs with *mapped* devices need `Mapping.Use` on the mapping as well.
+
+Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token change node-wide settings; weigh that before doing it.
+
+Put the token secret in a file (see Secrets below).
 
 ### 4. Create the SSH key
 
@@ -175,7 +197,9 @@ One summary per run is sent from the PVE node (over SSH, using `PVE::Notify`), s
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 
-PBP installs its templates (`pbp-subject.txt.hbs`, `pbp-body.txt.hbs`) into `/etc/pve/notification-templates/default/` on the node during preflight, and updates them if missing or changed.
+PBP installs its templates (`pbp-subject.txt.hbs`, `pbp-body.txt.hbs`) into `/etc/pve/notification-templates/default/` on the node during preflight, and updates them if missing or changed. PVE 9 picks up this new template type from there (verified on PVE 9.2), and `/etc/pve` survives package upgrades, so nothing needs reinstalling after an upgrade.
+
+If a target cannot be notified (for example a template fails to render), `PVE::Notify` only logs an `ERROR:` line; PBP treats that as a failed notification, so the run's outcome is `error` and the health check reports it.
 
 `notify.when` is `always` by default, so a missing nightly message is itself a signal; set it to `problems` for quiet success.
 
