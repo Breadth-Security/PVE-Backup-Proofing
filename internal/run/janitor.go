@@ -10,14 +10,14 @@ import (
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
 // Janitor finishes the teardown of jobs a crashed run left in the state
 // store, then destroys any other guest PBP owns (in the VMID range and tagged
-// "pbp"). For a job whose restore may have started, an untagged guest at its
-// VMID is removed too if the target accepts it as that restore's leftover
-// (stopped, named as in the backup or still locked by the restore; design
-// section 11.2); range, kind and node are enforced as always. A guest the target refuses is left alone and its entry
+// "pbp"). For a job whose restore may have started, Target.Destroy gets the
+// job's record, so it also removes that restore's untagged leftover (design
+// section 11.2). A guest the target refuses is left alone and its entry
 // kept. An entry is removed only once every step for it succeeded. The
 // returned error joins every failure.
 func Janitor(ctx context.Context, d Deps) error {
@@ -48,7 +48,7 @@ func Janitor(ctx context.Context, d Deps) error {
 			continue // its job's cleanup failed above and was reported
 		}
 		log.Warn("janitor: destroying leftover guest", "guest", g.Key.String(), "name", g.Name)
-		if err := d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID); err != nil {
+		if err := d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID, target.Recorded{}); err != nil {
 			log.Error("janitor: destroy leftover guest", "guest", g.Key.String(), "err", err)
 			errs = append(errs, fmt.Errorf("leftover %s: %w", g.Key, err))
 		}
@@ -65,13 +65,13 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	var errs []error
 	if j.Stage != state.StageDestroyed {
 		log.Warn("janitor: destroying guest of crashed job")
-		var err error
+		// Only the record of a restore that may have started makes an
+		// untagged guest at the VMID PBP's.
+		var rec target.Recorded
 		if j.MayHaveGuest() {
-			err = d.Target.DestroyRecorded(ctx, j.Kind, j.TempVMID, j.VolID)
-		} else {
-			err = d.Target.Destroy(ctx, j.Kind, j.TempVMID)
+			rec.VolID = j.VolID
 		}
-		if err != nil {
+		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID, rec); err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
 		} else if err := d.Store.SetStage(j.TempVMID, state.StageDestroyed, false); err != nil {
 			errs = append(errs, fmt.Errorf("record %d destroyed: %w", j.TempVMID, err))

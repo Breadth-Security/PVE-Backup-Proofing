@@ -22,25 +22,18 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
-// destroyLog records every Target.Destroy and DestroyRecorded call.
+// destroyLog records the VMID of every Target.Destroy call.
 type destroyLog struct {
 	target.Target
 	mu    sync.Mutex
 	calls []int
 }
 
-func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.mu.Lock()
 	t.calls = append(t.calls, vmid)
 	t.mu.Unlock()
-	return t.Target.Destroy(ctx, kind, vmid)
-}
-
-func (t *destroyLog) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
-	t.mu.Lock()
-	t.calls = append(t.calls, vmid)
-	t.mu.Unlock()
-	return t.Target.DestroyRecorded(ctx, kind, vmid, volid)
+	return t.Target.Destroy(ctx, kind, vmid, rec)
 }
 
 type janitorFixture struct {
@@ -86,6 +79,13 @@ func (f *janitorFixture) guest(kind model.GuestKind, vmid int, tagged bool) {
 	}
 	f.api.GuestList = append(f.api.GuestList, ref)
 	f.api.Configs[vmid] = cfg
+}
+
+// stoppedGuest adds a stopped untagged qemu guest at vmid named name.
+func (f *janitorFixture) stoppedGuest(vmid int, name string) {
+	f.guest(model.KindQEMU, vmid, false)
+	f.api.GuestList[len(f.api.GuestList)-1].Status = "stopped"
+	f.api.Configs[vmid]["name"] = name
 }
 
 // backup adds a backup volume on storage pbs with the given protected flag.

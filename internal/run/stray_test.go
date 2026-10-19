@@ -10,6 +10,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
+	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 )
 
 const (
@@ -43,7 +44,7 @@ func TestRunReportsStrayTaggedGuests(t *testing.T) {
 	if s.RunError != "" || s.Severity() != "warning" {
 		t.Errorf("run error %q, severity %s", s.RunError, s.Severity())
 	}
-	if r := f.lastRun(t); r.Outcome != "problems" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeProblems {
 		t.Errorf("outcome = %q, want problems", r.Outcome)
 	}
 	if sent := f.notif.sends(); len(sent) != 1 || len(sent[0].EnvironmentErrors) != 2 {
@@ -73,7 +74,7 @@ func TestRunStrayCheckFailureIsReportedAndRunContinues(t *testing.T) {
 	if !slices.Equal(s.EnvironmentErrors, want) || s.RunError != "" {
 		t.Errorf("EnvironmentErrors = %q, RunError = %q", s.EnvironmentErrors, s.RunError)
 	}
-	if r := f.lastRun(t); r.Outcome != "problems" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeProblems {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 }

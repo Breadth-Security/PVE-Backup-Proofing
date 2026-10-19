@@ -136,7 +136,7 @@ type unreachable struct {
 	err error
 }
 
-func (u unreachable) Prepare(context.Context, map[int]target.Recorded) error { return u.err }
+func (u unreachable) Prepare(context.Context) error { return u.err }
 
 func (a *app) main(ctx context.Context, args []string) int {
 	if len(args) == 0 {
@@ -325,7 +325,7 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store,
 		Log: report.NewLogger(a.stderr, nil), Now: a.now, Notifier: w.notifier}
-	line("preflight (node version, isolated bridge, restore storage, VMID range, notification templates, janitor)",
+	line("preflight (node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
 		run.Preflight(ctx, d))
 	if !ok {
 		return exitFail

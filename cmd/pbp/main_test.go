@@ -47,13 +47,13 @@ type lockProbe struct {
 	held *bool
 }
 
-func (l lockProbe) Prepare(ctx context.Context, recorded map[int]target.Recorded) error {
+func (l lockProbe) Prepare(ctx context.Context) error {
 	release, err := daemon.AcquireLock(daemon.LockPath())
 	*l.held = errors.Is(err, daemon.ErrBusy)
 	if err == nil {
 		release()
 	}
-	return l.Target.Prepare(ctx, recorded)
+	return l.Target.Prepare(ctx)
 }
 
 type env struct {
@@ -294,7 +294,7 @@ func TestRunSSHDownIsRunErrorAndUnhealthy(t *testing.T) {
 		t.Errorf("exit %d", code)
 	}
 	runs := e.runs()
-	if len(runs) != 1 || runs[0].Outcome != "error" {
+	if len(runs) != 1 || runs[0].Outcome != state.OutcomeError {
 		t.Fatalf("runs = %+v", runs)
 	}
 	if !strings.Contains(e.out.String(), "connection refused") || !strings.Contains(e.out.String(), "SSH TO THE NODE FAILED") {

@@ -46,3 +46,12 @@ func MissingFromOriginal(kind model.GuestKind, original map[string]string) []mod
 	}
 	return out
 }
+
+// GuestName is a guest's name in its config: "name" for a VM, "hostname"
+// for a container.
+func GuestName(kind model.GuestKind, cfg map[string]string) string {
+	if kind == model.KindLXC {
+		return cfg["hostname"]
+	}
+	return cfg["name"]
+}

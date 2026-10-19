@@ -17,7 +17,7 @@ PBP (Proxmox Backup Proofing) is a small daemon that runs in a container. On a s
 
 For each run, PBP:
 
-1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated, the restore storage, that the VMID range holds no guest PBP does not own, and installs the notification templates.
+1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated and the restore storage, installs the notification templates, cleans up after any crashed run (the janitor), and then checks that the VMID range holds no guest PBP does not own.
 2. **Discovery.** Picks the newest backup per guest across all configured storages. Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A snapshot that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
 3. **Capacity gate.** Skips a guest if the backup does not fit in the restore storage (free space, minus space reserved by in-flight restores, minus `space_margin_percent`) or the node lacks free RAM.
 4. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`), then puts every NIC on the isolated bridge, sets `onboot=0`, clears `protection` (a backup of a protected guest restores protected, and could then never be destroyed) and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.

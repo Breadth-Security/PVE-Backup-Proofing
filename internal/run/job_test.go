@@ -113,16 +113,20 @@ type recTarget struct {
 	onBoot func(ctx context.Context) error
 	// panicDestroy makes Destroy panic.
 	panicDestroy bool
+	// origTags and destroyRec are what Restore and Destroy were last given.
+	origTags   string
+	destroyRec target.Recorded
 }
 
-func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
+func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
 	t.rec.add(ctx, "Restore")
-	return t.Fake.Restore(ctx, b, vmid, orig)
+	t.origTags = origTags
+	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, orig map[string]string) ([]model.MissingPiece, error) {
+func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
 	t.rec.add(ctx, "Sanitize")
-	return t.Fake.Sanitize(ctx, kind, vmid, orig)
+	return t.Fake.Sanitize(ctx, kind, vmid)
 }
 
 func (t *recTarget) Start(ctx context.Context, kind model.GuestKind, vmid int) error {
@@ -140,20 +144,13 @@ func (t *recTarget) WaitBooted(ctx context.Context, kind model.GuestKind, vmid i
 	return t.Fake.WaitBooted(ctx, kind, vmid, timeout)
 }
 
-func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.rec.add(ctx, "Destroy")
+	t.destroyRec = rec
 	if t.panicDestroy {
 		panic("destroy boom")
 	}
-	return t.Fake.Destroy(ctx, kind, vmid)
-}
-
-func (t *recTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
-	t.rec.add(ctx, "DestroyRecorded")
-	if t.panicDestroy {
-		panic("destroy boom")
-	}
-	return t.Fake.DestroyRecorded(ctx, kind, vmid, volid)
+	return t.Fake.Destroy(ctx, kind, vmid, rec)
 }
 
 type fixture struct {
@@ -230,7 +227,7 @@ func TestHappyPath(t *testing.T) {
 		"Sanitize @restored",
 		"Start @started",
 		"WaitBooted 5m0s @started",
-		"DestroyRecorded @started",
+		"Destroy @started",
 		"SetProtected=false @destroyed",
 		"SetNotes @-",
 	}
@@ -239,6 +236,14 @@ func TestHappyPath(t *testing.T) {
 	}
 	if res.Name != "db01" || res.TempVMID != tmpVMID || res.Backup.VolID != volid {
 		t.Errorf("result %+v", res)
+	}
+	// The guest is PBP's by the job's record; the backup's name goes with it
+	// so the target need not read the original config again.
+	if want := (target.Recorded{VolID: volid, Name: "db01"}); f.tgt.destroyRec != want {
+		t.Errorf("Destroy got %+v, want %+v", f.tgt.destroyRec, want)
+	}
+	if f.tgt.origTags != "prod;db" {
+		t.Errorf("Restore got tags %q", f.tgt.origTags)
 	}
 	if f.protected() {
 		t.Error("backup left protected")
@@ -378,18 +383,18 @@ func TestDestroyFailure(t *testing.T) {
 		reason  string
 		stage   string
 	}{
-		{"proven becomes error", func(*fixture) {}, model.Error, "cleanup failed: destroy (booted ok)", "started"},
+		{"proven becomes error", func(*fixture) {}, model.Error, "cleanup failed: destroy (booted ok)", state.StageStarted},
 		{"failed kept", func(f *fixture) {
 			ex := healthy()
 			ex[failedC] = out("postgresql.service loaded failed failed PG\n")
 			f.tgt.Exec[tmpVMID] = ex
-		}, model.Failed, "failed: postgresql.service; cleanup failed: destroy", "started"},
+		}, model.Failed, "failed: postgresql.service; cleanup failed: destroy", state.StageStarted},
 		{"booted kept", func(f *fixture) {
 			f.tgt.Boot[tmpVMID] = target.BootInfo{AgentMissing: true}
-		}, model.Booted, "guest agent missing; cleanup failed: destroy", "started"},
+		}, model.Booted, "guest agent missing; cleanup failed: destroy", state.StageStarted},
 		{"error kept", func(f *fixture) {
 			f.tgt.SanitizeErr = map[int]error{tmpVMID: fmt.Errorf("%w: hostpci0", target.ErrUnsafe)}
-		}, model.Error, "unsafe config: hostpci0; cleanup failed: destroy", "restored"},
+		}, model.Error, "unsafe config: hostpci0; cleanup failed: destroy", state.StageRestored},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -432,7 +437,7 @@ func TestPanicStillTearsDown(t *testing.T) {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	got := f.rec.entries()
-	want := []string{"DestroyRecorded @started", "SetProtected=false @destroyed", "SetNotes @-"}
+	want := []string{"Destroy @started", "SetProtected=false @destroyed", "SetNotes @-"}
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("calls %q", got)
 	}
@@ -452,14 +457,14 @@ func TestDestroyPanicStillCleansUp(t *testing.T) {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	got := f.rec.entries()
-	want := []string{"DestroyRecorded @started", "SetProtected=false @started", "SetNotes @started"}
+	want := []string{"Destroy @started", "SetProtected=false @started", "SetNotes @started"}
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("calls %q", got)
 	}
 	if f.protected() {
 		t.Error("backup left protected")
 	}
-	if j, ok := f.inFlight(); !ok || j.Stage != "started" {
+	if j, ok := f.inFlight(); !ok || j.Stage != state.StageStarted {
 		t.Errorf("InFlight = %+v, %v", j, ok)
 	}
 	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · cleanup failed: destroy (booted ok)\n") {
@@ -535,7 +540,7 @@ func TestUnprotectFailureKeepsVerdict(t *testing.T) {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	j, ok := f.inFlight()
-	if !ok || j.Stage != "destroyed" || j.ProtectedOrig == nil || *j.ProtectedOrig {
+	if !ok || j.Stage != state.StageDestroyed || j.ProtectedOrig == nil || *j.ProtectedOrig {
 		t.Errorf("InFlight = %+v, %v", j, ok)
 	}
 }
@@ -587,7 +592,7 @@ func TestCancelledMidJob(t *testing.T) {
 	if res.Verdict != model.Error || res.Reason != "cancelled" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
-	want := []string{"DestroyRecorded @started", "SetProtected=false @destroyed", "SetNotes @-"}
+	want := []string{"Destroy @started", "SetProtected=false @destroyed", "SetNotes @-"}
 	got := f.rec.entries()
 	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("teardown calls %q (a '!ctx' mark means a cancelled context was used)", got)
@@ -765,5 +770,22 @@ func TestRestoreRefusedSkipsDestroy(t *testing.T) {
 	}
 	if _, ok := f.inFlight(); ok {
 		t.Error("InFlight entry left")
+	}
+}
+
+// The proof cannot cover what Sanitize removed nor what the backup excludes
+// (judged from its original config); the job merges the two, in that order.
+func TestMissingPieces(t *testing.T) {
+	removed := []model.MissingPiece{{Kind: "passthrough", Key: "hostpci0"}}
+	j := &job{
+		b:    model.Backup{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 101}},
+		orig: map[string]string{"scsi0": "s:vm-101-disk-0", "scsi1": "s:vm-101-disk-1,backup=0"},
+	}
+	want := []model.MissingPiece{removed[0], {Kind: "excluded-disk", Key: "scsi1", Detail: "backup=0"}}
+	if got := j.missingPieces(removed); !slices.Equal(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if len(removed) != 1 || cap(removed) != 1 {
+		t.Error("removed modified")
 	}
 }

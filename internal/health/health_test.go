@@ -18,7 +18,7 @@ func TestEvaluate(t *testing.T) {
 	at := func(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, loc) }
 	rec := func(outcome string, started time.Time) state.RunRecord {
 		r := state.RunRecord{ID: started.Format(time.RFC3339), Trigger: "schedule", Outcome: outcome, Started: started}
-		if outcome != "running" {
+		if outcome != state.OutcomeRunning {
 			r.Ended = started.Add(time.Hour)
 		}
 		return r
@@ -34,30 +34,30 @@ func TestEvaluate(t *testing.T) {
 		ok        bool
 		reason    string
 	}{
-		{"last run error", []state.RunRecord{rec("ok", at(17, 2, 0)), rec("error", at(18, 2, 0))},
+		{"last run error", []state.RunRecord{rec(state.OutcomeOK, at(17, 2, 0)), rec(state.OutcomeError, at(18, 2, 0))},
 			at(18, 9, 0), RunLimits{}, longAgo, false, "last run error"},
-		{"error before a run in progress", []state.RunRecord{rec("error", at(17, 2, 0)), rec("running", at(18, 2, 0))},
+		{"error before a run in progress", []state.RunRecord{rec(state.OutcomeError, at(17, 2, 0)), rec(state.OutcomeRunning, at(18, 2, 0))},
 			at(18, 3, 0), RunLimits{}, longAgo, false, "last run error"},
-		{"problems is healthy", []state.RunRecord{rec("problems", at(18, 2, 0))},
+		{"problems is healthy", []state.RunRecord{rec(state.OutcomeProblems, at(18, 2, 0))},
 			at(18, 9, 0), RunLimits{}, longAgo, true, ""},
-		{"missed 02:00 at 03:00", []state.RunRecord{rec("ok", at(18, 2, 0))},
+		{"missed 02:00 at 03:00", []state.RunRecord{rec(state.OutcomeOK, at(18, 2, 0))},
 			at(19, 3, 0), RunLimits{}, longAgo, false, "scheduled run missed"},
-		{"02:00 within 30m grace", []state.RunRecord{rec("ok", at(18, 2, 0))},
+		{"02:00 within 30m grace", []state.RunRecord{rec(state.OutcomeOK, at(18, 2, 0))},
 			at(19, 2, 29), RunLimits{}, longAgo, true, ""},
-		{"run started today", []state.RunRecord{rec("ok", at(18, 2, 0)), rec("ok", at(19, 2, 0))},
+		{"run started today", []state.RunRecord{rec(state.OutcomeOK, at(18, 2, 0)), rec(state.OutcomeOK, at(19, 2, 0))},
 			at(19, 9, 0), RunLimits{}, longAgo, true, ""},
-		{"unset: running 25h past the 24h limit", []state.RunRecord{rec("running", at(18, 2, 0))},
+		{"unset: running 25h past the 24h limit", []state.RunRecord{rec(state.OutcomeRunning, at(18, 2, 0))},
 			at(19, 3, 0), RunLimits{}, longAgo, false, "run overran"},
-		{"unset: running 23h within the 24h limit", []state.RunRecord{rec("running", at(18, 2, 0))},
+		{"unset: running 23h within the 24h limit", []state.RunRecord{rec(state.OutcomeRunning, at(18, 2, 0))},
 			at(19, 1, 0), RunLimits{}, longAgo, true, ""},
-		{"running past the limit", []state.RunRecord{rec("running", at(19, 2, 0))},
+		{"running past the limit", []state.RunRecord{rec(state.OutcomeRunning, at(19, 2, 0))},
 			at(19, 6, 1), RunLimits{MaxRun: 3 * time.Hour, BootTimeout: 25 * time.Minute, ProbeTimeout: 25 * time.Minute}, longAgo, false, "run overran"},
-		{"running within the limit spans a tick", []state.RunRecord{rec("running", at(19, 2, 0))},
+		{"running within the limit spans a tick", []state.RunRecord{rec(state.OutcomeRunning, at(19, 2, 0))},
 			at(20, 2, 45), RunLimits{MaxRun: 48 * time.Hour}, longAgo, true, ""},
 		{"fresh daemon, no runs", nil, at(19, 1, 10), RunLimits{}, at(19, 1, 0), true, ""},
 		{"daemon up, no runs, missed", nil, at(19, 3, 0), RunLimits{}, at(18, 12, 0), false, "scheduled run missed"},
 		{"no start file, no runs", nil, at(19, 9, 0), RunLimits{}, time.Time{}, true, ""},
-		{"no start file, old run", []state.RunRecord{rec("ok", at(17, 2, 0))},
+		{"no start file, old run", []state.RunRecord{rec(state.OutcomeOK, at(17, 2, 0))},
 			at(19, 9, 0), RunLimits{}, time.Time{}, false, "scheduled run missed"},
 	}
 	for _, tt := range tests {
@@ -93,7 +93,7 @@ func TestEvaluateRunSpanningTick(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := func(h, m int) time.Time { return time.Date(2026, 10, 19, h, m, 0, 0, time.Local) }
-	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: "ok", Started: at(0, 0), Ended: at(7, 0)}}}
+	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: state.OutcomeOK, Started: at(0, 0), Ended: at(7, 0)}}}
 	if ok, reason := Evaluate(st, at(7, 30), sched, RunLimits{}, at(0, 0).Add(-time.Hour)); !ok {
 		t.Errorf("07:30 after a run that skipped the 06:00 tick: %q", reason)
 	}
@@ -112,7 +112,7 @@ func TestEvaluateStoredOffsetUsesLocalSchedule(t *testing.T) {
 	}
 	// Last run ended 02:30 local, stored (as after a JSON round trip) in UTC.
 	ended := time.Date(2026, 10, 18, 7, 30, 0, 0, time.UTC)
-	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: "ok", Started: ended.Add(-30 * time.Minute), Ended: ended}}}
+	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: state.OutcomeOK, Started: ended.Add(-30 * time.Minute), Ended: ended}}}
 	// 03:00 UTC is 22:00 local: the next local 02:00 is still ahead.
 	if ok, reason := Evaluate(st, time.Date(2026, 10, 19, 3, 0, 0, 0, time.UTC), sched, RunLimits{}, time.Time{}); !ok {
 		t.Errorf("unhealthy: %q", reason)

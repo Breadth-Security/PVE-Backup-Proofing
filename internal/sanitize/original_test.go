@@ -54,3 +54,16 @@ func TestMissingFromOriginalBackupSpellings(t *testing.T) {
 		}
 	}
 }
+
+func TestGuestName(t *testing.T) {
+	cfg := map[string]string{"name": "vm-name", "hostname": "ct-host"}
+	if got := GuestName(model.KindQEMU, cfg); got != "vm-name" {
+		t.Errorf("qemu: %q", got)
+	}
+	if got := GuestName(model.KindLXC, cfg); got != "ct-host" {
+		t.Errorf("lxc: %q", got)
+	}
+	if got := GuestName(model.KindLXC, map[string]string{"name": "x"}); got != "" {
+		t.Errorf("lxc without hostname: %q", got)
+	}
+}

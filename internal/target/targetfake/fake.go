@@ -4,7 +4,6 @@ package targetfake
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -26,9 +25,10 @@ var _ target.Target = (*Fake)(nil)
 // Like the real target it enforces the safety contracts: every method that
 // names a VMID refuses one outside Range with target.ErrOutOfRange, Start
 // refuses a guest without a successful Sanitize, and Destroy refuses a guest
-// left untagged by a failed restore (DestroyRecorded removes it, given the
-// volid that restore was for). Restore refusals that create no guest (out
-// of range, VMID taken) match target.ErrRestoreNotStarted.
+// left untagged by a failed restore unless given the Recorded volid that
+// restore was for. CheckRangeClear refuses while such a guest exists.
+// Restore refusals that create no guest (out of range, VMID taken) match
+// target.ErrRestoreNotStarted.
 type Fake struct {
 	mu sync.Mutex
 
@@ -37,8 +37,8 @@ type Fake struct {
 
 	// PrepareErr is returned by Prepare.
 	PrepareErr error
-	// Recorded is the recorded-restore set the last Prepare call was given.
-	Recorded map[int]target.Recorded
+	// RangeErr is returned by CheckRangeClear (before its own check).
+	RangeErr error
 	// OwnedGuests are leftover guests returned by Owned (e.g. from a crash).
 	// Their VMIDs count as existing for AllocateVMID; Destroy removes them.
 	OwnedGuests []pve.GuestRef
@@ -74,19 +74,25 @@ type Fake struct {
 
 	// Live holds guests restored and not yet destroyed, keyed by VMID.
 	// Tests read it to check cleanup.
-	Live map[int]model.GuestKind
-	// Untagged maps Live guests a failed restore left without the tag to
-	// the volid that restore was for.
-	Untagged map[int]string
-	// sanitized marks guests whose last Sanitize succeeded.
-	sanitized map[int]bool
-	// calls records each call as "Method arg...", e.g. "Restore 990000 <volid>".
+	Live map[int]Guest
+	// calls records each call as "Method arg...", e.g. "Restore 990000 <volid>"
+	// or "Destroy qemu 990000 [<recorded volid>]".
 	calls testutil.CallLog
+}
+
+// Guest is a restored guest the fake holds.
+type Guest struct {
+	Kind model.GuestKind
+	// UntaggedFor is the volid of the failed restore that left the guest
+	// without the "pbp" tag ("" for a tagged guest).
+	UntaggedFor string
+	// Sanitized: the guest's last Sanitize succeeded.
+	Sanitized bool
 }
 
 // New returns a Fake allocating from [lo, hi].
 func New(lo, hi int) *Fake {
-	return &Fake{Range: [2]int{lo, hi}, Live: map[int]model.GuestKind{}}
+	return &Fake{Range: [2]int{lo, hi}, Live: map[int]Guest{}}
 }
 
 // guard refuses a VMID outside Range. Callers hold f.mu.
@@ -104,12 +110,31 @@ func (f *Fake) record(format string, args ...any) {
 // CallLog returns the calls recorded so far.
 func (f *Fake) CallLog() []string { return f.calls.Snapshot() }
 
-func (f *Fake) Prepare(ctx context.Context, recorded map[int]target.Recorded) error {
+func (f *Fake) Prepare(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Prepare")
-	f.Recorded = maps.Clone(recorded)
 	return f.PrepareErr
+}
+
+func (f *Fake) CheckRangeClear(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CheckRangeClear")
+	if f.RangeErr != nil {
+		return f.RangeErr
+	}
+	var foreign []int
+	for v, g := range f.Live {
+		if g.UntaggedFor != "" {
+			foreign = append(foreign, v)
+		}
+	}
+	if len(foreign) > 0 {
+		slices.Sort(foreign)
+		return fmt.Errorf("%w: %v", target.ErrForeignInRange, foreign)
+	}
+	return nil
 }
 
 func (f *Fake) Owned(ctx context.Context) ([]pve.GuestRef, error) {
@@ -153,7 +178,7 @@ func (f *Fake) AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error
 	return 0, target.ErrNoFreeVMID
 }
 
-func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
+func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Restore %d %s", vmid, b.VolID)
@@ -168,36 +193,36 @@ func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, orig map[s
 		return err
 	}
 	if f.Live == nil {
-		f.Live = map[int]model.GuestKind{}
+		f.Live = map[int]Guest{}
 	}
-	f.Live[vmid] = b.Key.Kind
+	g := Guest{Kind: b.Key.Kind}
 	if err != nil {
-		if f.Untagged == nil {
-			f.Untagged = map[int]string{}
-		}
-		f.Untagged[vmid] = b.VolID
+		g.UntaggedFor = b.VolID
 	}
+	f.Live[vmid] = g
 	return err
 }
 
-func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, orig map[string]string) ([]model.MissingPiece, error) {
+func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Sanitize %s %d", kind, vmid)
 	if err := f.guard(vmid); err != nil {
 		return nil, err
 	}
-	delete(f.sanitized, vmid)
+	g, ok := f.Live[vmid]
+	if ok {
+		g.Sanitized = false
+		f.Live[vmid] = g
+	}
 	if err := f.SanitizeErr[vmid]; err != nil {
 		return nil, err
 	}
-	if _, ok := f.Live[vmid]; !ok {
+	if !ok {
 		return nil, fmt.Errorf("targetfake: sanitize %d: no restored guest", vmid)
 	}
-	if f.sanitized == nil {
-		f.sanitized = map[int]bool{}
-	}
-	f.sanitized[vmid] = true
+	g.Sanitized = true
+	f.Live[vmid] = g
 	return slices.Clone(f.Missing[vmid]), nil
 }
 
@@ -208,7 +233,7 @@ func (f *Fake) Start(ctx context.Context, kind model.GuestKind, vmid int) error 
 	if err := f.guard(vmid); err != nil {
 		return err
 	}
-	if !f.sanitized[vmid] {
+	if !f.Live[vmid].Sanitized {
 		return fmt.Errorf("targetfake: refusing to start %d: not sanitized", vmid)
 	}
 	return f.StartErr[vmid]
@@ -252,35 +277,24 @@ func (r refused) Exec(context.Context, []string) (probe.ExecResult, error) {
 	return probe.ExecResult{}, r.err
 }
 
-func (f *Fake) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (f *Fake) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("Destroy %s %d", kind, vmid)
-	return f.destroy(vmid, "")
-}
-
-func (f *Fake) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record("DestroyRecorded %s %d %s", kind, vmid, volid)
-	return f.destroy(vmid, volid)
-}
-
-// destroy removes vmid; an untagged guest only when volid is the one its
-// failed restore was for. Callers hold f.mu.
-func (f *Fake) destroy(vmid int, volid string) error {
+	if rec.VolID == "" {
+		f.record("Destroy %s %d", kind, vmid)
+	} else {
+		f.record("Destroy %s %d %s", kind, vmid, rec.VolID)
+	}
 	if err := f.guard(vmid); err != nil {
 		return err
 	}
-	if v, untagged := f.Untagged[vmid]; untagged && (volid == "" || volid != v) {
-		return fmt.Errorf("%w: %d has no %q tag and is not the leftover of %q", target.ErrNotOwned, vmid, target.OwnerTag, volid)
+	if v := f.Live[vmid].UntaggedFor; v != "" && rec.VolID != v {
+		return fmt.Errorf("%w: %d has no %q tag and is not the leftover of %q", target.ErrNotOwned, vmid, target.OwnerTag, rec.VolID)
 	}
 	if err := f.DestroyErr[vmid]; err != nil {
 		return err
 	}
 	delete(f.Live, vmid)
-	delete(f.Untagged, vmid)
-	delete(f.sanitized, vmid)
 	f.OwnedGuests = slices.DeleteFunc(f.OwnedGuests, func(g pve.GuestRef) bool { return g.Key.VMID == vmid })
 	return nil
 }

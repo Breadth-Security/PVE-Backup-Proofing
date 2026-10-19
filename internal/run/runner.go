@@ -365,6 +365,7 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
 		// Unlike the node-wide gates below, this failure is the backup's
 		// own, so its notes record it (annotate skips a SKIPPED result).
+		// p.mu is not held yet.
 		annotate(d, p.log.With("guest", b.Key.String(), "volid", b.VolID), b, *res)
 		return l, res
 	}

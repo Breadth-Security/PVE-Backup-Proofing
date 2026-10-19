@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int, orig map[st
 			res.Verdict, res.Reason = model.Error, "cancelled"
 		}
 		j.teardown(&res)
-		if err := j.safely("notes", func() error { j.annotate(res); return nil }); err != nil {
+		if err := j.safely("notes", func() error { annotate(j.d, j.log, j.b, res); return nil }); err != nil {
 			res.Verdict, res.Reason = model.Error, "internal error: "+err.Error()
 		}
 	}()
@@ -120,16 +121,13 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	j.restoreTried = true
 	t0 := d.Now()
-	err = d.Target.Restore(ctx, b, j.vmid, j.orig)
+	err = d.Target.Restore(ctx, b, j.vmid, j.orig["tags"])
 	res.RestoreDuration = d.Now().Sub(t0)
 	if err != nil {
 		if errors.Is(err, target.ErrRestoreNotStarted) {
-			// The node refused the request: no guest of PBP's exists, and
-			// one at vmid now (e.g. created meanwhile) is not ours.
-			// If even this write fails, the entry may stay "restored"; the
-			// target then still accepts a guest at vmid only if it is
-			// stopped and named as in this backup (or locked by a
-			// restore), which a guest someone else made does not pass.
+			// No guest of PBP's exists. Should this write fail, the stale
+			// "restored" record still fails safe: Destroy's identity check
+			// (§11.2) refuses a guest someone else made.
 			j.restoreTried = false
 			if serr := j.setStage(state.StageProtected); serr != nil {
 				j.log.Error("record restore not started", "err", serr)
@@ -141,7 +139,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 
-	missing, err := d.Target.Sanitize(ctx, kind, j.vmid, j.orig)
+	removed, err := d.Target.Sanitize(ctx, kind, j.vmid)
 	if errors.Is(err, target.ErrUnsafe) {
 		fail(model.Error, "unsafe config: %s", strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "))
 		return
@@ -151,6 +149,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 
+	missing := j.missingPieces(removed)
 	guest := j.originalIdentity()
 	res.Name = guest.Name
 
@@ -197,20 +196,25 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	res.NotCovered, res.Checks, res.BootLog = out.NotCovered, out.Checks, out.BootLog
 }
 
+// missingPieces is what the proof cannot cover: the pieces Sanitize removed,
+// then those the backup excludes, judged from its original config.
+func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
+	return append(slices.Clone(removed), sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig)...)
+}
+
 // originalIdentity is the guest's name and tags from the config stored in
 // the backup: the restored guest is renamed and re-tagged "pbp".
 func (j *job) originalIdentity() probe.GuestInfo {
-	g := probe.GuestInfo{VMID: j.b.Key.VMID, Name: j.orig["name"]}
-	if g.Name == "" {
-		g.Name = j.orig["hostname"]
+	return probe.GuestInfo{
+		VMID: j.b.Key.VMID,
+		Name: sanitize.GuestName(j.b.Key.Kind, j.orig),
+		Tags: sanitize.SplitList(j.orig["tags"]),
 	}
-	g.Tags = sanitize.SplitList(j.orig["tags"])
-	return g
 }
 
 // teardown destroys the guest and restores the backup's protected flag. The
 // guest is PBP's by the InFlight record (tagged or not, e.g. after a failed
-// restore), so it is removed with Target.DestroyRecorded. The
+// restore), so Target.Destroy gets that record. The
 // InFlight entry is removed only when both succeed; otherwise the janitor
 // finishes the job. A failed destroy turns PROVEN into ERROR (so the guest
 // is proofed again next run) and otherwise only notes it in the reason, as
@@ -221,7 +225,9 @@ func (j *job) teardown(res *model.GuestResult) {
 		err := j.safely("destroy", func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
 			defer cancel()
-			return j.d.Target.DestroyRecorded(ctx, j.b.Key.Kind, j.vmid, j.b.VolID)
+			kind := j.b.Key.Kind
+			rec := target.Recorded{VolID: j.b.VolID, Name: sanitize.GuestName(kind, j.orig)}
+			return j.d.Target.Destroy(ctx, kind, j.vmid, rec)
 		})
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
@@ -277,10 +283,6 @@ func (j *job) safely(step string, fn func() error) (err error) {
 	}()
 	return fn()
 }
-
-// annotate writes the verdict line to the backup's notes and records PROVEN
-// times. A failed notes write is logged; it never changes the verdict.
-func (j *job) annotate(res model.GuestResult) { annotate(j.d, j.log, j.b, res) }
 
 // annotate writes res's verdict line into b's notes and, for PROVEN, records
 // the time in LastProven. SKIPPED is never written. Failures are logged only.

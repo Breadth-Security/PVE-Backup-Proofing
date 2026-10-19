@@ -117,7 +117,7 @@ func (t *hookTarget) AllocateVMID(ctx context.Context, inUse map[int]bool) (int,
 	return v, err
 }
 
-func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
+func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
 	t.mu.Lock()
 	if t.held[vmid] {
 		t.dupes = append(t.dupes, vmid)
@@ -128,21 +128,14 @@ func (t *hookTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig
 	if t.onRestore != nil {
 		t.onRestore(vmid)
 	}
-	return t.Fake.Restore(ctx, b, vmid, orig)
+	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.mu.Lock()
 	delete(t.held, vmid)
 	t.mu.Unlock()
-	return t.Fake.Destroy(ctx, kind, vmid)
-}
-
-func (t *hookTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
-	t.mu.Lock()
-	delete(t.held, vmid)
-	t.mu.Unlock()
-	return t.Fake.DestroyRecorded(ctx, kind, vmid, volid)
+	return t.Fake.Destroy(ctx, kind, vmid, rec)
 }
 
 func (t *hookTarget) restores() []string {
@@ -286,7 +279,7 @@ func TestRunPreflightNotIsolated(t *testing.T) {
 	if len(sent) != 1 || sent[0].Severity() != "error" {
 		t.Fatalf("sent = %+v", sent)
 	}
-	if r := f.lastRun(t); r.Outcome != "error" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 }
@@ -503,7 +496,7 @@ func TestRunNotifyWhenProblems(t *testing.T) {
 	if n := len(f.notif.sends()); n != 0 {
 		t.Errorf("sent %d notifications for an all-PROVEN run", n)
 	}
-	if r := f.lastRun(t); r.Outcome != "ok" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeOK {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 
@@ -516,7 +509,7 @@ func TestRunNotifyWhenProblems(t *testing.T) {
 	if sent := f2.notif.sends(); len(sent) != 1 || sent[0].Severity() != "warning" {
 		t.Errorf("sent = %+v", sent)
 	}
-	if r := f2.lastRun(t); r.Outcome != "problems" {
+	if r := f2.lastRun(t); r.Outcome != state.OutcomeProblems {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 }
@@ -542,7 +535,7 @@ func TestRunSendFailureMakesOutcomeError(t *testing.T) {
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 
 	wantResult(t, byVMID(t, s)[101], model.Proven, "")
-	if r := f.lastRun(t); r.Outcome != "error" || r.Counts[model.Proven] != 1 {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError || r.Counts[model.Proven] != 1 {
 		t.Errorf("record = %+v", r)
 	}
 	if !strings.Contains(f.logBuf.String(), "ssh: handshake failed") {
@@ -747,7 +740,7 @@ func TestRunStorageDiscoveryErrors(t *testing.T) {
 	if len(s.Results) != 1 || s.Results[0].Verdict != model.Proven {
 		t.Errorf("results = %+v", s.Results)
 	}
-	if r := f.lastRun(t); r.Outcome != "error" {
+	if r := f.lastRun(t); r.Outcome != state.OutcomeError {
 		t.Errorf("outcome = %q", r.Outcome)
 	}
 
@@ -801,11 +794,11 @@ func TestRunRecord(t *testing.T) {
 
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 
-	if during.Outcome != "running" || during.ID != "20261019T021400.000Z-schedule" {
+	if during.Outcome != state.OutcomeRunning || during.ID != "20261019T021400.000Z-schedule" {
 		t.Errorf("record during run = %+v", during)
 	}
 	rec := f.lastRun(t)
-	if rec.ID != during.ID || rec.Outcome != "ok" || rec.Trigger != "schedule" ||
+	if rec.ID != during.ID || rec.Outcome != state.OutcomeOK || rec.Trigger != "schedule" ||
 		!rec.Started.Equal(now) || !rec.Ended.Equal(now.Add(3*time.Minute)) || rec.Counts[model.Proven] != 1 {
 		t.Errorf("record = %+v", rec)
 	}

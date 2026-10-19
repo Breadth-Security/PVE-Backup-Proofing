@@ -27,9 +27,9 @@ func TestRoundTripThroughReopen(t *testing.T) {
 	orig := true
 	now := time.Date(2026, 10, 19, 1, 2, 3, 0, time.UTC)
 	err = s.Update(func(st *State) error {
-		st.InFlight[9001] = Job{TempVMID: 9001, Kind: model.KindLXC, VolID: "v", Storage: "s", ProtectedOrig: &orig, Stage: "restored"}
+		st.InFlight[9001] = Job{TempVMID: 9001, Kind: model.KindLXC, VolID: "v", Storage: "s", ProtectedOrig: &orig, Stage: StageRestored}
 		st.LastProven[model.GuestKey{Kind: model.KindLXC, VMID: 101}.String()] = now
-		st.Runs = append(st.Runs, RunRecord{ID: "r1", Trigger: "cron", Outcome: "ok", Started: now, Ended: now, Counts: map[model.Verdict]int{model.Proven: 2}})
+		st.Runs = append(st.Runs, RunRecord{ID: "r1", Trigger: "cron", Outcome: OutcomeOK, Started: now, Ended: now, Counts: map[model.Verdict]int{model.Proven: 2}})
 		return nil
 	})
 	if err != nil {
@@ -184,18 +184,18 @@ func TestAppendRunReplacesRunningRecord(t *testing.T) {
 	p := tmpPath(t)
 	s, _ := Open(p)
 	t0 := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
-	if err := s.AppendRun(RunRecord{ID: "a", Outcome: "running", Started: t0}, 30); err != nil {
+	if err := s.AppendRun(RunRecord{ID: "a", Outcome: OutcomeRunning, Started: t0}, 30); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendRun(RunRecord{ID: "b", Outcome: "ok"}, 30); err != nil {
+	if err := s.AppendRun(RunRecord{ID: "b", Outcome: OutcomeOK}, 30); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendRun(RunRecord{ID: "a", Outcome: "problems", Started: t0, Ended: t0.Add(time.Hour)}, 30); err != nil {
+	if err := s.AppendRun(RunRecord{ID: "a", Outcome: OutcomeProblems, Started: t0, Ended: t0.Add(time.Hour)}, 30); err != nil {
 		t.Fatal(err)
 	}
 	s2, _ := Open(p)
 	runs := s2.Snapshot().Runs
-	if len(runs) != 2 || runs[0].ID != "a" || runs[0].Outcome != "problems" || runs[1].ID != "b" {
+	if len(runs) != 2 || runs[0].ID != "a" || runs[0].Outcome != OutcomeProblems || runs[1].ID != "b" {
 		t.Fatalf("got %+v", runs)
 	}
 }

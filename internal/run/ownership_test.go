@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target/bridgetest"
 )
 
 // Ownership by state (design section 11.2): a guest in the range is PBP's if
@@ -30,18 +30,7 @@ func (f *janitorFixture) isolatedNode(api pve.API) {
 	br := f.d.Cfg.Target.Bridge
 	f.api.Ifaces[br] = pve.NetIface{Iface: br, Type: "bridge"}
 	f.api.Storage[f.d.Cfg.Restore.Storage] = pve.StorageStatus{Active: true, Enabled: true, Content: "images,rootdir"}
-	answers := map[string]sshx.Result{
-		"cat " + sshx.Quote("/proc/sys/net/ipv6/conf/"+br+"/disable_ipv6"): {Stdout: "1\n"},
-		"ip -j addr show dev " + sshx.Quote(br):                            {Stdout: `[{"ifname":"` + br + `","addr_info":[]}]`},
-		"ip -j link show master " + sshx.Quote(br):                         {Stdout: "[]\n"},
-	}
-	ssh := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
-		if r, ok := answers[cmd]; ok {
-			return r, nil
-		}
-		return sshx.Result{ExitCode: 127, Stderr: "unexpected command " + cmd}, nil
-	}}
-	f.tgt = &destroyLog{Target: target.NewExistingNode(f.d.Cfg, api, ssh)}
+	f.tgt = &destroyLog{Target: target.NewExistingNode(f.d.Cfg, api, bridgetest.Isolated(br, nil))}
 	f.d.Target, f.d.API = f.tgt, api
 	f.d.Notifier = &fakeNotifier{}
 }
@@ -95,8 +84,7 @@ func TestRestoreRefusedNeverDestroys(t *testing.T) {
 	f := newJanitorFixture(t)
 	f.isolatedNode(f.api)
 	b := f.ownBackup()
-	f.guest(model.KindQEMU, 990000, false)
-	f.api.GuestList[0].Status = "stopped"
+	f.stoppedGuest(990000, "x")
 	f.api.Fail["Restore"] = &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu", Message: "VM 990000 already exists"}
 
 	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]))
@@ -116,14 +104,14 @@ func TestRestoreRefusedNeverDestroys(t *testing.T) {
 }
 
 // A crashed run left an untagged guest at a VMID recorded as a started
-// restore: Prepare accepts it and the janitor destroys it.
+// restore: the janitor destroys it, and the range check then passes.
 func TestPreflightCleansUntaggedRecordedGuest(t *testing.T) {
 	for _, stage := range []string{state.StageRestored, state.StageStarted} {
 		t.Run(stage, func(t *testing.T) {
 			f := newJanitorFixture(t)
 			f.isolatedNode(f.api)
 			f.leftover(990001, "x")
-			f.inFlight(state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stage})
+			f.inFlight(jobAt(990001, stage))
 
 			if err := Preflight(context.Background(), f.d); err != nil {
 				t.Fatalf("Preflight: %v", err)
@@ -141,21 +129,24 @@ func TestPreflightCleansUntaggedRecordedGuest(t *testing.T) {
 // leftover adds a stopped untagged qemu guest at vmid named name, and backup
 // pbs:v1 (protected) whose original config is named "x".
 func (f *janitorFixture) leftover(vmid int, name string) {
-	f.guest(model.KindQEMU, vmid, false)
-	g := &f.api.GuestList[len(f.api.GuestList)-1]
-	g.Status = "stopped"
-	f.api.Configs[vmid]["name"] = name
+	f.stoppedGuest(vmid, name)
 	f.backup("pbs:v1", true)
 	f.api.BackupConfigs["pbs:v1"] = "name: x\n"
 }
 
-// assertForeignAndKept: Preflight refuses with ErrForeignInRange naming vmid,
-// and the janitor on its own (Preflight stops before it) leaves it alone.
-func (f *janitorFixture) assertForeignAndKept(t *testing.T, vmid int) {
+// jobAt is an InFlight qemu job at vmid for backup pbs:v1, which PBP
+// protected (its original flag was false).
+func jobAt(vmid int, stage string) state.Job {
+	return state.Job{TempVMID: vmid, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stage}
+}
+
+// assertRefusedAndKept: Preflight fails with want naming vmid, the guest
+// there is untouched, and so it stays when the janitor runs on its own.
+func (f *janitorFixture) assertRefusedAndKept(t *testing.T, vmid int, want error) {
 	t.Helper()
 	err := Preflight(context.Background(), f.d)
-	if !errors.Is(err, target.ErrForeignInRange) || !strings.Contains(err.Error(), fmt.Sprint(vmid)) {
-		t.Errorf("Preflight err = %v, want ErrForeignInRange naming %d", err, vmid)
+	if !errors.Is(err, want) || !strings.Contains(err.Error(), fmt.Sprint(vmid)) {
+		t.Errorf("Preflight err = %v, want %v naming %d", err, want, vmid)
 	}
 	_ = Janitor(context.Background(), f.d)
 	if !f.exists(vmid) || f.destroyed(vmid) {
@@ -164,32 +155,52 @@ func (f *janitorFixture) assertForeignAndKept(t *testing.T, vmid int) {
 }
 
 // Without a record of a started restore, an untagged guest in the range is
-// foreign even if it is stopped and named as the backup: Prepare refuses to
-// run and nothing destroys it. With a record, a guest named otherwise is
-// foreign too.
+// foreign even if it is stopped and named as the backup: the janitor leaves
+// it, the range check refuses to run, and nothing destroys it.
 func TestUntaggedGuestWithoutRecordIsForeign(t *testing.T) {
+	cases := map[string]*state.Job{
+		"no entry":           nil,
+		"stage destroyed":    ptrJob(jobAt(990001, state.StageDestroyed)),
+		"other VMID entered": ptrJob(jobAt(990002, state.StageRestored)),
+	}
+	for name, job := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newJanitorFixture(t)
+			f.isolatedNode(f.api)
+			f.leftover(990001, "x")
+			if job != nil {
+				f.inFlight(*job)
+			}
+			f.assertRefusedAndKept(t, 990001, target.ErrForeignInRange)
+		})
+	}
+}
+
+// An entry that does not make the untagged guest PBP's (no restore started,
+// or the guest is named otherwise) has the janitor refuse to destroy it:
+// the entry is kept and the run aborts.
+func TestJanitorRefusesGuestTheRecordDoesNotCover(t *testing.T) {
 	cases := map[string]struct {
-		job  *state.Job
-		name string
+		stage, name string
 	}{
-		"no entry":             {nil, "x"},
-		"stage protected":      {&state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(true), Stage: state.StageProtected}, "x"},
-		"stage destroyed":      {&state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(true), Stage: state.StageDestroyed}, "x"},
-		"other VMID entered":   {&state.Job{TempVMID: 990002, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(true), Stage: state.StageRestored}, "x"},
-		"recorded, other name": {&state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(true), Stage: state.StageRestored}, "someone-elses"},
+		"stage protected":      {state.StageProtected, "x"},
+		"recorded, other name": {state.StageRestored, "someone-elses"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newJanitorFixture(t)
 			f.isolatedNode(f.api)
 			f.leftover(990001, tc.name)
-			if tc.job != nil {
-				f.inFlight(*tc.job)
+			f.inFlight(jobAt(990001, tc.stage))
+			f.assertRefusedAndKept(t, 990001, target.ErrNotOwned)
+			if _, ok := f.store.Snapshot().InFlight[990001]; !ok {
+				t.Error("refused entry removed")
 			}
-			f.assertForeignAndKept(t, 990001)
 		})
 	}
 }
+
+func ptrJob(j state.Job) *state.Job { return &j }
 
 // The janitor records "destroyed" as soon as the guest is gone, so a failed
 // unprotect never leaves an empty VMID recorded as an in-flight restore: a
@@ -198,7 +209,7 @@ func TestJanitorRecordsDestroyedBeforeUnprotect(t *testing.T) {
 	f := newJanitorFixture(t)
 	f.isolatedNode(f.api)
 	f.leftover(990001, "x")
-	f.inFlight(state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageRestored})
+	f.inFlight(jobAt(990001, state.StageRestored))
 	f.api.Fail["SetVolumeAttrs"] = errors.New("pbs unreachable")
 
 	if err := Janitor(context.Background(), f.d); err == nil {
@@ -211,12 +222,12 @@ func TestJanitorRecordsDestroyedBeforeUnprotect(t *testing.T) {
 		t.Fatalf("InFlight = %+v, %v; want stage destroyed kept for the unprotect retry", j, ok)
 	}
 
-	// An operator restores something into the now-empty VMID by hand.
+	// An operator restores something into the now-empty VMID by hand; PBS
+	// is back, so the janitor finishes the entry and the range check runs.
 	f.api.ResetCalls() // forget the legitimate destroy above
-	f.guest(model.KindQEMU, 990001, false)
-	f.api.GuestList[len(f.api.GuestList)-1].Status = "stopped"
-	f.api.Configs[990001]["name"] = "x"
-	f.assertForeignAndKept(t, 990001)
+	delete(f.api.Fail, "SetVolumeAttrs")
+	f.stoppedGuest(990001, "x")
+	f.assertRefusedAndKept(t, 990001, target.ErrForeignInRange)
 }
 
 // storeBreaksOnRestore refuses the restore request and makes the state store
@@ -238,7 +249,7 @@ func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind mod
 
 // A refused restore whose "not started" record cannot be written leaves a
 // stale "restored" entry. That entry still never makes a foreign guest at
-// the VMID PBP's: it is named otherwise, so Prepare and the janitor refuse.
+// the VMID PBP's: it is named otherwise, so the janitor refuses it.
 func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	f := newJanitorFixture(t)
 	dir := t.TempDir()
@@ -249,8 +260,7 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	f.store, f.d.Store = store, store
 	f.isolatedNode(storeBreaksOnRestore{API: f.api, dir: dir})
 	b := f.ownBackup()
-	f.guest(model.KindQEMU, 990000, false) // the foreign guest that made the restore fail
-	f.api.GuestList[len(f.api.GuestList)-1].Status = "stopped"
+	f.stoppedGuest(990000, "x") // the foreign guest that made the restore fail
 
 	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]))
 
@@ -263,25 +273,57 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	if j, ok := f.store.Snapshot().InFlight[990000]; !ok || j.Stage != state.StageRestored {
 		t.Fatalf("InFlight = %+v, %v; the test needs the stale record", j, ok)
 	}
-	f.assertForeignAndKept(t, 990000)
+	f.assertRefusedAndKept(t, 990000, target.ErrNotOwned)
 }
 
-// Preflight hands Prepare exactly the VMIDs whose restore may have started.
-func TestPreflightPassesRecordedVMIDs(t *testing.T) {
-	f := newRunFixture(t, 990000, 990009)
-	err := f.store.Update(func(st *state.State) error {
-		for v, stage := range map[int]string{990000: state.StageProtected, 990001: state.StageRestored, 990002: state.StageStarted, 990003: state.StageDestroyed} {
-			st.InFlight[v] = state.Job{TempVMID: v, Kind: model.KindQEMU, Stage: stage, ProtectedOrig: ptr(true)}
+// Preflight runs Prepare, the templates, the janitor and then the range
+// check, stopping at the first failure.
+func TestPreflightOrder(t *testing.T) {
+	ctx := context.Background()
+	t.Run("all pass", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		if err := Preflight(ctx, f.d); err != nil {
+			t.Fatal(err)
 		}
-		return nil
+		if got, want := f.tgt.CallLog(), []string{"Prepare", "Owned", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.ensured != 1 {
+			t.Errorf("calls %q (want %q), templates ensured %d", got, want, f.notif.ensured)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.tgt.PrepareErr = errors.New("stop here")
-	_ = Preflight(context.Background(), f.d)
-	want := map[int]target.Recorded{990001: {Kind: model.KindQEMU}, 990002: {Kind: model.KindQEMU}}
-	if got := f.tgt.Recorded; !maps.Equal(got, want) {
-		t.Errorf("recorded = %v, want %v", got, want)
-	}
+	t.Run("prepare fails", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.tgt.PrepareErr = errors.New("stop here")
+		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "target: ") {
+			t.Errorf("err = %v", err)
+		}
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) || f.notif.ensured != 0 {
+			t.Errorf("calls %q, templates ensured %d", got, f.notif.ensured)
+		}
+	})
+	t.Run("templates fail", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.notif.ensureErr = errors.New("stop here")
+		if err := Preflight(ctx, f.d); err == nil {
+			t.Error("want error")
+		}
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) {
+			t.Errorf("calls %q: janitor ran", got)
+		}
+	})
+	t.Run("janitor fails", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.tgt.OwnedErr = errors.New("stop here")
+		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "janitor: ") {
+			t.Errorf("err = %v", err)
+		}
+		if slices.Contains(f.tgt.CallLog(), "CheckRangeClear") {
+			t.Error("range checked after a failed janitor")
+		}
+	})
+	t.Run("range not clear", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.tgt.RangeErr = fmt.Errorf("%w: qemu/990003", target.ErrForeignInRange)
+		if err := Preflight(ctx, f.d); !errors.Is(err, target.ErrForeignInRange) || !strings.HasPrefix(err.Error(), "target: ") {
+			t.Errorf("err = %v", err)
+		}
+	})
 }
