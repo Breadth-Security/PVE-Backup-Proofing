@@ -1,0 +1,27 @@
+PBP backup proofing run {{run-id}} on {{node}}
+Started: {{started}}
+Duration: {{duration}}
+Result: {{summary}}
+{{#if run-error}}
+
+Run error: {{run-error}}
+{{/if}}
+
+Guests:
+{{#each guests}}
+  {{guest}} {{name}}: {{verdict}} - {{reason}}
+{{/each}}
+{{#if booted}}
+
+Guests without a working guest agent (booted, but not fully verified):
+{{#each booted}}
+  {{guest}} {{name}}: {{reason}}
+{{/each}}
+{{/if}}
+{{#if not-covered}}
+
+Not covered by backup:
+{{#each not-covered}}
+  {{this}}
+{{/each}}
+{{/if}}

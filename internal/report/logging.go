@@ -1,0 +1,103 @@
+package report
+
+import (
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+)
+
+// NewLogger writes text records to stdout and JSON records to runFile. A nil
+// runFile means stdout only.
+func NewLogger(stdout io.Writer, runFile io.Writer) *slog.Logger {
+	text := slog.NewTextHandler(stdout, nil)
+	if runFile == nil {
+		return slog.New(text)
+	}
+	return slog.New(slog.NewMultiHandler(text, slog.NewJSONHandler(runFile, nil)))
+}
+
+// OpenRunLog creates dir/run-<runID>.log, creating dir if needed.
+func OpenRunLog(dir, runID string) (*os.File, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("report: create log dir: %w", err)
+	}
+	return os.OpenFile(filepath.Join(dir, "run-"+runID+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+}
+
+// PruneRunLogs keeps the newest retain run-*.log files (by modtime, then
+// name) and removes the rest. Other files are untouched.
+func PruneRunLogs(dir string, retain int) error {
+	if retain < 0 {
+		retain = 0
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("report: read log dir: %w", err)
+	}
+	type lf struct {
+		name string
+		mod  int64
+	}
+	var logs []lf
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasPrefix(n, "run-") || !strings.HasSuffix(n, ".log") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		logs = append(logs, lf{n, info.ModTime().UnixNano()})
+	}
+	sort.Slice(logs, func(i, j int) bool {
+		if logs[i].mod != logs[j].mod {
+			return logs[i].mod > logs[j].mod
+		}
+		return logs[i].name > logs[j].name
+	})
+	if len(logs) <= retain {
+		return nil
+	}
+	var firstErr error
+	for _, f := range logs[retain:] {
+		if err := os.Remove(filepath.Join(dir, f.name)); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("report: prune %s: %w", f.name, err)
+		}
+	}
+	return firstErr
+}
+
+// LogGuest logs one record per guest plus one Info per not-covered finding.
+func LogGuest(l *slog.Logger, r model.GuestResult) {
+	checks := make([]string, 0, len(r.Checks))
+	for _, c := range r.Checks {
+		s := c.Name + "=ok"
+		if !c.OK {
+			s = c.Name + "=fail"
+		}
+		if c.Detail != "" {
+			s += " (" + c.Detail + ")"
+		}
+		checks = append(checks, s)
+	}
+	l.Info("guest result",
+		"guest", r.Backup.Key.String(),
+		"verdict", string(r.Verdict),
+		"reason", r.Reason,
+		"restore_s", r.RestoreDuration.Seconds(),
+		"boot_s", r.BootDuration.Seconds(),
+		"failed_units", r.FailedUnits,
+		"ignored_units", r.IgnoredUnits,
+		"checks", checks,
+	)
+	for _, n := range r.NotCovered {
+		l.Info(n.LogLine())
+	}
+}
