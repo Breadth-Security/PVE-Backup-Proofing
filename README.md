@@ -69,6 +69,8 @@ Your own notes are preserved below it. A previous PBP line is replaced, never st
 
 Pick a range of free VMIDs, for example `990000`-`990049`, set as `target.vmid_range`. The range size is the most guests PBP can have in flight at once.
 
+**Exclude the range from your backup jobs.** A backup job that covers "all" guests can catch a temporary proof guest mid-run, wasting backup space and time. In Datacenter > Backup, make each job exclude the PBP VMIDs, or select guests by pool (and never put PBP guests in that pool). PBP ignores backups whose VMID is in its range (it logs them once per run) and never proofs them.
+
 If you run more than one PBP instance against the same cluster, give **each instance its own range, with no overlap**. The janitor destroys any `pbp`-tagged guest in its range that it does not know about (leftovers from a crash), so a shared or overlapping range lets one instance destroy another instance's guests mid-proof.
 
 > **PBP owns every guest in the reserved range that carries the tag `pbp`, and it will destroy it.** Never tag your own guests `pbp`, and never put your own guests in the range. PBP never creates, changes, starts, stops or destroys anything outside the range.

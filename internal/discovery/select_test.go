@@ -99,3 +99,21 @@ func TestAlreadyProven(t *testing.T) {
 		t.Error("unproven: want false")
 	}
 }
+
+// Backups of PBP's own temporary guests (VMIDs in the reserved range, e.g.
+// from a vzdump job that does not exclude them) are never proofed.
+func TestOutsideRange(t *testing.T) {
+	a := bk("s", model.KindQEMU, 101, ref)
+	in1 := bk("s", model.KindQEMU, 990000, ref)
+	in2 := bk("s", model.KindQEMU, 990000, ref.Add(-time.Hour))
+	in3 := bk("t", model.KindLXC, 990049, ref)
+	b := bk("s", model.KindLXC, 990050, ref)
+	kept, skipped := OutsideRange([]model.Backup{a, in1, in2, in3, b}, 990000, 990049)
+	if !reflect.DeepEqual(kept, []model.Backup{a, b}) {
+		t.Errorf("kept = %+v", kept)
+	}
+	want := []model.GuestKey{{Kind: model.KindQEMU, VMID: 990000}, {Kind: model.KindLXC, VMID: 990049}}
+	if !reflect.DeepEqual(skipped, want) {
+		t.Errorf("skipped = %+v, want each guest once", skipped)
+	}
+}

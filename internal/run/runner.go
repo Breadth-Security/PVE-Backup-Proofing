@@ -170,6 +170,16 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 	if listed == 0 {
 		return nil, errs
 	}
+	rng := d.Cfg.Target.VMIDRange
+	all, inRange := discovery.OutsideRange(all, rng[0], rng[1])
+	if len(inRange) > 0 {
+		keys := make([]string, len(inRange))
+		for i, k := range inRange {
+			keys[i] = k.String()
+		}
+		log.Warn("skipping backups of guests in the PBP VMID range; exclude the range from your backup jobs",
+			"guests", strings.Join(keys, ", "), "vmid_range", fmt.Sprintf("%d-%d", rng[0], rng[1]))
+	}
 	newest := discovery.NewestPerGuest(all)
 	if opt.OnlyVMID != 0 {
 		var only []model.Backup

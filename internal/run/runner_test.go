@@ -341,6 +341,32 @@ func TestRunDiscoveryAndAlreadyProven(t *testing.T) {
 	}
 }
 
+// A backup whose VMID lies in PBP's own range is a backup of a temporary
+// guest: never proofed, never listed as a result, logged once per run.
+func TestRunSkipsBackupsInsideRange(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs", model.KindQEMU, 990003, 1024, "")
+	f.add("pbs-sync", model.KindQEMU, 990003, 1024, "")
+	f.add("pbs", model.KindLXC, 990009, 512, "")
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	if len(s.Results) != 1 || s.Results[0].Backup.Key.VMID != 101 {
+		t.Fatalf("results = %+v", s.Results)
+	}
+	if got := f.tgt.restores(); len(got) != 1 {
+		t.Errorf("restores = %q", got)
+	}
+	logs := f.logBuf.String()
+	if n := strings.Count(logs, "skipping backups of guests in the PBP VMID range"); n != 1 {
+		t.Errorf("logged %d times:\n%s", n, logs)
+	}
+	if !strings.Contains(logs, "qemu/990003") || !strings.Contains(logs, "lxc/990009") {
+		t.Errorf("log does not name the guests:\n%s", logs)
+	}
+}
+
 func TestRunSpaceGate(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
 	f.api.Storage["local-zfs"] = pve.StorageStatus{Active: true, Enabled: true, Avail: 100 * gib, Total: 1 * tib}

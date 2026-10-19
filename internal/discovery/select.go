@@ -27,6 +27,25 @@ func NewestPerGuest(all []model.Backup) []model.Backup {
 	return out
 }
 
+// OutsideRange drops backups whose VMID lies in [lo, hi], PBP's reserved
+// range: those are backups of PBP's own temporary guests. It returns the
+// kept backups in input order and each dropped guest once, in first-seen
+// order. The input is not modified.
+func OutsideRange(bs []model.Backup, lo, hi int) (kept []model.Backup, skipped []model.GuestKey) {
+	seen := map[model.GuestKey]bool{}
+	for _, b := range bs {
+		if b.Key.VMID < lo || b.Key.VMID > hi {
+			kept = append(kept, b)
+			continue
+		}
+		if !seen[b.Key] {
+			seen[b.Key] = true
+			skipped = append(skipped, b.Key)
+		}
+	}
+	return kept, skipped
+}
+
 // Order returns a copy of bs with never-proven guests first (by VMID, then
 // kind), followed by proven guests with the oldest lastProven first (ties by
 // VMID, then kind). The input is not modified.
