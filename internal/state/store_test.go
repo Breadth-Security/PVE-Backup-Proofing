@@ -49,8 +49,8 @@ func TestRoundTripThroughReopen(t *testing.T) {
 	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", fi.Mode())
 	}
-	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
-		t.Fatal("tmp file left behind")
+	if es, _ := os.ReadDir(filepath.Dir(p)); len(es) != 1 {
+		t.Fatalf("temp file left behind: %v", es)
 	}
 }
 
@@ -127,8 +127,12 @@ func TestUpdateWriteFailureLeavesMemoryUnchanged(t *testing.T) {
 	if err := s.Update(func(st *State) error { st.InFlight[1] = Job{TempVMID: 1}; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	// Block the tmp path with a directory so the write fails.
-	if err := os.Mkdir(p+".tmp", 0o700); err != nil {
+	// Put a non-empty directory where the state file goes so the rename
+	// fails (this holds for root too, which the Docker build runs as).
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(p, "occupied"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	err := s.Update(func(st *State) error { st.InFlight[2] = Job{TempVMID: 2}; return nil })
@@ -228,43 +232,15 @@ func TestOpenCreatesPrivateDir(t *testing.T) {
 	}
 }
 
-// A .tmp left behind with a wider mode (O_CREATE does not change an existing
-// file's mode) must not make the state file readable by others.
-func TestWriteTightensLeftoverTmpMode(t *testing.T) {
-	p := tmpPath(t)
-	s, err := Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p+".tmp", []byte("junk"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(p+".tmp", 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Update(func(*State) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	fi, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("state file mode %v, want 0600", fi.Mode().Perm())
-	}
-}
-
-// A failed directory fsync after the rename leaves the file ahead of memory:
-// the error is distinguishable and memory keeps the old state.
+// A failed directory fsync after the rename is distinguishable, and memory
+// adopts the new state so it matches the file.
 func TestDirSyncFailureIsDurabilityError(t *testing.T) {
 	p := tmpPath(t)
 	s, err := Open(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := syncDir
-	t.Cleanup(func() { syncDir = old })
-	syncDir = func(string) error { return errors.New("eio") }
+	s.syncDir = func(string) error { return errors.New("eio") }
 
 	err = s.Update(func(st *State) error {
 		st.LastProven["qemu/1"] = time.Unix(0, 0).UTC()
@@ -273,8 +249,8 @@ func TestDirSyncFailureIsDurabilityError(t *testing.T) {
 	if !errors.Is(err, ErrDurability) || !strings.Contains(err.Error(), "eio") {
 		t.Fatalf("err = %v, want ErrDurability wrapping eio", err)
 	}
-	if len(s.Snapshot().LastProven) != 0 {
-		t.Error("memory changed although Update failed")
+	if _, ok := s.Snapshot().LastProven["qemu/1"]; !ok {
+		t.Error("memory does not match the renamed file")
 	}
 	b, err := os.ReadFile(p)
 	if err != nil || !strings.Contains(string(b), "qemu/1") {
@@ -287,5 +263,35 @@ func TestConstantsMatchStoredValues(t *testing.T) {
 	want := []string{"protected", "restored", "started", "destroyed", "running", "ok", "problems", "error"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("constants = %q, want %q (stored in state files; never change)", got, want)
+	}
+}
+
+func TestSetStage(t *testing.T) {
+	s, err := Open(tmpPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := false
+	job := Job{TempVMID: 9001, Kind: model.KindQEMU, VolID: "v", Storage: "s", ProtectedOrig: &orig, Stage: StageProtected}
+	if err := s.Update(func(st *State) error { st.InFlight[9001] = job; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetStage(9001, StageRestored, true); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Snapshot().InFlight[9001]
+	if got.Stage != StageRestored || got.VolID != "v" || got.ProtectedOrig == nil || *got.ProtectedOrig {
+		t.Errorf("job = %+v", got)
+	}
+	// A missing entry is never created: an error if it must exist, else a
+	// no-op.
+	if err := s.SetStage(9002, StageDestroyed, true); err == nil {
+		t.Error("missing entry with mustExist: want error")
+	}
+	if err := s.SetStage(9002, StageDestroyed, false); err != nil {
+		t.Errorf("missing entry without mustExist: %v", err)
+	}
+	if _, ok := s.Snapshot().InFlight[9002]; ok {
+		t.Error("SetStage created an entry")
 	}
 }

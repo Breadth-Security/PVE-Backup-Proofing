@@ -73,7 +73,7 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
-		} else if err := markDestroyed(d.Store, j.TempVMID); err != nil {
+		} else if err := d.Store.SetStage(j.TempVMID, state.StageDestroyed, false); err != nil {
 			errs = append(errs, fmt.Errorf("record %d destroyed: %w", j.TempVMID, err))
 		}
 	}
@@ -93,17 +93,6 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	}
 	return d.Store.Update(func(st *state.State) error {
 		delete(st.InFlight, j.TempVMID)
-		return nil
-	})
-}
-
-// markDestroyed records that the guest of the InFlight job at vmid is gone.
-func markDestroyed(st *state.Store, vmid int) error {
-	return st.Update(func(s *state.State) error {
-		if job, ok := s.InFlight[vmid]; ok {
-			job.Stage = state.StageDestroyed
-			s.InFlight[vmid] = job
-		}
 		return nil
 	})
 }

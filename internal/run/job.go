@@ -318,11 +318,4 @@ func (j *job) setProtected(ctx context.Context, v bool) error {
 	return j.d.API.SetVolumeAttrs(ctx, j.d.Cfg.Target.Node, j.b.Storage, j.b.VolID, nil, &v)
 }
 
-func (j *job) setStage(stage string) error {
-	return j.d.Store.Update(func(st *state.State) error {
-		job := st.InFlight[j.vmid]
-		job.Stage = stage
-		st.InFlight[j.vmid] = job
-		return nil
-	})
-}
+func (j *job) setStage(stage string) error { return j.d.Store.SetStage(j.vmid, stage, true) }

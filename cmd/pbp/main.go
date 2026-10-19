@@ -20,6 +20,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
 	"git.breadthanalytics.com/tdiana/pbv/internal/daemon"
+	"git.breadthanalytics.com/tdiana/pbv/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/pbv/internal/health"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
@@ -360,22 +361,13 @@ func (a *app) health(cfg config.Config) int {
 	return exitOK
 }
 
-// writeStarted records the daemon start time atomically (temp file, then
-// rename), so health never reads a half-written file. A failed write or
-// rename leaves no temp file behind.
+// writeStarted records the daemon start time atomically, so health never
+// reads a half-written file.
 func writeStarted(path string, t time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	err := os.WriteFile(tmp, []byte(t.Format(time.RFC3339)+"\n"), 0o600)
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-	}
-	return err
+	return fsutil.WriteFileAtomic(path, []byte(t.Format(time.RFC3339)+"\n"), 0o600)
 }
 
 // readStarted reads the daemon start time; a missing file is the zero time,

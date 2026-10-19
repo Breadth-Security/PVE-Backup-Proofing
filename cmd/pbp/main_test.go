@@ -425,8 +425,8 @@ func TestWriteStartedIsAtomic(t *testing.T) {
 	if err != nil || !got.Equal(fixedNow) {
 		t.Errorf("read back %v, %v", got, err)
 	}
-	if _, err := os.Stat(p + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("temp file left behind: %v", err)
+	if es, _ := os.ReadDir(filepath.Dir(p)); len(es) != 1 {
+		t.Errorf("temp file left behind: %v", es)
 	}
 }
 
@@ -440,8 +440,8 @@ func TestWriteStartedFailureRemovesTemp(t *testing.T) {
 	if err := writeStarted(p, fixedNow); err == nil {
 		t.Fatal("want rename error")
 	}
-	if _, err := os.Stat(p + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("temp file left behind: %v", err)
+	if es, _ := os.ReadDir(filepath.Dir(p)); len(es) != 1 {
+		t.Errorf("temp file left behind: %v", es)
 	}
 }
 
