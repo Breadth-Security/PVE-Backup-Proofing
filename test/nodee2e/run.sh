@@ -12,6 +12,13 @@ set -euo pipefail
 host="${1:-dev-scratch}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 
+# Never run this on a Proxmox node: it builds images, starts containers and
+# rsyncs --delete into /root/pbp. A PVE node has /etc/pve.
+if ssh "$host" 'test -e /etc/pve'; then
+    echo "run.sh: $host has /etc/pve, it looks like a Proxmox node; refusing to run" >&2
+    exit 2
+fi
+
 rsync -a --delete \
     --exclude .git --exclude .superpowers --exclude .remember --exclude dist \
     "$root/" "$host:/root/pbp/"

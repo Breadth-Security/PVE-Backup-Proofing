@@ -1,0 +1,22 @@
+# Changelog
+
+## v0.2.0
+
+**Breaking change: PBP no longer uses root SSH.** The daemon talks to a restricted `pbp node` helper on the PVE node, through an SSH forced command for the unprivileged `pbp` user and one sudo rule. The helper can run `pct exec` only in tagged containers inside the configured VMID range, report the isolated bridge's state, send `pbp` notifications and print its config. See README "Node setup".
+
+Behaviour changes:
+
+- `target.ssh.user` defaults to `pbp`. `root` is rejected by config validation.
+- The node needs `/etc/pbp/node.yaml` (`vmid_range`, `bridge`, optional `request_timeout`, default 15m). `pbp check` and preflight fail if it differs from `target.vmid_range` and `target.bridge`.
+- The daemon and the helper must share major.minor (`0.2.x` with `0.2.y`).
+- PBP no longer installs the notification templates itself. Run `pbp node install-templates` as root on the node; preflight only checks them.
+- `pbp check` has new steps: node helper version, config, `request_timeout` and refusal.
+- The `.deb` is unchanged for daemon-only hosts (the `pbp` user keeps the `nologin` shell). On a node, `apt purge pbp` deletes the `pbp` user and PBP's access.
+- Integration tests use a separate test-only admin key (`PBP_IT_ADMIN_SSH_KEY`); see `test/integration/README.md`.
+
+### Migrating from 0.1
+
+1. Set up the helper on the node as described in README "Node setup": install the 0.2 `.deb`, write `/etc/pbp/node.yaml`, `usermod -s /bin/sh pbp`, add the forced-command `authorized_keys` line and the sudoers rule, and run `pbp node install-templates`.
+2. Set `target.ssh.user: pbp` (or remove the line).
+3. Upgrade the daemon to 0.2 and run `pbp check`.
+4. Remove PBP's public key from `/root/.ssh/authorized_keys` on the node.

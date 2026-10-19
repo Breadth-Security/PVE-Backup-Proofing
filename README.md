@@ -17,7 +17,7 @@ PBP (Proxmox Backup Proofing) is a small daemon that runs in a container. On a s
 
 For each run, PBP:
 
-1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated and the restore storage, installs the notification templates, cleans up after any crashed run (the janitor), and then checks that the VMID range holds no guest PBP does not own.
+1. **Preflight.** Checks the API token, SSH, the node helper (version, VMID range and bridge match your config, and it refuses what it should), the node version, that the proof bridge is really isolated and the restore storage, checks that the notification templates are installed, cleans up after any crashed run (the janitor), and then checks that the VMID range holds no guest PBP does not own.
 2. **Discovery.** Picks the newest backup per guest across all configured storages. Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A snapshot that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
 3. **Capacity gate.** Skips a guest if the backup does not fit in the restore storage (free space, minus space reserved by in-flight restores, minus `space_margin_percent`) or the node lacks free RAM.
 4. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`), then puts every NIC on the isolated bridge, sets `onboot=0`, clears `protection` (a backup of a protected guest restores protected, and could then never be destroyed) and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.
@@ -56,12 +56,13 @@ Your own notes are preserved below it. A previous PBP line is replaced, never st
 - A restore storage on that node with room for your largest guest, for VM images and container root filesystems.
 - A dedicated, isolated bridge on that node (see below) and a reserved VMID range.
 - Docker with Compose on any host that can reach the node's API (8006) and SSH (22).
-- **Root-equivalent SSH access to the PVE node.** This is stated plainly: PBP holds root-equivalent access to one PVE node. It is needed because:
-  - `pct exec` (checking inside containers) has no API equivalent,
-  - the bridge's live state (IPv6, addresses, members) is not in the API, and
-  - arbitrary notifications can only be sent with `PVE::Notify` on the node itself; the notifications REST API can only send a fixed test message.
+- **SSH access to the PVE node as the unprivileged `pbp` user, restricted to one forced command.** PBP does not use root SSH. The key can run only the `pbp node` helper, which PBP's own binary provides on the node (see [Node setup](#5-node-setup)). Some things have no API equivalent: `pct exec` (checking inside containers), the bridge's live state (IPv6, addresses, members), and arbitrary notifications (`PVE::Notify`; the notifications REST API can only send a fixed test message). The helper does these, and only these, and only for guests it is allowed to touch:
+  - it runs `pct exec` only in a container whose VMID is inside the helper's `vmid_range` and which carries the `pbp` tag, and passes the command as an argument list, never through a shell,
+  - it reports the one configured bridge's state, read-only,
+  - it sends notifications of type `pbp` through `PVE::Notify`, and
+  - it prints its own configuration and version.
 
-  Use a dedicated key, pin the host key in `known_hosts`, and treat the PBP host and its secrets accordingly. A restricted wrapper is a possible later improvement, not part of v1.
+  What a stolen key gets: those four things, within the range. It does not get a shell, any other command, a guest outside the range or untagged, forwarding, or root. The range, tag and bridge are read from `/etc/pbp/node.yaml` on the node, which the key cannot change. The node still trusts PBP's API token (which you scope with the privileges below), so protect the PBP host and its secrets as before.
 
 ## Setup
 
@@ -159,20 +160,99 @@ Put the token secret in a file (see Secrets below).
 
 ### 4. Create the SSH key
 
-Create a dedicated key pair, install the public key in `root`'s `authorized_keys` on the node, and capture the node's host key. PBP refuses a host that does not match `known_hosts`:
+Create a dedicated key pair and capture the node's host key. PBP refuses a host that does not match `known_hosts`. The public key is installed on the node in the next step, for the `pbp` user, with a forced command (not in `root`'s `authorized_keys`):
 
 ```
 ssh-keygen -t ed25519 -f secrets/pve_ssh_key -N '' -C pbp
-ssh-copy-id -i secrets/pve_ssh_key.pub root@pve1.example.lan
 ssh-keyscan -t ed25519 pve1.example.lan > known_hosts
 ```
 
-### 5. Configure and start
+### 5. Node setup
+
+Done once, as root on the PVE node, by you. PBP never does it for you, because the node is where the restriction lives. Replace `<PBP public key>` with the content of `secrets/pve_ssh_key.pub` (one line: `ssh-ed25519 AAAA... pbp`).
+
+1. **Install the helper.** The helper is `pbp node`, the same binary as the daemon. Install the `.deb` (the `pbp` service stays inactive without `/etc/pbp/config.yaml`; see "Install from the .deb" for downloading it), or copy `/usr/bin/pbp` and create the `pbp` user yourself:
+
+   ```
+   apt install ./pbp_<version>_<arch>.deb
+   ```
+
+   The `.deb` creates the `pbp` user with home `/var/lib/pbp` (mode `0700`, owned by `pbp`) and shell `nologin`.
+
+   > **Warning:** `apt purge pbp` on the node deletes the `pbp` user, and with it PBP's access. `apt remove` keeps it. A daemon and its helper must share the same major.minor version (`0.2.x` talks to `0.2.y`), so upgrade the package on the node whenever you upgrade the daemon.
+
+2. **Write `/etc/pbp/node.yaml`.** This is the helper's own copy of the range, tag scope and bridge. It must match `target.vmid_range` and `target.bridge` in the daemon's `config.yaml` (`pbp check` fails if it does not), and `vmid_range[1]` must be below 999999999:
+
+   ```
+   install -d -m 0750 -o root -g pbp /etc/pbp
+   cat > /etc/pbp/node.yaml <<'EOF'
+   vmid_range: [990000, 990049]
+   bridge: vmbr99
+   request_timeout: 15m
+   EOF
+   chown root:pbp /etc/pbp/node.yaml && chmod 0640 /etc/pbp/node.yaml
+   ```
+
+   `request_timeout` (default 15m, minimum 30s) caps how long the helper lets one request run. Keep it at or above `restore.probe_timeout`, or `pbp check` warns that long probe commands are cut short. A missing or invalid `node.yaml` makes the helper refuse everything.
+
+3. **Give `pbp` a shell**, so sshd can run the forced command. The home directory stays `0700` and owned by `pbp`. Only nodes get this; daemon-only hosts keep `nologin`:
+
+   ```
+   usermod -s /bin/sh pbp
+   test "$(stat -c '%a %U' /var/lib/pbp)" = "700 pbp"
+   ```
+
+4. **Authorize the key, forced to the helper**, in `/var/lib/pbp/.ssh/authorized_keys`, as one line:
+
+   ```
+   install -d -m 0700 -o pbp -g pbp /var/lib/pbp/.ssh
+   printf 'command="sudo /usr/bin/pbp node",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc %s\n' '<PBP public key>' > /var/lib/pbp/.ssh/authorized_keys
+   chown pbp:pbp /var/lib/pbp/.ssh/authorized_keys && chmod 0600 /var/lib/pbp/.ssh/authorized_keys
+   ```
+
+5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp`. Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
+
+   ```
+   cat > /tmp/sudoers-pbp <<'EOF'
+   Defaults:pbp env_reset
+   Defaults:pbp env_keep = "SSH_ORIGINAL_COMMAND SSH_CONNECTION"
+   pbp ALL=(root) NOPASSWD: /usr/bin/pbp node
+   EOF
+   visudo -cf /tmp/sudoers-pbp \
+       && install -m 0440 -o root -g root /tmp/sudoers-pbp /etc/sudoers.d/pbp \
+       && rm /tmp/sudoers-pbp && visudo -c
+   ```
+
+   `env_reset` with exactly that `env_keep` list is part of the design: the helper takes the request from `SSH_ORIGINAL_COMMAND` and nothing else from the environment. Do not widen it.
+
+6. **Install the notification templates**, once, as root on the node:
+
+   ```
+   pbp node install-templates
+   ```
+
+   It writes `pbp-subject.txt.hbs` and `pbp-body.txt.hbs` into `/etc/pve/notification-templates/default/` and prints the paths. It runs only interactively as root: over SSH, and through the sudo rule, it is refused. Run it again after upgrading PBP if `pbp check` says the templates are outdated.
+
+7. **Point PBP at it.** In `config.yaml` use `target.ssh.user: pbp` (the default), with the key and `known_hosts` from step 4. `root` is rejected. Then run `pbp check`:
+
+   ```
+   node helper version: ok (0.2.0)
+   node helper config: ok (range [990000, 990049], bridge vmbr99)
+   node helper request_timeout: ok (15m0s)
+   node helper refusal: ok (exec in 990050 refused)
+   ```
+
+   Each failure ends with `see README "Node setup"` and names what differs: an unreachable helper, an incompatible version, a differing `vmid_range` or bridge, a `request_timeout` below the probe timeout (a warning), or a helper that did not refuse an out-of-range exec.
+
+The `UsePAM yes` that Debian ships in `sshd_config` is what lets this locked system account log in by key; if you have turned `UsePAM` off, see Troubleshooting.
+
+### 6. Configure and start
 
 Create these next to `docker-compose.yml` before the first `docker compose up`:
 
 - [ ] `config.yaml`, copied from `config.example.yaml` and edited
 - [ ] `known_hosts`, from `ssh-keyscan` (step 4)
+- [ ] the node set up (step 5)
 - [ ] `secrets/pve_token`, containing the API token secret
 - [ ] `secrets/pve_ssh_key`, the private key from step 4
 - [ ] `logs/`, owned by uid 65532 (`mkdir -p logs && chown 65532:65532 logs`)
@@ -192,7 +272,7 @@ The container's `stop_grace_period` is 11 minutes because on shutdown the daemon
 
 ## Install from the .deb
 
-As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. Do the setup steps above first (VMID range, bridge, API token, SSH key); only the file layout differs.
+As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. Do the setup steps above first (VMID range, bridge, API token, SSH key, node setup); only the file layout differs. The same `.deb` is also the node helper: install it on the PVE node too (Node setup, step 1), where the `pbp` service stays inactive without a config.
 
 1. Download the `.deb` and `SHA256SUMS` from the release and verify:
 
@@ -228,9 +308,11 @@ Logs: `journalctl -u pbp -f`, and the per-run files in `/var/log/pbp` (read them
 
 Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.2.0-rc1` produces `1.2.0~rc1`, which sorts before `1.2.0`. File names carry that Debian version (`pbp_1.2.0~rc1_amd64.deb`).
 
-**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched and the running service is restarted. **Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user.
+**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched and the running service is restarted. **On a PVE node** the same package is the helper (see [Node setup](#5-node-setup)). Its postinst creates the `pbp` user with the `nologin` shell and never touches sshd, sudo or `authorized_keys`; the node-only steps (`usermod -s /bin/sh pbp`, the forced-command key, the sudoers rule, `node.yaml`) stay manual, so daemon-only hosts never get a login shell. Installing a newer `.deb` on the node upgrades the helper and keeps that setup, but the daemon and the helper must share major.minor, so upgrade both.
 
-PBP can run on the PVE host itself, but it then holds root SSH access to the same machine that it restores guests onto (reducing that root access is planned). Prefer a separate host.
+**Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user. On a node that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs.
+
+PBP can run on the PVE host itself. It still connects over SSH as the restricted `pbp` user, but it then shares a host with the guests it restores. Prefer a separate host.
 
 ## Operating
 
@@ -259,11 +341,11 @@ The image has a Docker `HEALTHCHECK` running `pbp health`. The container reports
 
 ## Notifications
 
-One summary per run is sent from the PVE node (over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
+One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 
-PBP installs its templates (`pbp-subject.txt.hbs`, `pbp-body.txt.hbs`) into `/etc/pve/notification-templates/default/` on the node during preflight, and updates them if missing or changed. PVE 9 picks up this new template type from there (verified on PVE 9.2), and `/etc/pve` survives package upgrades, so nothing needs reinstalling after an upgrade.
+You install the templates (`pbp-subject.txt.hbs`, `pbp-body.txt.hbs`) into `/etc/pve/notification-templates/default/` on the node with `pbp node install-templates` (Node setup, step 6); preflight only checks them and says to run that command if they are missing or differ from the ones in your PBP version, so run it again after upgrading PBP. PVE 9 picks up this new template type from there (verified on PVE 9.2), and `/etc/pve` survives package upgrades, so a PVE upgrade does not remove them.
 
 If a target cannot be notified (for example a template fails to render), `PVE::Notify` only logs an `ERROR:` line; PBP treats that as a failed notification, so the run's outcome is `error` and the health check reports it. `PVE::Notify` cannot say which targets succeeded, so this is deliberately conservative: a failure of any one target marks the run's notification as failed, even if others delivered.
 
@@ -309,6 +391,33 @@ checks:
 A restore can legitimately lack things the original guest used: disks marked `backup=0`, container mount points excluded from backup, bind mounts and passthrough devices that PBP removes for safety, and network storage (NFS, CIFS, iSCSI) that the isolated bridge cannot reach.
 
 When a failed unit can be traced to one of these (for example a `.mount` unit for an excluded disk, or a service that requires such a mount), PBP does **not** count it toward `FAILED`. It writes it to the log explicitly, for example `postgresql.service depends on /srv/pgdata (disk scsi1, backup=0): not backed up, skipped`, and lists it in the run summary and notification under **not covered by backup**. That is a feature: it tells you when a backup is missing something a service needs, which no boot test of the backup alone can show. Tracing is conservative; if PBP cannot connect a failure to a missing piece, it is a real failure.
+
+## Troubleshooting
+
+`pbp check` prints one line per step and ends every node helper failure with `see README "Node setup"`.
+
+| Symptom | Cause and fix |
+|---------|---------------|
+| `target.ssh.user: root is no longer supported` | PBP refuses root. Set up the helper (Node setup) and use `user: pbp`. |
+| `the pbp node helper is not reachable`, or `Permission denied (publickey)` | The key is not in `/var/lib/pbp/.ssh/authorized_keys` of the `pbp` user (step 4), or the file or `.ssh` directory has the wrong owner or mode. The log of sshd on the node says which. |
+| Login works but nothing runs, or `This account is currently not available` | The `pbp` user still has the `nologin` shell. Run `usermod -s /bin/sh pbp` (step 3). Also check that `UsePAM yes` is set in `sshd_config` (Debian's default); with `UsePAM no`, sshd refuses key logins for a locked account such as this one. |
+| `sudo: a password is required`, or `sudo: no tty present` | The sudoers rule is missing or does not match `/usr/bin/pbp node` exactly (step 5). Check `/etc/sudoers.d/pbp` with `visudo -cf`, and that `/usr/bin/pbp` is the binary installed by the package. |
+| `pbp-node: refused: bad-request` / `no request` | The helper ran without a valid request. Something other than PBP used the key, or the `env_keep` of `SSH_ORIGINAL_COMMAND` is missing from the sudoers rule. |
+| `pbp-node: refused: out-of-range`, `untagged` or `not-container` | The guest is outside the helper's `vmid_range`, has no `pbp` tag, or is not an LXC container. By design. If the range itself is wrong, fix `node.yaml` and `target.vmid_range` together. |
+| `vmid_range differs` or `bridge differs` | `/etc/pbp/node.yaml` and `config.yaml` disagree; the message gives both values. Make them equal. Nothing is restored until they match. |
+| `helper 0.2.1 is not compatible with daemon 0.1.x` | The daemon and the helper must share major.minor. Upgrade the `.deb` on the node (or the daemon) to match. A `dev` build is compatible only with a `dev` build. |
+| `notification templates on the node: ... run "pbp node install-templates" as root on the node` | Install or refresh the templates (step 6). |
+| `pbp-node: timeout` on long probe commands | `request_timeout` in `node.yaml` is below what the command needs; keep it at or above `restore.probe_timeout`. |
+| Access stopped working after a node cleanup | `apt purge pbp` on the node deletes the `pbp` user and its `authorized_keys`. Reinstall and redo steps 3 and 4. |
+
+## Upgrading from 0.1 to 0.2
+
+Version 0.2.0 is a breaking change: PBP no longer uses root SSH. A 0.2 daemon refuses `ssh.user: root` and refuses to run until the node has the helper. To migrate:
+
+1. Do [Node setup](#5-node-setup) on the node: install the 0.2 `.deb`, write `/etc/pbp/node.yaml` with the same range and bridge as your `config.yaml`, give `pbp` a shell, install the forced-command key and the sudoers rule, and run `pbp node install-templates` (PBP no longer installs the templates itself).
+2. Switch `target.ssh.user` to `pbp` (or remove the line; `pbp` is the default). The existing key pair can be reused: put its public key in the `pbp` user's `authorized_keys` line from step 4.
+3. Upgrade the daemon to 0.2 and run `pbp check`. Fix what it reports.
+4. Remove the PBP public key from `/root/.ssh/authorized_keys` on the node. Until you do, the old key still gives root access.
 
 ## Configuration
 

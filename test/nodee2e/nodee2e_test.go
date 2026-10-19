@@ -129,7 +129,11 @@ func setUp(tmp, deb, image string) error {
 	if err := os.MkdirAll(ctxDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.CopyFS(ctxDir, os.DirFS(".")); err != nil {
+	// Only what the Dockerfile uses, not the tests or scripts beside it.
+	if err := copyFile("Dockerfile", filepath.Join(ctxDir, "Dockerfile")); err != nil {
+		return err
+	}
+	if err := os.CopyFS(filepath.Join(ctxDir, "node"), os.DirFS("node")); err != nil {
 		return err
 	}
 	if err := copyFile(deb, filepath.Join(ctxDir, "pbp.deb")); err != nil {
@@ -445,29 +449,31 @@ func TestAttackerSameKey(t *testing.T) {
 	nonce := nodeproto.NewNonce()
 	dl := time.Now().Add(time.Minute).UnixMilli()
 	injected := fmt.Sprintf(`exec --deadline %d --nonce %s %d -- ["id"];id`, dl, nonce, taggedCT)
+	const (
+		refusedExit = nodeproto.ExitRefused
+		sshExit     = 255
+	)
 	cases := []struct {
 		name string
 		args []string
-		// refused: the helper itself refuses with exit 250.
-		refused bool
-		stderr  string
+		// exit is the exact status ssh must return: 250 when the helper
+		// itself refuses, 255 when the SSH client or sshd gives up first.
+		exit   int
+		stderr string
 	}{
-		{"id", []string{"127.0.0.1", "id"}, true, "refused"},
-		{"bash", []string{"127.0.0.1", "bash"}, true, "refused"},
-		{"injected exec", []string{"127.0.0.1", injected}, true, "refused"},
-		{"exec then newline id", []string{"127.0.0.1", strings.Replace(injected, ";id", "\nid", 1)}, true, "refused"},
-		{"install-templates", []string{"127.0.0.1", "pbp node install-templates"}, true, "refused"},
-		{"sudo -l", []string{"127.0.0.1", "sudo -l"}, true, "refused"},
+		{"id", []string{"127.0.0.1", "id"}, refusedExit, "refused"},
+		{"bash", []string{"127.0.0.1", "bash"}, refusedExit, "refused"},
+		{"injected exec", []string{"127.0.0.1", injected}, refusedExit, "refused"},
+		{"exec then newline id", []string{"127.0.0.1", strings.Replace(injected, ";id", "\nid", 1)}, refusedExit, "refused"},
+		{"install-templates", []string{"127.0.0.1", "pbp node install-templates"}, refusedExit, "refused"},
+		{"sudo -l", []string{"127.0.0.1", "sudo -l"}, refusedExit, "refused"},
 		// -t without a terminal on stdin requests no pty: an interactive
 		// login, which reaches the helper with no SSH_ORIGINAL_COMMAND.
-		{"login no command", []string{"-t", "127.0.0.1"}, true, "no request"},
+		{"login no command", []string{"-t", "127.0.0.1"}, refusedExit, "no request"},
 		// -tt forces the pty request; no-pty denies it and ssh gives up.
-		{"forced pty no command", []string{"-tt", "127.0.0.1"}, false, "PTY allocation request failed"},
-		{"forced pty id", []string{"-tt", "127.0.0.1", "id"}, false, "PTY allocation request failed"},
-		// The OpenSSH client printed no stderr for this subsystem session in
-		// testing; exit 250 (the helper's refusal code) is the check.
-		{"sftp subsystem", []string{"-s", "127.0.0.1", "sftp"}, true, ""},
-		{"stdio forward", []string{"-W", "127.0.0.1:22", "127.0.0.1"}, false, "prohibited"},
+		{"forced pty no command", []string{"-tt", "127.0.0.1"}, sshExit, "PTY allocation request failed"},
+		{"forced pty id", []string{"-tt", "127.0.0.1", "id"}, sshExit, "PTY allocation request failed"},
+		{"stdio forward", []string{"-W", "127.0.0.1:22", "127.0.0.1"}, sshExit, "prohibited"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -476,8 +482,8 @@ func TestAttackerSameKey(t *testing.T) {
 			if exit == 0 {
 				t.Errorf("exit 0, want failure")
 			}
-			if tc.refused && exit != nodeproto.ExitRefused {
-				t.Errorf("exit %d, want %d", exit, nodeproto.ExitRefused)
+			if exit != tc.exit {
+				t.Errorf("exit %d, want %d", exit, tc.exit)
 			}
 			if !strings.Contains(errOut, tc.stderr) {
 				t.Errorf("stderr lacks %q", tc.stderr)
@@ -493,6 +499,83 @@ func TestAttackerSameKey(t *testing.T) {
 	}
 	if after := pctLog(t); !slices.Equal(before, after) {
 		t.Errorf("an attacker request reached pct: log grew from %q to %q", before, after)
+	}
+}
+
+// TestAttackerSubsystem asks for the sftp subsystem with the same key and
+// pins the helper's refusal by exit status (see the note on stderr below).
+func TestAttackerSubsystem(t *testing.T) {
+	before := pctLog(t)
+	key, err := os.ReadFile(env.keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	khLine, err := os.ReadFile(env.knownHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, hostKey, _, _, err := ssh.ParseKnownHosts(khLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := ssh.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(env.port)), &ssh.ClientConfig{
+		User: "pbp", Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.FixedHostKey(hostKey), HostKeyAlgorithms: []string{hostKey.Type()},
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	// A raw session channel: x/crypto's Session.Wait does not follow a
+	// subsystem request, so read the streams and exit-status by hand.
+	ch, reqs, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+	status := make(chan int, 1)
+	go func() {
+		for r := range reqs {
+			if r.Type == "exit-status" && len(r.Payload) == 4 {
+				status <- int(r.Payload[0])<<24 | int(r.Payload[1])<<16 | int(r.Payload[2])<<8 | int(r.Payload[3])
+			}
+			if r.WantReply {
+				_ = r.Reply(false, nil)
+			}
+		}
+	}()
+	ok, err := ch.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"sftp"}))
+	if err != nil || !ok {
+		t.Fatalf("subsystem request: ok %v, %v", ok, err)
+	}
+	var stdout, stderr bytes.Buffer
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(&stderr, ch.Stderr()); close(done) }()
+	_, _ = io.Copy(&stdout, ch)
+	<-done
+	select {
+	case code := <-status:
+		if code != nodeproto.ExitRefused {
+			t.Errorf("sftp subsystem exit status %d, want %d", code, nodeproto.ExitRefused)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("sftp subsystem sent no exit status")
+	}
+	t.Logf("stdout: %q\nstderr: %q", stdout.String(), stderr.String())
+	// sshd does not relay stderr for a subsystem session (seen with this
+	// library channel as well as the OpenSSH client), so the helper's refusal
+	// line cannot be shown to the client; the helper's exit status 250 is
+	// the proof it ran and refused, and nothing may come back on stdout.
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("stdout %q, stderr %q; want no output at all", stdout.String(), stderr.String())
+	}
+	if after := pctLog(t); !slices.Equal(before, after) {
+		t.Errorf("an sftp request reached pct: log grew from %q to %q", before, after)
 	}
 }
 
@@ -528,11 +611,11 @@ func TestSudoOnlyHelper(t *testing.T) {
 		}
 	}
 
-	// env_reset drops PBP_NODE_CONFIG; the root helper reads node.yaml only.
-	out, err = dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=bash", "PBP_NODE_CONFIG=/nonexistent"},
-		"pbp", "sudo", "-n", "/usr/bin/pbp", "node")
+	// SSH_ORIGINAL_COMMAND survives sudo (env_keep), so through the rule the
+	// helper sees a non-request and refuses it.
+	out, err = dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=bash"}, "pbp", "sudo", "-n", "/usr/bin/pbp", "node")
 	if err == nil || !strings.Contains(out, "refused: bad-request") {
-		t.Errorf("helper via sudo with PBP_NODE_CONFIG set: %v, %q; want a bad-request refusal from node.yaml settings", err, out)
+		t.Errorf("helper via sudo with SSH_ORIGINAL_COMMAND=bash: %v, %q; want a bad-request refusal", err, out)
 	}
 }
 
@@ -628,27 +711,43 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		t.Logf("helper returned the timeout marker after %v; sleep 61 is gone", elapsed.Round(10*time.Millisecond))
 	})
 
-	t.Run("client gone at deadline", func(t *testing.T) {
-		h := helper(t)
+	t.Run("client gone before deadline", func(t *testing.T) {
+		// The request's deadline is 3s out, but the client gives up after 1s
+		// and its session is gone. Only the helper's own deadline handling can
+		// then stop the command: sleep 62 would otherwise run for a minute.
+		const clientGivesUp = time.Second
+		c, err := sshx.Dial(config.SSH{Host: "127.0.0.1", Port: env.port, User: "pbp",
+			KeyFile: env.keyFile, KnownHostsFile: env.knownHost})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), deadlineIn)
+		cmd, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: taggedCT,
+			Argv: []string{"sleep", "62"}, Deadline: start.Add(deadlineIn), Nonce: nodeproto.NewNonce()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), clientGivesUp)
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			_, err := h.Exec(ctx, taggedCT, []string{"sleep", "62"})
+			_, err := c.Run(ctx, cmd, nil)
 			done <- err
 		}()
-		if !waitFor(t, deadlineIn, func() bool { return sleeping(t, "sleep 62") }) {
+		if !waitFor(t, clientGivesUp, func() bool { return sleeping(t, "sleep 62") }) {
 			t.Fatal("sleep 62 never started in the container")
 		}
-		if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("Exec err = %v, want context.DeadlineExceeded", err)
+		if err := <-done; err == nil {
+			t.Error("Run returned no error although its context expired first")
 		}
-		// The daemon's session is gone; the helper must still kill the
-		// command on its own.
+		gone := time.Since(start)
+		if gone >= deadlineIn {
+			t.Fatalf("client gone only after %v, not before the %v deadline; the test proves nothing", gone, deadlineIn)
+		}
 		if !waitFor(t, time.Until(start.Add(deadlineIn+grace)), func() bool { return !sleeping(t, "sleep 62") }) {
 			t.Errorf("sleep 62 still running %v after the request started", time.Since(start))
 		}
-		t.Logf("sleep 62 gone %v after the request started", time.Since(start).Round(10*time.Millisecond))
+		t.Logf("client gone after %v; sleep 62 gone %v after the request started", gone.Round(10*time.Millisecond), time.Since(start).Round(10*time.Millisecond))
 	})
 }
