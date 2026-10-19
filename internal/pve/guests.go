@@ -126,7 +126,9 @@ func (c *Client) GuestConfig(ctx context.Context, node string, kind model.GuestK
 	return out, nil
 }
 
-// SetGuestConfig sets and/or deletes config keys. qemu uses POST, lxc PUT.
+// SetGuestConfig sets and/or deletes config keys with the synchronous PUT,
+// so a refused change is returned as an error. (qemu's POST variant runs as
+// a task and returns before the change is applied or refused.)
 func (c *Client) SetGuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int, set map[string]string, del []string) error {
 	form := url.Values{}
 	for k, v := range set {
@@ -135,11 +137,7 @@ func (c *Client) SetGuestConfig(ctx context.Context, node string, kind model.Gue
 	if len(del) > 0 {
 		form.Set("delete", strings.Join(del, ","))
 	}
-	method := http.MethodPost
-	if kind == model.KindLXC {
-		method = http.MethodPut
-	}
-	return c.do(ctx, method, guestPath(node, kind, vmid)+"/config", nil, form, nil)
+	return c.do(ctx, http.MethodPut, guestPath(node, kind, vmid)+"/config", nil, form, nil)
 }
 
 // OriginalConfig returns the raw guest config stored inside a backup.

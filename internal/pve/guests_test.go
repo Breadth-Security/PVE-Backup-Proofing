@@ -119,11 +119,14 @@ func TestGuestConfigLXCRawLines(t *testing.T) {
 	}
 }
 
+// Both kinds use the synchronous PUT. For qemu, POST is asynchronous: it
+// returns a task whose failure (on pve1: a 403 for removing a registered tag)
+// went unnoticed and left the change half applied as pending.
 func TestSetGuestConfigMethodByKind(t *testing.T) {
 	for _, tc := range []struct {
 		kind   model.GuestKind
 		method string
-	}{{model.KindQEMU, "POST"}, {model.KindLXC, "PUT"}} {
+	}{{model.KindQEMU, "PUT"}, {model.KindLXC, "PUT"}} {
 		c, got := capture(t, `{"data":null}`)
 		err := c.SetGuestConfig(context.Background(), "pve1", tc.kind, 9100,
 			map[string]string{"onboot": "0", "net0": "virtio,bridge=vmbr9"}, []string{"hostpci0", "usb0"})
