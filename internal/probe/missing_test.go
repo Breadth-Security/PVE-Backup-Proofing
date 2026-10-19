@@ -269,3 +269,18 @@ func TestNestedMountCoveredViaRequiresExtendsPaths(t *testing.T) {
 		t.Fatalf("got %+v", o)
 	}
 }
+
+// The absent-device rule applies only to block-device sources: a loop-mounted
+// image file (or any other non-/dev path) that is missing is not explained by
+// an excluded disk, so the failure stays real.
+func TestMissingNonDeviceSourceUntraced(t *testing.T) {
+	for _, what := range []string{"/var/lib/images/disk.img", "/srv/iso/debian.iso", "/dev-images/x.img"} {
+		ex := failing(map[string]string{"img.mount": "Type=ext4\nWhat=" + what + "\nWhere=/img\n"})
+		ex["test -e "+what] = probe.ExecResult{ExitCode: 1}
+		ex["journalctl -b --no-pager -n 200"] = out("")
+		o := runMissing(ex, scsi1)
+		if o.Verdict != model.Failed || o.Reason != "failed: img.mount" || len(o.NotCovered) != 0 {
+			t.Errorf("%s: got %+v", what, o)
+		}
+	}
+}

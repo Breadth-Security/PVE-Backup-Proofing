@@ -206,16 +206,17 @@ func pathWithin(p, base string) bool {
 	return p == base || strings.HasPrefix(p, base+"/")
 }
 
-// resolveSource turns a mount source into an absolute device path, resolving
-// UUID=/LABEL=/PARTUUID= tags. It returns "" for anything else.
+// resolveSource turns a mount source into a device path under /dev/,
+// resolving UUID=/LABEL=/PARTUUID= tags. It returns "" for anything else
+// (loop-mounted image files and other paths are not disks).
 func resolveSource(what string) string {
 	for _, sp := range sourcePrefixes {
 		if v, ok := strings.CutPrefix(what, sp.tag); ok && v != "" && !strings.Contains(v, "/") {
 			return sp.dir + v
 		}
 	}
-	if strings.HasPrefix(what, "/") {
-		return path.Clean(what)
+	if p := path.Clean(what); strings.HasPrefix(p, "/dev/") {
+		return p
 	}
 	return ""
 }
