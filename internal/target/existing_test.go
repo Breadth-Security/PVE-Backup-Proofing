@@ -238,7 +238,14 @@ func TestPrepareLiveIsolation(t *testing.T) {
 			wantErr: true, isolated: true, text: "Device does not exist"},
 		{name: "ssh transport error", sshErr: errors.New("ssh: connection lost"), wantErr: true, text: "connection lost"},
 		{name: "ovs isolated", ovs: true},
-		{name: "ovs proof guest ports", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nfwpr990001p0\n"}}},
+		// On OVS, PVE plugs a NIC with firewall=1 in as the internal port
+		// fwln<vmid>o<n> (PVE::Network compute_fwbr_names); without the
+		// firewall it is the plain tap.
+		{name: "ovs proof guest ports", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nfwln990001o0\nfwln990002o1\n"}}},
+		{name: "ovs production guest firewall port", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "fwln100o0\n"}},
+			wantErr: true, isolated: true, text: "fwln100o0"},
+		{name: "ovs firewall port out of range", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "fwln990050o0\n"}},
+			wantErr: true, isolated: true, text: "fwln990050o0"},
 		{name: "ovs internal port", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nmgmt0\n"}},
 			wantErr: true, isolated: true, text: "mgmt0"},
 	}

@@ -13,9 +13,10 @@ import (
 )
 
 // reGuestPort matches the interfaces PVE plugs into a bridge for a guest:
-// a VM's tap, a container's veth, and the firewall bridge's fwpr/fwln pair.
-// The capture is the guest's VMID.
-var reGuestPort = regexp.MustCompile(`^(?:tap(\d+)i|veth(\d+)i|fwpr(\d+)p|fwln(\d+)i)\d+$`)
+// a VM's tap, a container's veth, the firewall bridge's fwpr/fwln pair
+// (Linux bridge), and the firewall's OVS internal port fwln<vmid>o<n>
+// (PVE::Network compute_fwbr_names). The capture is the guest's VMID.
+var reGuestPort = regexp.MustCompile(`^(?:tap(\d+)i|veth(\d+)i|fwpr(\d+)p|fwln(\d+)[io])\d+$`)
 
 // checkLiveIsolation verifies the bridge's live state on the node, which the
 // API config does not show: IPv6 must be disabled on it (otherwise the
