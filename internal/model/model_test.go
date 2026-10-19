@@ -57,6 +57,28 @@ func TestSeverity(t *testing.T) {
 	}
 }
 
+// A guest skipped because its snapshot is already proven is good news: it
+// must not raise the severity. Any other SKIPPED still warns.
+func TestSeverityAlreadyProven(t *testing.T) {
+	proven := GuestResult{Verdict: Proven}
+	already := GuestResult{Verdict: Skipped, Reason: "already proven", AlreadyProven: true}
+	other := GuestResult{Verdict: Skipped, Reason: "insufficient node memory"}
+	cases := []struct {
+		rs   []GuestResult
+		want string
+	}{
+		{[]GuestResult{already}, "info"},
+		{[]GuestResult{proven, already, already}, "info"},
+		{[]GuestResult{already, other}, "warning"},
+		{[]GuestResult{already, {Verdict: Failed}}, "error"},
+	}
+	for i, c := range cases {
+		if got := (RunSummary{Results: c.rs}).Severity(); got != c.want {
+			t.Errorf("case %d: got %s want %s", i, got, c.want)
+		}
+	}
+}
+
 func TestCounts(t *testing.T) {
 	s := RunSummary{Results: []GuestResult{{Verdict: Proven}, {Verdict: Proven}, {Verdict: Failed}}}
 	c := s.Counts()

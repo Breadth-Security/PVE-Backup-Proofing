@@ -333,6 +333,12 @@ func TestRunDiscoveryAndAlreadyProven(t *testing.T) {
 	if got := s.Counts(); got[model.Proven] != 2 || got[model.Skipped] != 1 {
 		t.Errorf("counts = %v", got)
 	}
+	if !r[103].AlreadyProven || r[101].AlreadyProven {
+		t.Errorf("AlreadyProven: 103=%v 101=%v", r[103].AlreadyProven, r[101].AlreadyProven)
+	}
+	if sev := s.Severity(); sev != "info" {
+		t.Errorf("severity = %s, want info (already proven is not a problem)", sev)
+	}
 }
 
 func TestRunSpaceGate(t *testing.T) {

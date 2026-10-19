@@ -83,15 +83,18 @@ func (n NotCovered) LogLine() string {
 }
 
 type GuestResult struct {
-	Backup                        Backup
-	Name                          string
-	TempVMID                      int
-	Verdict                       Verdict
-	Reason                        string
-	FailedUnits, IgnoredUnits     []string
-	NotCovered                    []NotCovered
-	Checks                        []CheckResult
-	AgentMissing                  bool
+	Backup                    Backup
+	Name                      string
+	TempVMID                  int
+	Verdict                   Verdict
+	Reason                    string
+	FailedUnits, IgnoredUnits []string
+	NotCovered                []NotCovered
+	Checks                    []CheckResult
+	AgentMissing              bool
+	// AlreadyProven: SKIPPED because the snapshot already carries a PROVEN
+	// verdict. Such a skip is not a problem and does not raise severity.
+	AlreadyProven                 bool
 	RestoreDuration, BootDuration time.Duration
 	BootLog                       string
 }
@@ -112,16 +115,24 @@ func (s RunSummary) Counts() map[Verdict]int {
 }
 
 // Severity is "error" if the run errored or any guest FAILED, "warning" if
-// any guest was BOOTED/SKIPPED/ERROR, else "info".
+// any guest was BOOTED/ERROR or SKIPPED for a reason other than already
+// proven, else "info".
 func (s RunSummary) Severity() string {
 	if s.RunError != "" {
 		return "error"
 	}
-	c := s.Counts()
-	if c[Failed] > 0 {
-		return "error"
+	warn := false
+	for _, r := range s.Results {
+		switch r.Verdict {
+		case Failed:
+			return "error"
+		case Booted, Error:
+			warn = true
+		case Skipped:
+			warn = warn || !r.AlreadyProven
+		}
 	}
-	if c[Booted] > 0 || c[Skipped] > 0 || c[Error] > 0 {
+	if warn {
 		return "warning"
 	}
 	return "info"

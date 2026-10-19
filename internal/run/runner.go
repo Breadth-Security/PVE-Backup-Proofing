@@ -222,6 +222,7 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 	for i, b := range queue {
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
 			results[i] = p.skip(b, reasonAlreadyProven)
+			results[i].AlreadyProven = true
 			continue
 		}
 		// Wait for a free worker; the gates below then see current figures.

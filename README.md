@@ -193,7 +193,7 @@ The image has a Docker `HEALTHCHECK` running `pbp health`. The container reports
 
 ## Notifications
 
-One summary per run is sent from the PVE node (over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN`, `warning` for any `BOOTED`, `SKIPPED` or `ERROR`, and `error` for any `FAILED` or a run-level failure.
+One summary per run is sent from the PVE node (over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 

@@ -197,7 +197,7 @@ func TestRunWiring(t *testing.T) {
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Trigger != "manual" {
 		t.Fatalf("runs = %+v", runs)
 	}
-	if !strings.Contains(e.out.String(), "run "+id+": warning; proven 0, failed 0, booted 0, skipped 1, error 0") {
+	if !strings.Contains(e.out.String(), "run "+id+": info; proven 0, failed 0, booted 0, skipped 1, error 0") {
 		t.Errorf("stdout = %q", e.out)
 	}
 	b, err := os.ReadFile(filepath.Join(e.logDir, "run-"+id+".log"))
