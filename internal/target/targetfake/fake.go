@@ -25,7 +25,9 @@ var _ target.Target = (*Fake)(nil)
 // Like the real target it enforces the safety contracts: every method that
 // names a VMID refuses one outside Range with target.ErrOutOfRange, Start
 // refuses a guest without a successful Sanitize, and Destroy refuses a guest
-// left untagged by a failed restore (DestroyRecorded removes it).
+// left untagged by a failed restore (DestroyRecorded removes it, given the
+// volid that restore was for). Restore refusals that create no guest (out
+// of range, VMID taken) match target.ErrRestoreNotStarted.
 type Fake struct {
 	mu sync.Mutex
 
@@ -34,8 +36,8 @@ type Fake struct {
 
 	// PrepareErr is returned by Prepare.
 	PrepareErr error
-	// Recorded is the recorded-VMID set the last Prepare call was given.
-	Recorded map[int]bool
+	// Recorded is the recorded-restore set the last Prepare call was given.
+	Recorded map[int]target.Recorded
 	// OwnedGuests are leftover guests returned by Owned (e.g. from a crash).
 	// Their VMIDs count as existing for AllocateVMID; Destroy removes them.
 	OwnedGuests []pve.GuestRef
@@ -72,8 +74,9 @@ type Fake struct {
 	// Live holds guests restored and not yet destroyed, keyed by VMID.
 	// Tests read it to check cleanup.
 	Live map[int]model.GuestKind
-	// Untagged marks Live guests a failed restore left without the tag.
-	Untagged map[int]bool
+	// Untagged maps Live guests a failed restore left without the tag to
+	// the volid that restore was for.
+	Untagged map[int]string
 	// sanitized marks guests whose last Sanitize succeeded.
 	sanitized map[int]bool
 	// Calls records each call as "Method arg...", e.g. "Restore 990000 <volid>".
@@ -104,7 +107,7 @@ func (f *Fake) CallLog() []string {
 	return slices.Clone(f.Calls)
 }
 
-func (f *Fake) Prepare(ctx context.Context, recorded map[int]bool) error {
+func (f *Fake) Prepare(ctx context.Context, recorded map[int]target.Recorded) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Prepare")
@@ -158,10 +161,10 @@ func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, orig map[s
 	defer f.mu.Unlock()
 	f.record("Restore %d %s", vmid, b.VolID)
 	if err := f.guard(vmid); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", target.ErrRestoreNotStarted, err)
 	}
 	if f.exists(vmid) {
-		return fmt.Errorf("vmid %d already exists", vmid)
+		return fmt.Errorf("%w: vmid %d already exists", target.ErrRestoreNotStarted, vmid)
 	}
 	err := f.RestoreErr[vmid]
 	if err != nil && !f.RestoreLeaves[vmid] {
@@ -173,9 +176,9 @@ func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, orig map[s
 	f.Live[vmid] = b.Key.Kind
 	if err != nil {
 		if f.Untagged == nil {
-			f.Untagged = map[int]bool{}
+			f.Untagged = map[int]string{}
 		}
-		f.Untagged[vmid] = true
+		f.Untagged[vmid] = b.VolID
 	}
 	return err
 }
@@ -256,24 +259,24 @@ func (f *Fake) Destroy(ctx context.Context, kind model.GuestKind, vmid int) erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Destroy %s %d", kind, vmid)
-	return f.destroy(vmid, false)
+	return f.destroy(vmid, "")
 }
 
-func (f *Fake) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (f *Fake) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("DestroyRecorded %s %d", kind, vmid)
-	return f.destroy(vmid, true)
+	f.record("DestroyRecorded %s %d %s", kind, vmid, volid)
+	return f.destroy(vmid, volid)
 }
 
-// destroy removes vmid; an untagged guest only when recorded. Callers hold
-// f.mu.
-func (f *Fake) destroy(vmid int, recorded bool) error {
+// destroy removes vmid; an untagged guest only when volid is the one its
+// failed restore was for. Callers hold f.mu.
+func (f *Fake) destroy(vmid int, volid string) error {
 	if err := f.guard(vmid); err != nil {
 		return err
 	}
-	if f.Untagged[vmid] && !recorded {
-		return fmt.Errorf("%w: %d has no %q tag", target.ErrNotOwned, vmid, target.OwnerTag)
+	if v, untagged := f.Untagged[vmid]; untagged && (volid == "" || volid != v) {
+		return fmt.Errorf("%w: %d has no %q tag and is not the leftover of %q", target.ErrNotOwned, vmid, target.OwnerTag, volid)
 	}
 	if err := f.DestroyErr[vmid]; err != nil {
 		return err

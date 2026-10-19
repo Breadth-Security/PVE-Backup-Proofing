@@ -45,7 +45,7 @@ type lockProbe struct {
 	held *bool
 }
 
-func (l lockProbe) Prepare(ctx context.Context, recorded map[int]bool) error {
+func (l lockProbe) Prepare(ctx context.Context, recorded map[int]target.Recorded) error {
 	release, err := daemon.AcquireLock(daemon.LockPath())
 	*l.held = errors.Is(err, daemon.ErrBusy)
 	if err == nil {

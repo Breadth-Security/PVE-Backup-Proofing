@@ -14,10 +14,10 @@ import (
 
 // Janitor finishes the teardown of jobs a crashed run left in the state
 // store, then destroys any other guest PBP owns (in the VMID range and tagged
-// "pbp"). A job whose restore may have started owns its VMID by the state
-// record, so its guest is removed even without the tag (a partial restore);
-// the target still enforces range, kind and node and refuses an untagged
-// guest that runs. A guest the target refuses is left alone and its entry
+// "pbp"). For a job whose restore may have started, an untagged guest at its
+// VMID is removed too if the target accepts it as that restore's leftover
+// (stopped, named as in the backup or still locked by the restore; design
+// section 11.2); range, kind and node are enforced as always. A guest the target refuses is left alone and its entry
 // kept. An entry is removed only once every step for it succeeded. The
 // returned error joins every failure.
 func Janitor(ctx context.Context, d Deps) error {
@@ -57,19 +57,24 @@ func Janitor(ctx context.Context, d Deps) error {
 }
 
 // cleanupJob undoes what the recorded stage says may have happened: destroy
-// the guest unless already destroyed, restore the backup's protected flag,
-// then drop the entry.
+// the guest unless already destroyed (and record that at once, so a failure
+// below never leaves an empty VMID recorded as an in-flight restore), restore
+// the backup's protected flag, then drop the entry.
 func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	log := logger(d).With("vmid", j.TempVMID, "volid", j.VolID, "stage", j.Stage)
 	var errs []error
 	if j.Stage != state.StageDestroyed {
 		log.Warn("janitor: destroying guest of crashed job")
-		destroy := d.Target.Destroy
+		var err error
 		if j.MayHaveGuest() {
-			destroy = d.Target.DestroyRecorded
+			err = d.Target.DestroyRecorded(ctx, j.Kind, j.TempVMID, j.VolID)
+		} else {
+			err = d.Target.Destroy(ctx, j.Kind, j.TempVMID)
 		}
-		if err := destroy(ctx, j.Kind, j.TempVMID); err != nil {
+		if err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
+		} else if err := markDestroyed(d.Store, j.TempVMID); err != nil {
+			errs = append(errs, fmt.Errorf("record %d destroyed: %w", j.TempVMID, err))
 		}
 	}
 	if j.ProtectedOrig != nil && !*j.ProtectedOrig {
@@ -88,6 +93,17 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	}
 	return d.Store.Update(func(st *state.State) error {
 		delete(st.InFlight, j.TempVMID)
+		return nil
+	})
+}
+
+// markDestroyed records that the guest of the InFlight job at vmid is gone.
+func markDestroyed(st *state.Store, vmid int) error {
+	return st.Update(func(s *state.State) error {
+		if job, ok := s.InFlight[vmid]; ok {
+			job.Stage = state.StageDestroyed
+			s.InFlight[vmid] = job
+		}
 		return nil
 	})
 }

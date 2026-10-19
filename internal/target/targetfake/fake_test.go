@@ -93,7 +93,7 @@ func TestContracts(t *testing.T) {
 			"Restore":         f.Restore(ctx, b, out, nil),
 			"Start":           f.Start(ctx, model.KindQEMU, out),
 			"Destroy":         f.Destroy(ctx, model.KindQEMU, out),
-			"DestroyRecorded": f.DestroyRecorded(ctx, model.KindQEMU, out),
+			"DestroyRecorded": f.DestroyRecorded(ctx, model.KindQEMU, out, "vol"),
 		}
 		_, checks["Sanitize"] = f.Sanitize(ctx, model.KindQEMU, out, nil)
 		_, checks["WaitBooted"] = f.WaitBooted(ctx, model.KindQEMU, out, 0)
@@ -102,6 +102,9 @@ func TestContracts(t *testing.T) {
 			if !errors.Is(err, target.ErrOutOfRange) {
 				t.Errorf("%s(%d) = %v, want ErrOutOfRange", m, out, err)
 			}
+		}
+		if !errors.Is(checks["Restore"], target.ErrRestoreNotStarted) {
+			t.Errorf("out-of-range Restore = %v, want ErrRestoreNotStarted", checks["Restore"])
 		}
 		if len(f.Live) != 0 {
 			t.Errorf("live = %v", f.Live)
@@ -145,7 +148,10 @@ func TestContracts(t *testing.T) {
 		if err := f.Destroy(ctx, model.KindQEMU, 990000); !errors.Is(err, target.ErrNotOwned) {
 			t.Errorf("Destroy = %v, want ErrNotOwned", err)
 		}
-		if err := f.DestroyRecorded(ctx, model.KindQEMU, 990000); err != nil {
+		if err := f.DestroyRecorded(ctx, model.KindQEMU, 990000, "other-vol"); !errors.Is(err, target.ErrNotOwned) {
+			t.Errorf("DestroyRecorded for another backup = %v, want ErrNotOwned", err)
+		}
+		if err := f.DestroyRecorded(ctx, model.KindQEMU, 990000, "vol"); err != nil {
 			t.Errorf("DestroyRecorded = %v", err)
 		}
 		if len(f.Live) != 0 {
@@ -153,12 +159,20 @@ func TestContracts(t *testing.T) {
 		}
 	})
 
+	t.Run("taken VMID is not started", func(t *testing.T) {
+		f := New(990000, 990002)
+		f.OwnedGuests = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990000}}}
+		if err := f.Restore(ctx, b, 990000, nil); !errors.Is(err, target.ErrRestoreNotStarted) {
+			t.Errorf("Restore onto existing guest = %v, want ErrRestoreNotStarted", err)
+		}
+	})
+
 	t.Run("prepare records the recorded set", func(t *testing.T) {
 		f := New(990000, 990002)
-		if err := f.Prepare(ctx, map[int]bool{990001: true}); err != nil {
+		if err := f.Prepare(ctx, map[int]target.Recorded{990001: {Kind: model.KindQEMU, VolID: "vol"}}); err != nil {
 			t.Fatal(err)
 		}
-		if !f.Recorded[990001] || len(f.Recorded) != 1 {
+		if f.Recorded[990001].VolID != "vol" || len(f.Recorded) != 1 {
 			t.Errorf("recorded = %v", f.Recorded)
 		}
 	})

@@ -18,6 +18,7 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe/probetest"
+	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
@@ -147,12 +148,12 @@ func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int)
 	return t.Fake.Destroy(ctx, kind, vmid)
 }
 
-func (t *recTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *recTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
 	t.rec.add(ctx, "DestroyRecorded")
 	if t.panicDestroy {
 		panic("destroy boom")
 	}
-	return t.Fake.DestroyRecorded(ctx, kind, vmid)
+	return t.Fake.DestroyRecorded(ctx, kind, vmid, volid)
 }
 
 type fixture struct {
@@ -746,5 +747,23 @@ func TestOriginalTagsSplitLikePVE(t *testing.T) {
 	slices.Sort(ran)
 	if !slices.Equal(ran, []string{"by-db", "by-web"}) {
 		t.Errorf("guest checks run: %q", ran)
+	}
+}
+
+// A restore the target refuses (here: the VMID is taken) created no guest:
+// teardown destroys nothing and the job leaves no InFlight entry.
+func TestRestoreRefusedSkipsDestroy(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.OwnedGuests = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: tmpVMID}}}
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || !strings.Contains(res.Reason, "already exists") {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	want := []string{"SetProtected=true @protected", "Restore @restored", "SetProtected=false @protected", "SetNotes @-"}
+	if got := f.rec.entries(); !slices.Equal(got, want) {
+		t.Errorf("calls %q", got)
+	}
+	if _, ok := f.inFlight(); ok {
+		t.Error("InFlight entry left")
 	}
 }

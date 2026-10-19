@@ -138,11 +138,11 @@ func (t *hookTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int
 	return t.Fake.Destroy(ctx, kind, vmid)
 }
 
-func (t *hookTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *hookTarget) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
 	t.mu.Lock()
 	delete(t.held, vmid)
 	t.mu.Unlock()
-	return t.Fake.DestroyRecorded(ctx, kind, vmid)
+	return t.Fake.DestroyRecorded(ctx, kind, vmid, volid)
 }
 
 func (t *hookTarget) restores() []string {

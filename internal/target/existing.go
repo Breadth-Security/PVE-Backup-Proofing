@@ -63,7 +63,7 @@ func (n *ExistingNode) guard(vmid int) error {
 	return nil
 }
 
-func (n *ExistingNode) Prepare(ctx context.Context, recorded map[int]bool) error {
+func (n *ExistingNode) Prepare(ctx context.Context, recorded map[int]Recorded) error {
 	v, err := n.api.Version(ctx)
 	if err != nil {
 		return fmt.Errorf("pve version: %w", err)
@@ -104,7 +104,19 @@ func (n *ExistingNode) Prepare(ctx context.Context, recorded map[int]bool) error
 	}
 	var foreign []string
 	for _, g := range guests {
-		if n.inRange(g.Key.VMID) && !slices.Contains(g.Tags, OwnerTag) && !recorded[g.Key.VMID] {
+		if !n.inRange(g.Key.VMID) || slices.Contains(g.Tags, OwnerTag) {
+			continue
+		}
+		if r, ok := recorded[g.Key.VMID]; ok {
+			why, err := n.notLeftover(ctx, g, r)
+			if err != nil {
+				return err
+			}
+			if why == "" {
+				continue // a failed restore's leftover: the janitor removes it
+			}
+			foreign = append(foreign, fmt.Sprintf("%s (recorded restore, but %s)", g.Key, why))
+		} else {
 			foreign = append(foreign, g.Key.String())
 		}
 	}
@@ -188,7 +200,10 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	if err != nil {
 		err = fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
 		// Only an API error response is a definite refusal; a transport
-		// failure may hide a request the node accepted.
+		// failure may hide a request the node accepted. A pveproxy 5xx can
+		// also follow a request it forwarded; calling that "not started"
+		// fails safe: a leftover is then untagged and unrecorded, so it
+		// blocks the run (foreign) instead of being destroyed.
 		var ae *pve.APIError
 		if errors.As(err, &ae) {
 			return notStarted{err}
@@ -310,17 +325,64 @@ func (n *ExistingNode) Start(ctx context.Context, kind model.GuestKind, vmid int
 // Destroy hard-stops (proof guests hold nothing worth a clean shutdown),
 // destroys with purge, and confirms the guest is gone.
 func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
-	return n.destroy(ctx, kind, vmid, false)
+	return n.destroy(ctx, kind, vmid, nil)
 }
 
-func (n *ExistingNode) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
-	return n.destroy(ctx, kind, vmid, true)
+func (n *ExistingNode) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
+	return n.destroy(ctx, kind, vmid, &Recorded{Kind: kind, VolID: volid})
+}
+
+// leftoverNameKey is the config key restore keeps from the backup and PBP
+// renames only together with tagging.
+func leftoverNameKey(kind model.GuestKind) string {
+	if kind == model.KindLXC {
+		return "hostname"
+	}
+	return "name"
+}
+
+// notLeftover says why the untagged guest g is not the leftover of the
+// recorded restore r ("" if it is): it must be of r's kind, stopped, and
+// either still locked by the restore or named as in r's backup. An
+// unreadable original config is a reason (fail safe); a failed read of the
+// guest's own config is an error.
+func (n *ExistingNode) notLeftover(ctx context.Context, g pve.GuestRef, r Recorded) (string, error) {
+	if g.Key.Kind != r.Kind || g.Node != n.node {
+		return fmt.Sprintf("it is %s on %s, recorded %s on %s", g.Key.Kind, g.Node, r.Kind, n.node), nil
+	}
+	if g.Status != "stopped" {
+		return "it is " + g.Status, nil
+	}
+	cfg, err := n.api.GuestConfig(ctx, n.node, g.Key.Kind, g.Key.VMID)
+	if err != nil {
+		return "", fmt.Errorf("read config %d: %w", g.Key.VMID, err)
+	}
+	return n.leftoverMismatch(ctx, g.Key.Kind, cfg, r.VolID), nil
+}
+
+// leftoverMismatch checks an untagged guest's config against the recorded
+// backup: "lock: create" (restore still holds it) or the same non-empty
+// name/hostname as the backup's original config. It returns "" on a match.
+func (n *ExistingNode) leftoverMismatch(ctx context.Context, kind model.GuestKind, cfg map[string]string, volid string) string {
+	if cfg["lock"] == "create" {
+		return ""
+	}
+	raw, err := n.api.OriginalConfig(ctx, n.node, volid)
+	if err != nil {
+		return fmt.Sprintf("the original config of %s cannot be read (%v)", volid, err)
+	}
+	key := leftoverNameKey(kind)
+	want := sanitize.ParseConfigText(raw)[key]
+	if want == "" || cfg[key] != want {
+		return fmt.Sprintf("its %s %q does not match %q from %s", key, cfg[key], want, volid)
+	}
+	return ""
 }
 
 // destroy removes the guest at vmid if PBP owns it: in range, of the expected
-// kind on this node, and tagged "pbp" or (recorded) recorded by the caller's
-// state store and stopped.
-func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid int, recorded bool) error {
+// kind on this node, and tagged "pbp" or, with rec, the stopped leftover of
+// the recorded restore (see notLeftover).
+func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid int, rec *Recorded) error {
 	if err := n.guard(vmid); err != nil {
 		return err
 	}
@@ -339,17 +401,22 @@ func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid i
 		return fmt.Errorf("read config %d: %w", vmid, err)
 	}
 	tagged := slices.Contains(sanitize.SplitList(cfg["tags"]), OwnerTag)
-	if !tagged && !recorded {
+	if !tagged && rec == nil {
 		return fmt.Errorf("%w: %d has no %q tag", ErrNotOwned, vmid, OwnerTag)
 	}
 	status, err := n.api.GuestStatus(ctx, n.node, kind, vmid)
 	if err != nil {
 		return fmt.Errorf("status %d: %w", vmid, err)
 	}
-	if !tagged && status != "stopped" {
+	if !tagged {
 		// PBP tags a guest before it can be started, so an untagged one
-		// that runs is no partial restore of PBP's.
-		return fmt.Errorf("%w: %d has no %q tag and is %s", ErrNotOwned, vmid, OwnerTag, status)
+		// that runs is no leftover of PBP's.
+		if status != "stopped" {
+			return fmt.Errorf("%w: %d has no %q tag and is %s", ErrNotOwned, vmid, OwnerTag, status)
+		}
+		if why := n.leftoverMismatch(ctx, kind, cfg, rec.VolID); why != "" {
+			return fmt.Errorf("%w: %d has no %q tag and %s", ErrNotOwned, vmid, OwnerTag, why)
+		}
 	}
 	// Owned: a protected guest (restored from a protected guest's backup
 	// whose tag write failed, or debris from a run before protection was

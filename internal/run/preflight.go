@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
+	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
 // Preflight checks the target node, installs the notification templates and
@@ -23,13 +24,14 @@ func Preflight(ctx context.Context, d Deps) error {
 	return nil
 }
 
-// recordedGuests is the set of VMIDs where, by the state store, a restore PBP
-// started may have left a guest: such a guest is PBP's even if untagged.
-func recordedGuests(st state.State) map[int]bool {
-	out := map[int]bool{}
+// recordedGuests is the restores, by VMID, that the state store records as
+// started and that may have left a guest. The target accepts an untagged
+// guest there only as that restore's leftover (stopped, matching backup).
+func recordedGuests(st state.State) map[int]target.Recorded {
+	out := map[int]target.Recorded{}
 	for v, j := range st.InFlight {
 		if j.MayHaveGuest() {
-			out[v] = true
+			out[v] = target.Recorded{Kind: j.Kind, VolID: j.VolID}
 		}
 	}
 	return out

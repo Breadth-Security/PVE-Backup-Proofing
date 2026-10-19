@@ -36,11 +36,11 @@ func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int
 	return t.Target.Destroy(ctx, kind, vmid)
 }
 
-func (t *destroyLog) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int) error {
+func (t *destroyLog) DestroyRecorded(ctx context.Context, kind model.GuestKind, vmid int, volid string) error {
 	t.mu.Lock()
 	t.calls = append(t.calls, vmid)
 	t.mu.Unlock()
-	return t.Target.DestroyRecorded(ctx, kind, vmid)
+	return t.Target.DestroyRecorded(ctx, kind, vmid, volid)
 }
 
 type janitorFixture struct {

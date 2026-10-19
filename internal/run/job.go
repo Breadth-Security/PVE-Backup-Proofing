@@ -126,6 +126,10 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		if errors.Is(err, target.ErrRestoreNotStarted) {
 			// The node refused the request: no guest of PBP's exists, and
 			// one at vmid now (e.g. created meanwhile) is not ours.
+			// If even this write fails, the entry may stay "restored"; the
+			// target then still accepts a guest at vmid only if it is
+			// stopped and named as in this backup (or locked by a
+			// restore), which a guest someone else made does not pass.
 			j.restoreTried = false
 			if serr := j.setStage(state.StageProtected); serr != nil {
 				j.log.Error("record restore not started", "err", serr)
@@ -217,7 +221,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		err := j.safely("destroy", func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
 			defer cancel()
-			return j.d.Target.DestroyRecorded(ctx, j.b.Key.Kind, j.vmid)
+			return j.d.Target.DestroyRecorded(ctx, j.b.Key.Kind, j.vmid, j.b.VolID)
 		})
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
