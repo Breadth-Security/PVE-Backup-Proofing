@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -281,6 +282,20 @@ func TestSanitizeClearsProtection(t *testing.T) {
 		}
 		if p := Sanitize(kind, map[string]string{}, br); p.Set["protection"] != "0" {
 			t.Errorf("%s: protection not forced off when absent: %+v", kind, p.Set)
+		}
+	}
+}
+
+func TestSplitList(t *testing.T) {
+	for in, want := range map[string][]string{
+		"":                   nil,
+		"pbp":                {"pbp"},
+		"a;b,c d\te":         {"a", "b", "c", "d", "e"},
+		" ;a;; ,b ":          {"a", "b"},
+		"images,rootdir,iso": {"images", "rootdir", "iso"},
+	} {
+		if got := SplitList(in); !slices.Equal(got, want) {
+			t.Errorf("SplitList(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -714,3 +714,28 @@ func TestNotesReadFailureLeavesNotes(t *testing.T) {
 		t.Errorf("failure not logged: %q", f.logBuf)
 	}
 }
+
+// Tags in the backed-up config may be separated by ';', ',' or spaces; each
+// is a tag the guest checks can match.
+func TestOriginalTagsSplitLikePVE(t *testing.T) {
+	f := newFixture(t)
+	f.api.BackupConfigs[volid] = "name: db01\ntags: prod,db web\n"
+	f.d.Cfg.Checks.Guests = []config.GuestChecks{
+		{Match: config.GuestMatch{Tag: "db"}, CheckSet: config.CheckSet{Commands: []string{"by-db"}}},
+		{Match: config.GuestMatch{Tag: "web"}, CheckSet: config.CheckSet{Commands: []string{"by-web"}}},
+	}
+	ex := healthy()
+	ex["sh -c by-db"], ex["sh -c by-web"] = out(""), out("")
+	f.tgt.Exec[tmpVMID] = ex
+	res := f.run(context.Background())
+	var ran []string
+	for _, c := range res.Checks {
+		if _, cmd, ok := strings.Cut(c.Name, ":commands:"); ok {
+			ran = append(ran, cmd)
+		}
+	}
+	slices.Sort(ran)
+	if !slices.Equal(ran, []string{"by-db", "by-web"}) {
+		t.Errorf("guest checks run: %q", ran)
+	}
+}

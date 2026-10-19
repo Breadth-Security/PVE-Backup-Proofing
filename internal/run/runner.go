@@ -67,7 +67,7 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 
 	var runErrs []string
 	var envErrs []string
-	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: "running", Started: start}
+	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: state.OutcomeRunning, Started: start}
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
 		log.Error("record run start", "err", err)
 		runErrs = append(runErrs, "record run: "+err.Error())
@@ -137,12 +137,12 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 			"failed_units", r.FailedUnits, "ignored_units", r.IgnoredUnits)
 	}
 	sev := s.Severity()
-	outcome := "ok"
+	outcome := state.OutcomeOK
 	switch {
 	case s.RunError != "":
-		outcome = "error"
+		outcome = state.OutcomeError
 	case sev != "info":
-		outcome = "problems"
+		outcome = state.OutcomeProblems
 	}
 	if d.Cfg.Notify.When == "always" || sev != "info" {
 		err := func() (err error) {
@@ -157,7 +157,7 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 		}()
 		if err != nil {
 			log.Error("send notification failed", "err", err)
-			outcome = "error"
+			outcome = state.OutcomeError
 		}
 	}
 	log.Info("run finished", "outcome", outcome, "severity", sev, "run_error", s.RunError)

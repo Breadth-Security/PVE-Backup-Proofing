@@ -14,8 +14,44 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
 
+// Job stages, in order. Each is recorded before the step it names.
+const (
+	// StageProtected: the backup is (being) protected; no guest exists yet.
+	StageProtected = "protected"
+	// StageRestored: a restore into TempVMID may have started, so a guest
+	// there may be PBP's even before it carries the "pbp" tag.
+	StageRestored = "restored"
+	// StageStarted: the guest may have been started.
+	StageStarted = "started"
+	// StageDestroyed: the guest was confirmed gone.
+	StageDestroyed = "destroyed"
+)
+
+// Run outcomes.
+const (
+	OutcomeRunning  = "running"
+	OutcomeOK       = "ok"
+	OutcomeProblems = "problems"
+	OutcomeError    = "error"
+)
+
+// ErrDurability: the new state file was renamed into place but the directory
+// could not be synced, so the rename may not survive a power loss.
+var ErrDurability = errors.New("state: not durable")
+
+// syncDir fsyncs a directory; a variable so tests can make it fail.
+var syncDir = func(dir string) error {
+	// #nosec G304 -- dir is the state file's own directory, not user input
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }() // read-only directory handle
+	return d.Sync()
+}
+
 // Job is a temporary guest that must be cleaned up if the run crashes.
-// Stage is one of protected|restored|started|destroyed.
+// Stage is one of the Stage constants.
 type Job struct {
 	TempVMID      int
 	Kind          model.GuestKind
@@ -25,7 +61,7 @@ type Job struct {
 	Stage         string
 }
 
-// RunRecord summarises one run. Outcome is one of running|ok|problems|error.
+// RunRecord summarises one run. Outcome is one of the Outcome constants.
 type RunRecord struct {
 	ID, Trigger, Outcome string
 	Started, Ended       time.Time
@@ -179,6 +215,11 @@ func (s *Store) write(st State) (err error) {
 			_ = os.Remove(tmp) // best-effort cleanup; err is already being returned
 		}
 	}()
+	// O_CREATE keeps the mode of a .tmp left behind by an earlier crash.
+	if err = f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("state: chmod %s: %w", tmp, err)
+	}
 	if _, err = f.Write(b); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("state: write %s: %w", tmp, err)
@@ -193,13 +234,12 @@ func (s *Store) write(st State) (err error) {
 	if err = os.Rename(tmp, s.path); err != nil {
 		return fmt.Errorf("state: rename to %s: %w", s.path, err)
 	}
-	d, err := os.Open(filepath.Dir(s.path))
-	if err != nil {
-		return fmt.Errorf("state: open dir: %w", err)
-	}
-	defer func() { _ = d.Close() }() // read-only directory handle
-	if err = d.Sync(); err != nil {
-		return fmt.Errorf("state: fsync dir: %w", err)
+	// The new file is in place from here on. If the directory sync fails,
+	// the file is ahead of memory (Update keeps the old state in memory) and
+	// the rename may not survive a power loss; callers treat it as any other
+	// failed write.
+	if err = syncDir(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("%w: fsync dir: %w", ErrDurability, err)
 	}
 	return nil
 }

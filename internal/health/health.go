@@ -37,10 +37,10 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Du
 	}
 	runs := st.Runs
 	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].Outcome == "running" {
+		if runs[i].Outcome == state.OutcomeRunning {
 			continue
 		}
-		if runs[i].Outcome == "error" {
+		if runs[i].Outcome == state.OutcomeError {
 			return false, ReasonLastRunError
 		}
 		break
@@ -49,7 +49,7 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Du
 	base := startedAt
 	if n := len(runs); n > 0 {
 		last := runs[n-1]
-		if last.Outcome == "running" {
+		if last.Outcome == state.OutcomeRunning {
 			// The daemon skips ticks while a run is active, so only the
 			// run's own length matters.
 			if now.Sub(last.Started) > maxRun {

@@ -59,7 +59,7 @@ func Janitor(ctx context.Context, d Deps) error {
 func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	log := logger(d).With("vmid", j.TempVMID, "volid", j.VolID, "stage", j.Stage)
 	var errs []error
-	if j.Stage != stageDestroyed {
+	if j.Stage != state.StageDestroyed {
 		log.Warn("janitor: destroying guest of crashed job")
 		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID); err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
@@ -79,10 +80,16 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 	return p
 }
 
+// SplitList splits a PVE list value (tags, storage content) on ';', ',' or
+// whitespace, dropping empty items.
+func SplitList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) })
+}
+
 // AddTag returns the PVE tag list tags (separated by ';', ',' or spaces)
 // with tag appended unless present, joined with ';'.
 func AddTag(tags, tag string) string {
-	list := strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
+	list := SplitList(tags)
 	if !slices.Contains(list, tag) {
 		list = append(list, tag)
 	}

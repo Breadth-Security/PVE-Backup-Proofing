@@ -91,7 +91,7 @@ func (n *ExistingNode) Prepare(ctx context.Context) error {
 	if !st.Active || !st.Enabled {
 		return fmt.Errorf("restore storage %s is not active and enabled", n.store)
 	}
-	content := splitList(st.Content)
+	content := sanitize.SplitList(st.Content)
 	for _, c := range []string{"images", "rootdir"} {
 		if !slices.Contains(content, c) {
 			return fmt.Errorf("restore storage %s does not hold %s content (has %q)", n.store, c, st.Content)
@@ -254,7 +254,7 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 			bad = append(bad, fmt.Sprintf("%s not on bridge %s (%s)", k, n.bridge, cfg[k]))
 		}
 	}
-	if !slices.Contains(splitList(cfg["tags"]), OwnerTag) {
+	if !slices.Contains(sanitize.SplitList(cfg["tags"]), OwnerTag) {
 		bad = append(bad, "missing tag pbp")
 	}
 	if cfg["onboot"] != "0" {
@@ -325,7 +325,7 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 	if err != nil {
 		return fmt.Errorf("read config %d: %w", vmid, err)
 	}
-	if !slices.Contains(splitList(cfg["tags"]), OwnerTag) {
+	if !slices.Contains(sanitize.SplitList(cfg["tags"]), OwnerTag) {
 		return fmt.Errorf("%w: %d has no %q tag", ErrNotOwned, vmid, OwnerTag)
 	}
 	// Owned (in range and tagged): a protected guest, e.g. debris from a
@@ -378,11 +378,6 @@ func (n *ExistingNode) find(ctx context.Context, vmid int) (pve.GuestRef, bool, 
 		}
 	}
 	return pve.GuestRef{}, false, nil
-}
-
-// splitList splits a PVE list value on ';', ',' or whitespace.
-func splitList(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
 }
 
 var reHTTPCode = regexp.MustCompile(`\b(401|403|500)\b`)

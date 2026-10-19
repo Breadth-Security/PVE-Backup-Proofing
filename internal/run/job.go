@@ -33,14 +33,6 @@ const (
 	notesTimeout     = 2 * time.Minute
 )
 
-// InFlight stages, in order. Each is recorded before the step it names.
-const (
-	stageProtected = "protected"
-	stageRestored  = "restored"
-	stageStarted   = "started"
-	stageDestroyed = "destroyed"
-)
-
 // Deps is what a run needs. Now supplies every timestamp.
 type Deps struct {
 	Cfg      config.Config
@@ -102,7 +94,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	err := d.Store.Update(func(st *state.State) error {
 		st.InFlight[j.vmid] = state.Job{
 			TempVMID: j.vmid, Kind: kind, VolID: b.VolID, Storage: b.Storage,
-			ProtectedOrig: &orig, Stage: stageProtected,
+			ProtectedOrig: &orig, Stage: state.StageProtected,
 		}
 		return nil
 	})
@@ -118,7 +110,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		}
 	}
 
-	if err := j.setStage(stageRestored); err != nil {
+	if err := j.setStage(state.StageRestored); err != nil {
 		fail(model.Error, "record job: %v", err)
 		return
 	}
@@ -148,7 +140,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	res.Name = guest.Name
 
-	if err := j.setStage(stageStarted); err != nil {
+	if err := j.setStage(state.StageStarted); err != nil {
 		fail(model.Error, "record job: %v", err)
 		return
 	}
@@ -203,11 +195,7 @@ func (j *job) originalIdentity(ctx context.Context) (probe.GuestInfo, error) {
 	if g.Name == "" {
 		g.Name = cfg["hostname"]
 	}
-	for _, t := range strings.Split(cfg["tags"], ";") {
-		if t = strings.TrimSpace(t); t != "" {
-			g.Tags = append(g.Tags, t)
-		}
-	}
+	g.Tags = sanitize.SplitList(cfg["tags"])
 	return g, nil
 }
 
@@ -232,7 +220,7 @@ func (j *job) teardown(res *model.GuestResult) {
 				res.Reason += "; cleanup failed: destroy"
 			}
 			clean = false
-		} else if err := j.safely("record destroyed", func() error { return j.setStage(stageDestroyed) }); err != nil {
+		} else if err := j.safely("record destroyed", func() error { return j.setStage(state.StageDestroyed) }); err != nil {
 			j.log.Error("record destroyed stage", "err", err)
 		}
 	}

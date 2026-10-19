@@ -137,10 +137,10 @@ func TestJanitor(t *testing.T) {
 	f.guest(model.KindLXC, 990005, true)
 	f.guest(model.KindQEMU, 500, true)
 	f.inFlight(
-		state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageStarted},
-		state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageRestored},
-		state.Job{TempVMID: 990002, Kind: model.KindQEMU, VolID: "pbs:v2", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed},
-		state.Job{TempVMID: 990003, Kind: model.KindLXC, VolID: "pbs:v3", Storage: "pbs", ProtectedOrig: ptr(true), Stage: stageProtected},
+		state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageStarted},
+		state.Job{TempVMID: 990001, Kind: model.KindQEMU, VolID: "pbs:v1", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageRestored},
+		state.Job{TempVMID: 990002, Kind: model.KindQEMU, VolID: "pbs:v2", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageDestroyed},
+		state.Job{TempVMID: 990003, Kind: model.KindLXC, VolID: "pbs:v3", Storage: "pbs", ProtectedOrig: ptr(true), Stage: state.StageProtected},
 	)
 
 	err := Janitor(context.Background(), f.d)
@@ -199,7 +199,7 @@ func TestJanitor(t *testing.T) {
 func TestJanitorKeepsEntryOnUnprotectFailure(t *testing.T) {
 	f := newJanitorFixture(t)
 	f.backup("pbs:v0", true)
-	f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+	f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageDestroyed})
 	f.api.Fail["SetVolumeAttrs"] = errors.New("pbs unreachable")
 
 	if err := Janitor(context.Background(), f.d); err == nil {
@@ -231,7 +231,7 @@ func TestJanitorVanishedBackupCountsAsUnprotected(t *testing.T) {
 		t.Run(msg, func(t *testing.T) {
 			f := newJanitorFixture(t)
 			f.backup("pbs:v0", true)
-			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageDestroyed})
 			f.api.Fail["SetVolumeAttrs"] = errors.New(msg)
 
 			if err := Janitor(context.Background(), f.d); err != nil {
@@ -254,7 +254,7 @@ func TestJanitorNetworkErrorKeepsEntry(t *testing.T) {
 	} {
 		f := newJanitorFixture(t)
 		f.backup("pbs:v0", true)
-		f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+		f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageDestroyed})
 		f.api.Fail["SetVolumeAttrs"] = err
 		if Janitor(context.Background(), f.d) == nil {
 			t.Errorf("%v: want error", err)
@@ -276,7 +276,7 @@ func TestJanitorUnrelatedNotFoundKeepsEntry(t *testing.T) {
 		t.Run(msg, func(t *testing.T) {
 			f := newJanitorFixture(t)
 			f.backup("pbs:v0", true)
-			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageDestroyed})
 			f.api.Fail["SetVolumeAttrs"] = errors.New(msg)
 			if Janitor(context.Background(), f.d) == nil {
 				t.Error("want error")

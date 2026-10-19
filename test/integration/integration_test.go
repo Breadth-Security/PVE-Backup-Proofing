@@ -628,7 +628,7 @@ wait:
 			continue
 		}
 		for _, j := range st.InFlight {
-			if j.Stage == "started" {
+			if j.Stage == state.StageStarted {
 				job = j
 				break wait
 			}
