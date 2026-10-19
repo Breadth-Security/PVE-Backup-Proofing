@@ -88,7 +88,7 @@ func traceMissing(ctx context.Context, ex Executor, failed []string, missing []m
 func showUnit(ctx context.Context, ex Executor, unit string) unitProps {
 	res, err := ex.Exec(ctx, []string{"systemctl", "show",
 		"-p", "Type", "-p", "What", "-p", "Where", "-p", "RequiresMountsFor",
-		"-p", "Requires", "-p", "BindsTo", unit})
+		"-p", "Requires", "-p", "BindsTo", "--", unit})
 	if err != nil || res.ExitCode != 0 {
 		return unitProps{}
 	}

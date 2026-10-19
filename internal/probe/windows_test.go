@@ -3,6 +3,7 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -151,4 +152,29 @@ func (f *firstThenHang) Exec(ctx context.Context, _ []string) (probe.ExecResult,
 	}
 	<-ctx.Done()
 	return probe.ExecResult{}, ctx.Err()
+}
+
+// The probe ending before the first answer is ERROR, never BOOTED or FAILED.
+func TestWindowsProbeEnded(t *testing.T) {
+	hang := hanging(probetest.Scripted{}, winCmd)
+	in := probe.Input{OS: probe.Windows, Checks: config.Checks{CommandTimeout: time.Hour}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if o := probe.Run(ctx, hang, in); o.Verdict != model.Error || o.Reason != "probe timed out" {
+		t.Errorf("deadline: got %v %q", o.Verdict, o.Reason)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if o := probe.Run(ctx, hang, in); o.Verdict != model.Error || o.Reason != "probe cancelled" {
+		t.Errorf("cancel: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+func TestWindowsWrappedExecBlocked(t *testing.T) {
+	o := runWin(errExec{err: fmt.Errorf("agent: %w", probe.ErrExecBlocked)}, config.Checks{})
+	if o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
 }

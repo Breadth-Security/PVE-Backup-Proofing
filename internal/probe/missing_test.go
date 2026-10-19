@@ -3,7 +3,9 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,7 +16,7 @@ import (
 )
 
 func showC(unit string) string {
-	return "systemctl show -p Type -p What -p Where -p RequiresMountsFor -p Requires -p BindsTo " + unit
+	return "systemctl show -p Type -p What -p Where -p RequiresMountsFor -p Requires -p BindsTo -- " + unit
 }
 
 // failing returns a degraded healthy guest whose failed units are given, with
@@ -23,9 +25,9 @@ func failing(props map[string]string) probetest.Scripted {
 	ex := healthy()
 	ex[sysState] = out("degraded\n")
 	var lines []string
-	for u, p := range props {
+	for _, u := range slices.Sorted(maps.Keys(props)) {
 		lines = append(lines, "● "+u+" loaded failed failed x")
-		ex[showC(u)] = out(p)
+		ex[showC(u)] = out(props[u])
 	}
 	ex[failedC] = out(strings.Join(lines, "\n") + "\n")
 	return ex
@@ -284,6 +286,29 @@ func TestMissingNonDeviceSourceUntraced(t *testing.T) {
 		o := runMissing(ex, scsi1)
 		if o.Verdict != model.Failed || o.Reason != "failed: img.mount" || len(o.NotCovered) != 0 {
 			t.Errorf("%s: got %+v", what, o)
+		}
+	}
+}
+
+// A unit name starting with '-' (the root mount) must not be read as an
+// option: systemctl show gets `--` before it.
+func TestDashUnitNameShownAfterDoubleDash(t *testing.T) {
+	ex := failing(map[string]string{"-.mount": "Type=nfs\nWhat=nas:/\nWhere=/\n"})
+	o := runMissing(ex)
+	if o.Verdict != model.Proven || len(o.NotCovered) != 1 || o.NotCovered[0].Unit != "-.mount" {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// Only `test -e` exiting 1 proves a device absent; a usage error (2) or a
+// missing command (127) leaves the failure untraced.
+func TestTestExitCodesOtherThanOneAreUntraced(t *testing.T) {
+	for _, code := range []int{0, 2, 127} {
+		ex := failing(map[string]string{"d.mount": "Type=ext4\nWhat=/dev/vdb1\nWhere=/d\n"})
+		ex["test -e /dev/vdb1"] = probe.ExecResult{ExitCode: code}
+		ex["journalctl -b --no-pager -n 200"] = out("")
+		if o := runMissing(ex, scsi1); o.Verdict != model.Failed || len(o.NotCovered) != 0 {
+			t.Errorf("exit %d: got %+v", code, o)
 		}
 	}
 }

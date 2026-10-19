@@ -520,8 +520,110 @@ func TestProbeDeadline(t *testing.T) {
 	ex := healthy()
 	ex[sysState] = out("degraded\n")
 	ex[failedC] = out("a.mount loaded failed failed x\n")
-	o = probe.Run(ctx2, hanging(ex, "systemctl show -p Type -p What -p Where -p RequiresMountsFor -p Requires -p BindsTo a.mount"), probe.Input{OS: probe.Linux, Checks: ck})
+	o = probe.Run(ctx2, hanging(ex, showC("a.mount")), probe.Input{OS: probe.Linux, Checks: ck})
 	if o.Verdict != model.Error || o.Reason != "probe timed out" {
 		t.Fatalf("tracing: got %+v", o)
+	}
+}
+
+func TestWrappedExecBlockedIsBooted(t *testing.T) {
+	o := run(errExec{err: fmt.Errorf("agent exec: %w", probe.ErrExecBlocked)}, config.Checks{})
+	if o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+func TestGuestCheckMatchByVMIDAndName(t *testing.T) {
+	cs := config.CheckSet{Commands: []string{"probe-me"}}
+	for name, tc := range map[string]struct {
+		match config.GuestMatch
+		guest probe.GuestInfo
+		runs  bool
+	}{
+		"vmid":          {config.GuestMatch{VMID: 7}, probe.GuestInfo{VMID: 7}, true},
+		"name":          {config.GuestMatch{Name: "db1"}, probe.GuestInfo{VMID: 9, Name: "db1"}, true},
+		"other vmid":    {config.GuestMatch{VMID: 7}, probe.GuestInfo{VMID: 8}, false},
+		"other name":    {config.GuestMatch{Name: "db1"}, probe.GuestInfo{Name: "db2"}, false},
+		"zero vmid":     {config.GuestMatch{VMID: 0, Name: "db1"}, probe.GuestInfo{VMID: 0, Name: "x"}, false},
+		"unnamed guest": {config.GuestMatch{Name: "db1"}, probe.GuestInfo{}, false},
+	} {
+		ex := healthy()
+		ex["sh -c probe-me"] = probe.ExecResult{ExitCode: 1}
+		ck := config.Checks{Guests: []config.GuestChecks{{Match: tc.match, CheckSet: cs}}}
+		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: tc.guest})
+		if ran := o.Verdict == model.Failed && o.Reason == "check failed: guest:commands:probe-me"; ran != tc.runs {
+			t.Errorf("%s: ran=%v, got %v %q", name, ran, o.Verdict, o.Reason)
+		}
+	}
+}
+
+// A unit listed twice is judged, reported and traced once.
+func TestFailedUnitsDeduplicated(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	ex[failedC] = out("a.service loaded failed failed A\n● a.service loaded failed failed A\nb.service loaded failed failed B\n")
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Failed || !reflect.DeepEqual(o.FailedUnits, []string{"a.service", "b.service"}) {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// Ignored failures never excuse a real one beside them.
+func TestMixedIgnoredAndRealFailures(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	ex[failedC] = out("chronyd.service loaded failed failed C\nnginx.service loaded failed failed N\n")
+	o := run(ex, config.Checks{IgnoreUnits: []string{"chronyd.*"}})
+	if o.Verdict != model.Failed || o.Reason != "failed: nginx.service" ||
+		!reflect.DeepEqual(o.IgnoredUnits, []string{"chronyd.service"}) || !reflect.DeepEqual(o.FailedUnits, []string{"nginx.service"}) {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+func TestListUnitsNonZeroExit(t *testing.T) {
+	ex := healthy()
+	ex[failedC] = probe.ExecResult{ExitCode: 1}
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Failed || o.Reason != "probe error: systemctl list-units exited 1" {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// `errors=remount-ro` is a mount option about error handling, not a
+// read-only root.
+func TestRemountRoOptionIsNotReadOnly(t *testing.T) {
+	ex := healthy()
+	ex[findmnt] = out("rw,relatime,errors=remount-ro\n")
+	if o := run(ex, config.Checks{}); o.Verdict != model.Proven {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// A profile's ports are any-of: one of two listening passes.
+func TestProfilePortsAnyOf(t *testing.T) {
+	ck := config.Checks{Profiles: []config.Profile{{Name: "nginx", Unit: "nginx.service", CheckSet: config.CheckSet{Ports: []int{80, 443}}}}}
+	o := run(healthy(), ck) // listens on 443 only
+	if o.Verdict != model.Proven || len(o.Checks) != 1 || o.Checks[0].Name != "nginx:ports:80,443" || !o.Checks[0].OK {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// The boot journal is attached only from a journalctl that succeeded.
+func TestBootLogOnlyFromSuccessfulJournalctl(t *testing.T) {
+	const journal = "journalctl -b --no-pager -n 200"
+	for name, tc := range map[string]struct {
+		res  probe.ExecResult
+		want string
+	}{
+		"ok":     {probe.ExecResult{Stdout: "boot log"}, "boot log"},
+		"failed": {probe.ExecResult{Stdout: "partial", Stderr: "No journal files", ExitCode: 1}, ""},
+		"absent": {probe.ExecResult{ExitCode: 127}, ""},
+	} {
+		ex := healthy()
+		ex[failedC] = out("a.service loaded failed failed A\n")
+		ex[journal] = tc.res
+		if o := run(ex, config.Checks{}); o.Verdict != model.Failed || o.BootLog != tc.want {
+			t.Errorf("%s: got %v bootlog %q", name, o.Verdict, o.BootLog)
+		}
 	}
 }
