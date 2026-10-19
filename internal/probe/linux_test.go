@@ -3,6 +3,8 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
@@ -145,11 +147,66 @@ func TestOpenRC(t *testing.T) {
 	}
 }
 
-func TestOpenRCExitError(t *testing.T) {
+// rc-status --crashed exits 0 or 1 in normal operation; its stdout lists the
+// crashed services. Any other exit is a probe problem, not the backup's.
+func TestOpenRCExitCodes(t *testing.T) {
 	ex := probetest.Scripted{"rc-status --crashed": probe.ExecResult{ExitCode: 1}}
-	o := run(ex, config.Checks{})
-	if o.Verdict != model.Failed || o.Reason != "probe error: rc-status exited 1" {
+	if o := run(ex, config.Checks{}); o.Verdict != model.Proven {
+		t.Fatalf("exit 1, no output: %+v", o)
+	}
+	ex["rc-status --crashed"] = probe.ExecResult{ExitCode: 1, Stdout: "sshd\n"}
+	if o := run(ex, config.Checks{}); o.Verdict != model.Failed || o.Reason != "failed: sshd" {
+		t.Fatalf("exit 1 with a crashed service: %+v", o)
+	}
+	ex["rc-status --crashed"] = probe.ExecResult{ExitCode: 2, Stderr: "bad option"}
+	if o := run(ex, config.Checks{}); o.Verdict != model.Error || o.Reason != "probe error: rc-status exited 2" {
+		t.Fatalf("exit 2: %+v", o)
+	}
+}
+
+// recordingExec records every argv it is asked to run.
+type recordingExec struct {
+	probetest.Scripted
+	calls *[]string
+}
+
+func (r recordingExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	*r.calls = append(*r.calls, strings.Join(argv, " "))
+	return r.Scripted.Exec(ctx, argv)
+}
+
+// A container's ostype says whether it runs OpenRC: Alpine and Gentoo go
+// straight to rc-status, never through systemctl's exit 127.
+func TestOpenRCByContainerOSType(t *testing.T) {
+	for _, ostype := range []string{"alpine", "gentoo"} {
+		var calls []string
+		ex := recordingExec{probetest.Scripted{
+			"rc-status --crashed": out(""),
+			sysState:              out("running\n"), // must not be consulted
+		}, &calls}
+		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: ostype})
+		if o.Verdict != model.Proven {
+			t.Errorf("%s: %+v", ostype, o)
+		}
+		for _, c := range calls {
+			if strings.HasPrefix(c, "systemctl") {
+				t.Errorf("%s: ran %q", ostype, c)
+			}
+		}
+	}
+}
+
+// A systemd-type container whose systemctl is missing is not sent down the
+// OpenRC path (that fallback is for VMs, whose init PBP cannot know).
+func TestContainerWithoutSystemctl(t *testing.T) {
+	var calls []string
+	ex := recordingExec{probetest.Scripted{"rc-status --crashed": out("")}, &calls}
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: "debian"})
+	if o.Verdict != model.Booted || o.Reason != "init answering, service state unknown" {
 		t.Fatalf("got %+v", o)
+	}
+	if slices.Contains(calls, "rc-status --crashed") {
+		t.Errorf("calls = %q", calls)
 	}
 }
 

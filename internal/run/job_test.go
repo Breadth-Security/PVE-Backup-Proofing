@@ -627,6 +627,18 @@ func TestProbeGetsOriginalIdentity(t *testing.T) {
 	}
 }
 
+// The container's ostype reaches the probe: an Alpine container is probed
+// with rc-status only.
+func TestProbeGetsOSType(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	f.tgt.Boot[tmpVMID] = target.BootInfo{OS: probe.Linux, OSType: "alpine"}
+	f.tgt.Exec[tmpVMID] = probetest.Scripted{"rc-status --crashed": out("")}
+	if res := f.run(context.Background()); res.Verdict != model.Proven {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+}
+
 func TestLXCNameFromHostname(t *testing.T) {
 	f := newFixture(t)
 	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}

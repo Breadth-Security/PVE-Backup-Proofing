@@ -29,6 +29,13 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	return r.out
 }
 
+// errorOut finalizes an ERROR outcome: PBP could not judge the guest.
+func (r *linuxRun) errorOut(reason string) Outcome {
+	r.out.Verdict = model.Error
+	r.out.Reason = reason
+	return r.out
+}
+
 func (r *linuxRun) booted(reason string) Outcome {
 	r.out.Verdict = model.Booted
 	r.out.Reason = reason
@@ -61,8 +68,14 @@ func firstFields(out string) []string {
 	return res
 }
 
+// openRCTypes are the container ostypes whose init is OpenRC.
+var openRCTypes = map[string]bool{"alpine": true, "gentoo": true}
+
 func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 	r := &linuxRun{ex: ex, in: in}
+	if openRCTypes[in.OSType] {
+		return r.runOpenRC(ctx)
+	}
 
 	res, err := r.exec(ctx, "systemctl", "is-system-running", "--wait")
 	if err != nil {
@@ -72,6 +85,11 @@ func runLinux(ctx context.Context, ex Executor, in Input) Outcome {
 		return r.booted("cannot run commands: " + err.Error())
 	}
 	if res.ExitCode == 127 {
+		if in.OSType != "" {
+			// A container whose ostype is not OpenRC: unknown init.
+			return r.booted("init answering, service state unknown")
+		}
+		// A VM: its init is unknown until asked.
 		return r.runOpenRC(ctx)
 	}
 	switch state := strings.TrimSpace(res.Stdout); state {
@@ -141,8 +159,9 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 	if res.ExitCode == 127 {
 		return r.booted("init answering, service state unknown")
 	}
-	if res.ExitCode != 0 {
-		return r.fail(ctx, fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+	// Exit 0 or 1 are both normal; stdout lists the crashed services.
+	if res.ExitCode != 0 && res.ExitCode != 1 {
+		return r.errorOut(fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
 	}
 	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
 		return o

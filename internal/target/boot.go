@@ -100,9 +100,9 @@ func (n *ExistingNode) waitLXC(ctx, tctx context.Context, vmid int, timeout time
 		return BootInfo{}, fmt.Errorf("read config %d: %w", vmid, err)
 	}
 	if cfg["ostype"] == "unmanaged" {
-		return BootInfo{OS: probe.Unknown}, nil
+		return BootInfo{OS: probe.Unknown, OSType: cfg["ostype"]}, nil
 	}
-	return BootInfo{OS: probe.Linux}, nil
+	return BootInfo{OS: probe.Linux, OSType: cfg["ostype"]}, nil
 }
 
 func (n *ExistingNode) waitVM(ctx, tctx context.Context, vmid int) (BootInfo, error) {

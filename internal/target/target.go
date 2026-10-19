@@ -38,6 +38,8 @@ const OwnerTag = "pbp"
 // BootInfo describes a guest that reached running.
 type BootInfo struct {
 	OS probe.OSFamily
+	// OSType is a container's PVE ostype ("" for a VM).
+	OSType string
 	// AgentMissing: a VM whose guest agent is not configured or never answered.
 	AgentMissing bool
 	// ExecBlocked: the agent answers but refuses to run commands.

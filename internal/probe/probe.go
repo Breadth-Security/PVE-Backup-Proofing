@@ -16,7 +16,10 @@ type GuestInfo struct {
 
 // Input is everything Run needs to probe one guest.
 type Input struct {
-	OS      OSFamily
+	OS OSFamily
+	// OSType is a container's PVE ostype (e.g. "debian", "alpine"); empty
+	// for a VM. It selects the init system to probe.
+	OSType  string
 	Checks  config.Checks
 	Guest   GuestInfo
 	Missing []model.MissingPiece

@@ -179,6 +179,13 @@ func TestWaitBootedLXC(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ostype reported", func(t *testing.T) {
+		f := mk("alpine")
+		got, err := newTarget(t, f, f, &sshx.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+		if err != nil || got.OS != probe.Linux || got.OSType != "alpine" {
+			t.Errorf("got %+v, %v", got, err)
+		}
+	})
 	t.Run("unmanaged ostype", func(t *testing.T) {
 		f := mk("unmanaged")
 		got, err := newTarget(t, f, f, &sshx.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
