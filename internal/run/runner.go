@@ -39,10 +39,13 @@ const (
 )
 
 // Options select what a run does. Trigger is "schedule" or "manual";
-// OnlyVMID, when non-zero, limits the run to that guest.
+// OnlyVMID, when non-zero, limits the run to that guest. RunID, when set,
+// names the run instead of the default derived from its start time and
+// trigger, so a caller can open the run's log file before the run starts.
 type Options struct {
 	Trigger  string
 	OnlyVMID int
+	RunID    string
 }
 
 // Run performs one proofing run (design section 6): preflight, discovery,
@@ -52,9 +55,12 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 	log := logger(d).With("trigger", opt.Trigger)
 	start := d.Now()
 	s := model.RunSummary{
-		ID:      start.UTC().Format("20060102T150405Z") + "-" + opt.Trigger,
+		ID:      opt.RunID,
 		Trigger: opt.Trigger,
 		Started: start,
+	}
+	if s.ID == "" {
+		s.ID = start.UTC().Format("20060102T150405Z") + "-" + opt.Trigger
 	}
 	log = log.With("run", s.ID)
 	log.Info("run started")
@@ -210,6 +216,8 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 	workers := max(d.Cfg.Workers, 1)
 	slots := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	// Even if the dispatcher panics, never return while jobs still run.
+	defer wg.Wait()
 
 	for i, b := range queue {
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
@@ -291,6 +299,10 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 	d := p.d
 	node, store := d.Cfg.Target.Node, d.Cfg.Restore.Storage
 	fail := func(v model.Verdict, reason string) (lease, *model.GuestResult) {
+		if v == model.Error && ctx.Err() != nil {
+			// The failure is most likely the cancellation itself.
+			v, reason = model.Skipped, reasonCancelled
+		}
 		if v == model.Skipped {
 			r := p.skip(b, reason)
 			return lease{}, &r

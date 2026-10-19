@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strings"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 )
@@ -66,7 +68,11 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 		off := false
 		log.Info("janitor: restoring backup protected flag")
 		if err := d.API.SetVolumeAttrs(ctx, d.Cfg.Target.Node, j.Storage, j.VolID, nil, &off); err != nil {
-			errs = append(errs, fmt.Errorf("unprotect %s: %w", j.VolID, err))
+			if volumeGone(err) {
+				log.Warn("janitor: backup no longer exists; nothing to unprotect", "err", err)
+			} else {
+				errs = append(errs, fmt.Errorf("unprotect %s: %w", j.VolID, err))
+			}
 		}
 	}
 	if len(errs) > 0 {
@@ -76,4 +82,24 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 		delete(st.InFlight, j.TempVMID)
 		return nil
 	})
+}
+
+// volumeGone reports whether err says the backup volume no longer exists
+// (pruned or deleted since the crash), so there is no flag left to restore.
+// Transport errors ("no such host") never count: the volume may be there.
+func volumeGone(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "no such host") {
+		return false
+	}
+	for _, s := range []string{"does not exist", "not found", "no such"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

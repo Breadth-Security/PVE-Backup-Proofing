@@ -738,3 +738,80 @@ func TestRunGatingPanicBecomesRunError(t *testing.T) {
 		t.Error("not notified")
 	}
 }
+
+// cancelAPI cancels the run while reading a backup's config and fails.
+type cancelAPI struct {
+	*hookAPI
+	cancel context.CancelFunc
+}
+
+func (a *cancelAPI) OriginalConfig(ctx context.Context, node, volid string) (string, error) {
+	a.cancel()
+	return "", context.Canceled
+}
+
+func TestRunAdmissionErrorWhileCancelledIsSkipped(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.d.API = &cancelAPI{hookAPI: f.api, cancel: cancel}
+
+	s := f.run(ctx, Options{Trigger: "schedule"})
+
+	wantResult(t, byVMID(t, s)[101], model.Skipped, "run cancelled")
+}
+
+func TestRunUsesGivenRunID(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	s := f.run(context.Background(), Options{Trigger: "manual", RunID: "fixed-id"})
+	if s.ID != "fixed-id" || f.lastRun(t).ID != "fixed-id" {
+		t.Errorf("summary ID = %q, record = %+v", s.ID, f.lastRun(t))
+	}
+}
+
+// panicOnSkip panics when the dispatcher logs a skipped guest.
+type panicOnSkip struct{ slog.Handler }
+
+func (h panicOnSkip) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == "guest skipped" {
+		panic("dispatcher boom")
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h panicOnSkip) WithAttrs(as []slog.Attr) slog.Handler {
+	return panicOnSkip{h.Handler.WithAttrs(as)}
+}
+
+func (h panicOnSkip) WithGroup(n string) slog.Handler { return panicOnSkip{h.Handler.WithGroup(n)} }
+
+func TestRunDispatcherPanicWaitsForJobs(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs", model.KindQEMU, 102, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok")
+	f.d.Log = slog.New(panicOnSkip{slog.NewTextHandler(f.logBuf, nil)})
+	entered, release := make(chan struct{}), make(chan struct{})
+	f.tgt.onRestore = func(int) {
+		close(entered)
+		<-release
+	}
+
+	done := make(chan model.RunSummary)
+	go func() { done <- f.run(context.Background(), Options{Trigger: "schedule"}) }()
+	<-entered
+	select {
+	case <-done:
+		close(release)
+		t.Fatal("Run returned while a job was still running")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	s := <-done
+	if !strings.Contains(s.RunError, "dispatcher boom") {
+		t.Errorf("RunError = %q", s.RunError)
+	}
+	if len(f.tgt.Live) != 0 {
+		t.Errorf("guest left behind: %v", f.tgt.Live)
+	}
+}

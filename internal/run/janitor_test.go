@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -217,5 +218,48 @@ func TestJanitorEmpty(t *testing.T) {
 	}
 	if f.logBuf.Len() != 0 {
 		t.Errorf("log: %s", f.logBuf)
+	}
+}
+
+func TestJanitorVanishedBackupCountsAsUnprotected(t *testing.T) {
+	for _, msg := range []string{
+		"volume 'pbs:v0' does not exist",
+		"backup Not Found",
+		"No such file or directory",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			f := newJanitorFixture(t)
+			f.backup("pbs:v0", true)
+			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+			f.api.Fail["SetVolumeAttrs"] = errors.New(msg)
+
+			if err := Janitor(context.Background(), f.d); err != nil {
+				t.Errorf("err = %v", err)
+			}
+			if _, ok := f.store.Snapshot().InFlight[990000]; ok {
+				t.Error("entry kept although the backup is gone")
+			}
+			if !strings.Contains(f.logBuf.String(), "pbs:v0") || !strings.Contains(f.logBuf.String(), "no longer exists") {
+				t.Errorf("not logged: %s", f.logBuf)
+			}
+		})
+	}
+}
+
+func TestJanitorNetworkErrorKeepsEntry(t *testing.T) {
+	for _, err := range []error{
+		errors.New("dial tcp: lookup pve1: no such host"),
+		&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: no such device")},
+	} {
+		f := newJanitorFixture(t)
+		f.backup("pbs:v0", true)
+		f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+		f.api.Fail["SetVolumeAttrs"] = err
+		if Janitor(context.Background(), f.d) == nil {
+			t.Errorf("%v: want error", err)
+		}
+		if _, ok := f.store.Snapshot().InFlight[990000]; !ok {
+			t.Errorf("%v: entry removed on a network error", err)
+		}
 	}
 }
