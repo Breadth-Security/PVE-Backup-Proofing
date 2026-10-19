@@ -30,6 +30,12 @@ own backup and deletes exactly that backup again.
 | `PBP_IT_BROKEN_VMID` | `TestBrokenBackupFails` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_BROKEN_TEMPLATE` | `TestBrokenBackupFails` | A systemd-based (Debian/Ubuntu) `vztmpl` volume. |
 | `PBP_IT_BROKEN_STORAGE` | `TestBrokenBackupFails` | A PBS storage listed in `sources.storages` to back it up to. |
+| `PBP_IT_BROKEN_STORAGE` | `TestProofAlpine*`, `TestProofProtectedGuest` | Also where those tests put their throwaway backups. |
+| `PBP_IT_ALPINE_TEMPLATE` | `TestProofAlpine*` | An Alpine (OpenRC) `vztmpl` volume. |
+| `PBP_IT_ALPINE_VMID` | `TestProofAlpineHealthy` | A free VMID inside the range for the throwaway container. |
+| `PBP_IT_ALPINE_CRASH_VMID` | `TestProofAlpineCrashed` | A free VMID inside the range for the throwaway container. |
+| `PBP_IT_PROTECTED_VMID` | `TestProofProtectedGuest` | A free VMID inside the range for the throwaway container. |
+| `PBP_IT_PROTECTED_TEMPLATE` | `TestProofProtectedGuest` | A systemd-based (Debian/Ubuntu) `vztmpl` volume. |
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
@@ -63,11 +69,32 @@ The values above are pve1's: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
   `vzdump --mode stop`, destroys the container (an untagged guest in the range
   makes PBP refuse to run), proofs the backup and expects `FAILED` naming the
   unit. The backup is deleted with `pvesm free` at the end.
+- **TestProofAlpineHealthy**: a throwaway Alpine container (OpenRC probe,
+  chosen by ostype `alpine`); checks `rc-status --crashed` on the source
+  (exit 1, empty output when nothing crashed) and expects `PROVEN`.
+- **TestProofAlpineCrashed**: a throwaway Alpine container whose default
+  runlevel holds `pbp-it-crash` (an `openrc-run` script with
+  `command=/bin/sleep`, `command_args=1`, `command_background=no`, so OpenRC
+  marks it crashed a second after start; `rc-status --crashed` then lists it
+  and exits 0). Expects `FAILED` naming the service. **Fails as of
+  2026-10-19**: the OpenRC probe does not wait for the default runlevel, so it
+  runs before the service starts and reports `PROVEN`.
+- **TestProofProtectedGuest**: a throwaway Debian container with
+  `protection: 1` (and `nesting=1`, as the GUI sets it; without it
+  systemd-logind fails in an unprivileged Debian 12 container). PBP must
+  clear protection on its restored copy so it can be destroyed; expects
+  `PROVEN` and an empty range.
 - **TestCrashRecovery**: builds `pbp`, starts `pbp run --guest PBP_IT_LXC`
   (with `notify.when: problems`, only the storage holding that backup), kills
   it with SIGKILL once its job reaches stage `started`, checks the guest and
   the protected flag were left behind, then runs preflight on the same state
   directory: the janitor must destroy the guest and restore `protected`.
+
+The throwaway tests (`TestBrokenBackupFails`, `TestProofAlpine*`,
+`TestProofProtectedGuest`) build their source container inside the range,
+and PBP never proofs backups whose VMID is in its range. They proof with the
+range narrowed to the side of the source VMID with more room (e.g. 990009 ->
+`[990000, 990008]`); the range-empty checks still cover the whole range.
 
 After each proof the tests assert: exactly one result, no guest left in the
 range, `protected` equal to its value before the run, notes line 1 a PBP
