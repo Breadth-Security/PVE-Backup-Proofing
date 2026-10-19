@@ -2,3 +2,11 @@
 /dist/
 *.test
 coverage.out
+
+# Local deployment files: secrets and site config never belong in git.
+secrets/
+/config.yaml
+/known_hosts
+/logs/
+*.pem
+*.key
