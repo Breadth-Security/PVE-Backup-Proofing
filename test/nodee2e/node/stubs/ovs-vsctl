@@ -1,6 +1,7 @@
 #!/bin/sh
 # Stub /usr/bin/ovs-vsctl: logs argv; vmbr99 is a Linux bridge, not OVS, so
-# br-exists answers 2 ("no such OVS bridge") like the real tool.
+# br-exists answers 2 ("no such OVS bridge") like the real tool. The helper
+# recognises a kernel bridge from sysfs and should not call this at all.
 for a in "$@"; do printf '<%s> ' "$a"; done >> /var/log/pbp-e2e/ovs-vsctl.log
 echo >> /var/log/pbp-e2e/ovs-vsctl.log
 for a in "$@"; do

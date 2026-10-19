@@ -282,9 +282,13 @@ func TestHelperQueries(t *testing.T) {
 	if err := json.Unmarshal(st.Addrs, &addrs); err != nil || len(addrs) != 1 || addrs[0].IfName != bridge {
 		t.Errorf("Bridge addrs = %s (%v), want the ip -j addr entry for %s", st.Addrs, err, bridge)
 	}
-	ovsLog, err := dockerOut("cat", "/var/log/pbp-e2e/ovs-vsctl.log")
-	if err != nil || !strings.Contains(ovsLog, "<br-exists> <vmbr99>") {
-		t.Errorf("ovs-vsctl stub log = %q, %v; want a br-exists vmbr99 call", ovsLog, err)
+	// vmbr99 is a kernel bridge (sysfs says so), so ovs-vsctl is never asked.
+	if _, err := dockerOut("test", "-d", "/sys/class/net/"+bridge+"/bridge"); err != nil {
+		t.Fatalf("%s is not a kernel bridge in sysfs: %v", bridge, err)
+	}
+	ovsLog, err := dockerOut("sh", "-c", "cat /var/log/pbp-e2e/ovs-vsctl.log 2>/dev/null; true")
+	if err != nil || strings.Contains(ovsLog, "br-exists") {
+		t.Errorf("ovs-vsctl stub log = %q, %v; want no ovs-vsctl call for a kernel bridge", ovsLog, err)
 	}
 }
 

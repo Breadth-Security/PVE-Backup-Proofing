@@ -102,6 +102,54 @@ func TestRealBridgeStateLinuxNoMembers(t *testing.T) {
 	}
 }
 
+// sysWithBridge returns a fake /sys where bridge is a kernel (Linux) bridge.
+func sysWithBridge(t *testing.T, bridge string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "class/net", bridge, "bridge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A kernel bridge is known from sysfs alone: ovs-vsctl is never asked, so a
+// broken or hanging ovsdb cannot fail (or slow) the bridge check.
+func TestRealBridgeStateKernelBridgeSkipsOVS(t *testing.T) {
+	r := &cannedRunner{answers: map[string]cannedCmd{
+		// Would make the check fail if it were asked.
+		"ovs-vsctl --timeout=10 br-exists vmbr99": {exit: 1, stderr: "database connection failed"},
+		"ip -j addr show dev vmbr99":              {stdout: addrJSON},
+		"ip -j link show master vmbr99":           {stdout: `[{"ifname":"veth990001i0"}]`},
+	}}
+	s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", "1"), SysRoot: sysWithBridge(t, "vmbr99"), run: r.run}
+	got, err := s.BridgeState(context.Background(), "vmbr99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OVS || strings.Join(got.Members, ",") != "veth990001i0" {
+		t.Errorf("got %+v", got)
+	}
+	for _, c := range r.calls {
+		if strings.HasPrefix(c, "ovs-vsctl") {
+			t.Errorf("asked ovs-vsctl about a kernel bridge: %s", c)
+		}
+	}
+}
+
+// Another bridge being a kernel bridge says nothing about this one.
+func TestRealBridgeStateOtherKernelBridgeStillAsksOVS(t *testing.T) {
+	r := &cannedRunner{answers: map[string]cannedCmd{
+		"ovs-vsctl --timeout=10 br-exists vmbr99":  {exit: 0},
+		"ip -j addr show dev vmbr99":               {stdout: addrJSON},
+		"ovs-vsctl --timeout=10 list-ports vmbr99": {stdout: "tap990002i0\n"},
+	}}
+	s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", "1"), SysRoot: sysWithBridge(t, "vmbr0"), run: r.run}
+	got, err := s.BridgeState(context.Background(), "vmbr99")
+	if err != nil || !got.OVS {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
 func TestRealBridgeStateOVS(t *testing.T) {
 	r := &cannedRunner{answers: map[string]cannedCmd{
 		"ovs-vsctl --timeout=10 br-exists vmbr99":  {exit: 0},
@@ -333,7 +381,7 @@ func TestRealTemplateHashes(t *testing.T) {
 
 func TestNewSystemDefaults(t *testing.T) {
 	s := NewSystem()
-	if s.TemplateDir != DefaultTemplateDir || s.ProcRoot != "/proc" || s.run == nil || s.lxcDir != "/etc/pve/lxc" {
+	if s.TemplateDir != DefaultTemplateDir || s.ProcRoot != "/proc" || s.SysRoot != "/sys" || s.run == nil || s.lxcDir != "/etc/pve/lxc" {
 		t.Errorf("got %+v", s)
 	}
 	want := bins{pct: "/usr/sbin/pct", ip: "/usr/sbin/ip", ovs: "/usr/bin/ovs-vsctl", perl: "/usr/bin/perl"}

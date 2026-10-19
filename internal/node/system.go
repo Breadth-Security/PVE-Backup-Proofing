@@ -80,6 +80,7 @@ type runFunc func(ctx context.Context, name string, args []string, stdin []byte)
 type RealSystem struct {
 	TemplateDir string
 	ProcRoot    string
+	SysRoot     string // sysfs mount point, "/sys"
 	run         runFunc
 	bins        bins   // test seam; NewSystem sets the real paths
 	lxcDir      string // test seam; NewSystem sets lxcConfDir
@@ -92,7 +93,7 @@ var _ System = (*RealSystem)(nil)
 // NewSystem returns the System for a real Proxmox node.
 func NewSystem() *RealSystem {
 	return &RealSystem{
-		TemplateDir: DefaultTemplateDir, ProcRoot: "/proc", run: capture,
+		TemplateDir: DefaultTemplateDir, ProcRoot: "/proc", SysRoot: "/sys", run: capture,
 		bins:   bins{pct: binPct, ip: binIP, ovs: binOVS, perl: binPerl},
 		lxcDir: lxcConfDir,
 	}
@@ -198,7 +199,9 @@ func (s *RealSystem) CTConfig(ctx context.Context, vmid int) (map[string]string,
 }
 
 // BridgeState implements System: disable_ipv6, `ip -j addr` and the members
-// (kernel bridge members, or OVS ports when the bridge is an OVS bridge).
+// (kernel bridge members, or OVS ports when the bridge is an OVS bridge). A
+// bridge with /sys/class/net/<bridge>/bridge is a kernel bridge; only
+// otherwise is ovs-vsctl asked whether it is an OVS bridge.
 func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.BridgeState, error) {
 	st := nodeproto.BridgeState{Name: bridge, Members: []string{}}
 
@@ -212,7 +215,12 @@ func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.
 
 	var errOut string
 	var exit int
-	if _, err = os.Stat(s.bins.ovs); errors.Is(err, fs.ErrNotExist) {
+	// #nosec G304 -- bridge is from the validated node config (an interface name).
+	if fi, serr := os.Stat(filepath.Join(s.SysRoot, "class/net", bridge, "bridge")); serr == nil && fi.IsDir() {
+		// A kernel bridge: the kernel says so, ovsdb is not consulted (a
+		// dead or slow ovsdb then cannot fail or stall the check).
+		exit = 2
+	} else if _, err = os.Stat(s.bins.ovs); errors.Is(err, fs.ErrNotExist) {
 		exit = 2 // Open vSwitch is not installed: not an OVS bridge
 		err = nil
 	} else if err == nil {
