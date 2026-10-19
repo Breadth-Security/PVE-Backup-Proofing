@@ -29,6 +29,12 @@ const (
 	ReasonOverran      = "run overran"
 )
 
+// RunLimits are the configured durations that bound one run (restore
+// max_run_duration, boot_timeout and probe_timeout).
+type RunLimits struct {
+	MaxRun, BootTimeout, ProbeTimeout time.Duration
+}
+
 // OverrunLimit is how long a run may last before it counts as overrun. When
 // max_run_duration is set, a run may legitimately finish its in-flight guest
 // after the limit (restore boot and probe) plus a grace period; when it is
@@ -42,15 +48,12 @@ func OverrunLimit(maxRun, bootTimeout, probeTimeout time.Duration) time.Duration
 
 // Evaluate reports whether PBP is healthy at now. It is unhealthy when the
 // last finished run ended in a run-level error, when the newest run is still
-// running for longer than limit (normally OverrunLimit's result; a limit <= 0
-// means 24h), or when the scheduled time following the newest run's end (its
+// running for longer than OverrunLimit allows for limits, or when the scheduled time following the newest run's end (its
 // start if no end was recorded; startedAt, the daemon's start, if there are
 // no runs) passed more than 30 minutes ago. A zero startedAt with no runs is
 // healthy.
-func Evaluate(st state.State, now time.Time, sched cron.Schedule, limit time.Duration, startedAt time.Time) (ok bool, reason string) {
-	if limit <= 0 {
-		limit = defaultMaxRun
-	}
+func Evaluate(st state.State, now time.Time, sched cron.Schedule, limits RunLimits, startedAt time.Time) (ok bool, reason string) {
+	limit := OverrunLimit(limits.MaxRun, limits.BootTimeout, limits.ProbeTimeout)
 	runs := st.Runs
 	for i := len(runs) - 1; i >= 0; i-- {
 		if runs[i].Outcome == state.OutcomeRunning {

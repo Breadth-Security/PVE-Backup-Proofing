@@ -352,8 +352,8 @@ func (a *app) health(cfg config.Config) int {
 		return fail(err.Error())
 	}
 	r := cfg.Restore
-	limit := health.OverrunLimit(r.MaxRunDuration, r.BootTimeout, r.ProbeTimeout)
-	if ok, reason := health.Evaluate(st, a.now(), sched, limit, startedAt); !ok {
+	limits := health.RunLimits{MaxRun: r.MaxRunDuration, BootTimeout: r.BootTimeout, ProbeTimeout: r.ProbeTimeout}
+	if ok, reason := health.Evaluate(st, a.now(), sched, limits, startedAt); !ok {
 		return fail(reason)
 	}
 	fprintln(a.stdout, "ok")
