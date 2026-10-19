@@ -194,6 +194,13 @@ Only `FAILED` indicts the backup. `SKIPPED`/`ERROR` mean "not proven yet" and ar
   (`journalctl -b` or `/var/log` equivalent) into the PBP log on failure.
 - Boot timeout configurable, default **5 minutes** per guest. Use `systemctl is-system-running --wait`
   bounded by the timeout where available.
+- The `--wait` is bounded by the probe's remaining time (`restore.probe_timeout`, keeping back a
+  quarter of it, at most 30s, for the checks that follow), **not** by the per-command
+  `checks.command_timeout`: on the isolated bridge, DHCP and wait-online units can keep a healthy
+  guest "starting" for a minute or two. If boot still hasn't settled, PBP asks once more without
+  `--wait`: `starting`/`initializing` → ERROR `guest still starting after <time>` (a hung boot step
+  doesn't by itself show the backup is bad); `running`/`degraded` continue as normal; any other
+  state → FAILED as below.
 
 ### 7.3 Base health (every Linux guest)
 - `systemctl is-system-running`: `running` ok; `degraded` → inspect failed units;

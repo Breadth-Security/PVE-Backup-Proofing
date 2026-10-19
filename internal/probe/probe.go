@@ -27,6 +27,11 @@ type Input struct {
 	// WindowsSettlePoll is how often a Windows guest's stopped automatic
 	// services are re-checked while they may still be starting (0 = 15s).
 	WindowsSettlePoll time.Duration
+	// SettleTimeout bounds the wait for a Linux guest's boot to settle
+	// (`systemctl is-system-running --wait`) when the probe context has no
+	// deadline (0 = DefaultSettleTimeout). With a deadline, the wait uses
+	// the probe's remaining time instead, minus a reserve for the checks.
+	SettleTimeout time.Duration
 }
 
 // Outcome is the probe's decision plus the evidence behind it.

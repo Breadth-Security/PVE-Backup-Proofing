@@ -339,10 +339,89 @@ func TestCheckTimesOut(t *testing.T) {
 	}
 }
 
+// slowExec answers the listed commands only after a delay, like a guest
+// whose boot is still settling; everything else is scripted.
+type slowExec struct {
+	probetest.Scripted
+	delay map[string]time.Duration
+}
+
+func (s slowExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if d, ok := s.delay[strings.Join(argv, " ")]; ok {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return probe.ExecResult{}, fmt.Errorf("agent exec: %w", ctx.Err())
+		}
+	}
+	return s.Scripted.Exec(ctx, argv)
+}
+
+const sysStateNow = "systemctl is-system-running"
+
+// Waiting for boot to settle is bounded by the probe deadline, not by the
+// per-command timeout: a slow but healthy boot is PROVEN.
+func TestSlowBootSettlesWithinProbe(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ex := slowExec{healthy(), map[string]time.Duration{sysState: 100 * time.Millisecond}}
+	o := probe.Run(ctx, ex, probe.Input{OS: probe.Linux, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+	if o.Verdict != model.Proven {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// When boot has not settled before the probe deadline, PBP asks once more
+// without --wait and judges the current state.
+func TestBootNotSettledAtDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		state     string
+		verdict   model.Verdict
+		reasonPfx string
+	}{
+		{"starting", model.Error, "guest still starting after "},
+		{"initializing", model.Error, "guest still starting after "},
+		{"degraded", model.Proven, "1 checks ok"},
+		{"running", model.Proven, "1 checks ok"},
+		{"emergency", model.Failed, "system state: emergency"},
+		{"maintenance", model.Failed, "system state: maintenance"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+		ex := healthy()
+		ex[sysStateNow] = out(tc.state + "\n")
+		o := probe.Run(ctx, hanging(ex, sysState), probe.Input{OS: probe.Linux, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+		cancel()
+		if o.Verdict != tc.verdict || !strings.HasPrefix(o.Reason, tc.reasonPfx) {
+			t.Errorf("%s: got %v %q", tc.state, o.Verdict, o.Reason)
+		}
+	}
+}
+
+// A guest that is still starting is ERROR even when no probe deadline was
+// set: the settle wait has its own default bound.
+func TestBootSettleWithoutProbeDeadline(t *testing.T) {
+	ex := healthy()
+	ex[sysStateNow] = out("starting\n")
+	o := probe.Run(context.Background(), hanging(ex, sysState), probe.Input{OS: probe.Linux, SettleTimeout: 50 * time.Millisecond})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// A shutdown while waiting for boot to settle is ERROR (probe cancelled),
+// never FAILED.
+func TestBootSettleCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(30*time.Millisecond, cancel)
+	o := probe.Run(ctx, hanging(healthy(), sysState), probe.Input{OS: probe.Linux})
+	if o.Verdict != model.Error || o.Reason != "probe cancelled" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
 func TestBaseCommandTimesOut(t *testing.T) {
 	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
 	for cmd, name := range map[string]string{
-		sysState: "system state",
 		findmnt:  "root filesystem",
 		failedC:  "failed units",
 		enabledC: "enabled units",
