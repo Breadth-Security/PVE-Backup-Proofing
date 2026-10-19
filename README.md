@@ -20,7 +20,7 @@ For each run, PBP:
 1. **Preflight.** Checks the API token, SSH, the node version, that the proof bridge is really isolated, the restore storage, that the VMID range holds no guest PBP does not own, and installs the notification templates.
 2. **Discovery.** Picks the newest backup per guest across all configured storages. Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A snapshot that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
 3. **Capacity gate.** Skips a guest if the backup does not fit in the restore storage (free space, minus space reserved by in-flight restores, minus `space_margin_percent`) or the node lacks free RAM.
-4. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`), then puts every NIC on the isolated bridge, sets `onboot=0` and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.
+4. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`), then puts every NIC on the isolated bridge, sets `onboot=0`, clears `protection` (a backup of a protected guest restores protected, and could then never be destroyed) and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.
 5. **Boot and check.** Starts the guest and waits up to `boot_timeout` (default 5m). Inside, it checks the system state, failed units (minus the ignore list), a read-write root filesystem, service profiles and your own per-guest checks. Linux VMs need the QEMU guest agent; containers use `pct exec`.
 6. **Teardown.** Stops and destroys the temporary guest with all its disks, restores the backup's original `protected` value, and annotates the backup's notes. This always runs, and the janitor repairs anything left behind by a crash.
 7. **Report.** Writes a log, and sends one summary notification through your Proxmox node.
@@ -122,7 +122,7 @@ This list was confirmed against PVE 9.2 (the integration suite, see `test/integr
 | `VM.Allocate` | `/vms` | restore into a new VMID, destroy with purge |
 | `VM.Backup` | `/vms` | read the config inside a backup (`vzdump/extractconfig`), restore from a backup, and write `notes`/`protected` on backup volumes |
 | `VM.Audit` | `/vms` | list guests (PBP must see every guest in the VMID range), read configs and status |
-| `VM.Config.Network`, `VM.Config.Options`, `VM.Config.HWType` | `/vms` | sanitize: NICs, tags, name, `onboot`, hookscript, removing `rng`/USB/PCI devices |
+| `VM.Config.Network`, `VM.Config.Options`, `VM.Config.HWType` | `/vms` | sanitize: NICs, tags, name, `onboot`, `protection`, hookscript, removing `rng`/USB/PCI devices |
 | `VM.PowerMgmt` | `/vms` | start and stop the temporary guest |
 | `VM.GuestAgent.Audit`, `VM.GuestAgent.Unrestricted` | `/vms` | agent ping and OS info; running the checks through the agent |
 | `Datastore.AllocateSpace`, `Datastore.Audit` | the restore storage and each PBS storage | allocate restored disks; list backups and read and write their notes and `protected` flag |

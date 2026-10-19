@@ -307,6 +307,9 @@ func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, v
 	if i < 0 {
 		return "", fmt.Errorf("guest %d not found", vmid)
 	}
+	if f.Configs[vmid]["protection"] == "1" {
+		return "", fmt.Errorf("can't remove VM %d - protection mode enabled", vmid)
+	}
 	f.GuestList = append(f.GuestList[:i], f.GuestList[i+1:]...)
 	delete(f.Configs, vmid)
 	return upid("destroy", vmid), nil

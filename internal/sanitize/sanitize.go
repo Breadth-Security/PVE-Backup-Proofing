@@ -35,8 +35,9 @@ var (
 // (design section 6 step 7 is satisfied by construction).
 func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) Plan {
 	// Tags are added to, never replaced: removing a registered tag needs
-	// Sys.Modify on "/".
-	p := Plan{Set: map[string]string{"onboot": "0", "tags": AddTag(restored["tags"], "pbp")}}
+	// Sys.Modify on "/". Protection is cleared: a protected copy could never
+	// be destroyed.
+	p := Plan{Set: map[string]string{"onboot": "0", "protection": "0", "tags": AddTag(restored["tags"], "pbp")}}
 	keys := make([]string, 0, len(restored))
 	for k := range restored {
 		keys = append(keys, k)

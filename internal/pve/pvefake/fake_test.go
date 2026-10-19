@@ -157,3 +157,16 @@ func TestNotesFirstLineInListing(t *testing.T) {
 		t.Error("listing modified the seeded notes")
 	}
 }
+
+// Like PVE, a protected guest cannot be destroyed.
+func TestDestroyRefusesProtected(t *testing.T) {
+	f := New()
+	f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990000}, Status: "stopped"}}
+	f.Configs[990000] = map[string]string{"protection": "1"}
+	if _, err := f.Destroy(context.Background(), "pve1", model.KindQEMU, 990000); err == nil {
+		t.Fatal("destroyed a protected guest")
+	}
+	if len(f.GuestList) != 1 {
+		t.Fatal("guest removed")
+	}
+}

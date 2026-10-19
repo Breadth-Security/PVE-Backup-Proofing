@@ -270,3 +270,17 @@ func TestAddTag(t *testing.T) {
 		}
 	}
 }
+
+// A backup of a protected guest restores protected; PBP must be able to
+// destroy its copy, so the plan always clears protection.
+func TestSanitizeClearsProtection(t *testing.T) {
+	for _, kind := range []model.GuestKind{model.KindQEMU, model.KindLXC} {
+		p := Sanitize(kind, map[string]string{"protection": "1"}, br)
+		if p.Set["protection"] != "0" || contains(p.Delete, "protection") {
+			t.Errorf("%s: protection not cleared: %+v", kind, p)
+		}
+		if p := Sanitize(kind, map[string]string{}, br); p.Set["protection"] != "0" {
+			t.Errorf("%s: protection not forced off when absent: %+v", kind, p.Set)
+		}
+	}
+}

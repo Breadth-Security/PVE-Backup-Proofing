@@ -285,6 +285,61 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	}
 }
 
+// A backup of a protected guest restores protected. Restore clears it in the
+// same call that adds the tag, so a failed sanitize still leaves a guest
+// Destroy can remove.
+func TestRestoreClearsProtection(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Configs[990000]["protection"]; got != "0" {
+		t.Errorf("protection after restore = %q", got)
+	}
+	if got := f.CallLog(); slices.Index(got, "SetGuestConfig pve1 qemu 990000") != len(got)-1 {
+		t.Errorf("want one SetGuestConfig as the last call, got %q", got)
+	}
+	f.Fail["SetGuestConfig"] = errors.New("boom")
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err == nil {
+		t.Fatal("Sanitize should fail")
+	}
+	delete(f.Fail, "SetGuestConfig")
+	if err := n.Destroy(ctx, model.KindQEMU, 990000); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+}
+
+// protectionKeepingAPI simulates a node where clearing protection did not
+// take effect.
+type protectionKeepingAPI struct{ *pvefake.Fake }
+
+func (a protectionKeepingAPI) SetGuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int, set map[string]string, del []string) error {
+	kept := map[string]string{}
+	for k, v := range set {
+		if k != "protection" {
+			kept[k] = v
+		}
+	}
+	return a.Fake.SetGuestConfig(ctx, node, kind, vmid, kept, del)
+}
+
+func TestSanitizeVerifiesProtectionCleared(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
+	n := newTarget(t, protectionKeepingAPI{f}, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+		t.Fatal(err)
+	}
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "protection") {
+		t.Fatalf("err = %v, want protection verification failure", err)
+	}
+}
+
 func TestRestoreFailures(t *testing.T) {
 	ctx := context.Background()
 	t.Run("out of range", func(t *testing.T) {
@@ -555,6 +610,36 @@ func TestDestroy(t *testing.T) {
 			if strings.HasPrefix(c, "Stop ") || strings.HasPrefix(c, "Shutdown ") {
 				t.Errorf("unexpected %q", c)
 			}
+		}
+	})
+	t.Run("protected owned guest is unprotected then destroyed", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990008, "running", "pbp")}
+		f.Configs[990008] = map[string]string{"tags": "pbp", "protection": "1"}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990008); err != nil {
+			t.Fatal(err)
+		}
+		var muts []string
+		for _, c := range f.CallLog() {
+			if slices.Contains(mutating, strings.Fields(c)[0]) {
+				muts = append(muts, c)
+			}
+		}
+		want := []string{"SetGuestConfig pve1 qemu 990008", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
+		if !slices.Equal(muts, want) {
+			t.Errorf("mutating calls = %q", muts)
+		}
+		if len(f.GuestList) != 0 {
+			t.Error("guest not destroyed")
+		}
+	})
+	t.Run("protected untagged guest is left alone", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990009, "stopped")}
+		f.Configs[990009] = map[string]string{"protection": "1"}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990009)
+		if !errors.Is(err, ErrNotOwned) || countMutating(f.CallLog()) != 0 || f.Configs[990009]["protection"] != "1" {
+			t.Errorf("err = %v calls = %q", err, f.CallLog())
 		}
 	})
 	t.Run("still present after destroy is an error", func(t *testing.T) {

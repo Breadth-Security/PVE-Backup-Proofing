@@ -172,12 +172,14 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int) er
 		return fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
 	}
 	// Add the owner tag to the restored tags: replacing them would remove
-	// any registered tag, which needs Sys.Modify on "/".
+	// any registered tag, which needs Sys.Modify on "/". Clear protection
+	// (restored from a protected guest's backup) in the same call, so the
+	// guest is destroyable from here on.
 	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
 	if err != nil {
 		return fmt.Errorf("read restored config %d: %w", vmid, err)
 	}
-	set := map[string]string{"tags": sanitize.AddTag(cfg["tags"], OwnerTag)}
+	set := map[string]string{"tags": sanitize.AddTag(cfg["tags"], OwnerTag), "protection": "0"}
 	// LXC has no "name"; renaming its hostname would change the guest itself.
 	if kind == model.KindQEMU {
 		set["name"] = fmt.Sprintf("pbp-%d-%s", b.Key.VMID, b.Time.UTC().Format("200601021504"))
@@ -217,7 +219,7 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 var reNet = regexp.MustCompile(`^net\d+$`)
 
 // verifySanitized re-reads the live config and checks it is safe to start:
-// tagged "pbp", onboot off, every NIC on the isolated bridge with no VLAN or
+// tagged "pbp", onboot and protection off, every NIC on the isolated bridge with no VLAN or
 // rate options, and nothing left that Sanitize would remove or refuse.
 func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind, vmid int) error {
 	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
@@ -240,6 +242,9 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 	}
 	if cfg["onboot"] != "0" {
 		bad = append(bad, "onboot not 0")
+	}
+	if p := cfg["protection"]; p != "" && p != "0" {
+		bad = append(bad, "protection not 0")
 	}
 	plan := sanitize.Sanitize(kind, cfg, n.bridge)
 	bad = append(bad, plan.Unsafe...)
@@ -305,6 +310,13 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 	}
 	if !slices.Contains(splitList(cfg["tags"]), OwnerTag) {
 		return fmt.Errorf("%w: %d has no %q tag", ErrNotOwned, vmid, OwnerTag)
+	}
+	// Owned (in range and tagged): a protected guest, e.g. debris from a
+	// run before protection was cleared at restore, would refuse destroy.
+	if p := cfg["protection"]; p != "" && p != "0" {
+		if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, map[string]string{"protection": "0"}, nil); err != nil {
+			return fmt.Errorf("clear protection %d: %w", vmid, err)
+		}
 	}
 	status, err := n.api.GuestStatus(ctx, n.node, kind, vmid)
 	if err != nil {
