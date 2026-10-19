@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -22,10 +23,15 @@ import (
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
 )
 
-// teardownTimeout bounds cleanup, which runs on a fresh context so that a
-// shutdown (cancelled run context) still destroys the guest and restores the
-// backup's protected flag.
-const teardownTimeout = 5 * time.Minute
+// Cleanup timeouts. Each cleanup step runs on its own fresh context so that a
+// shutdown (cancelled run context) still destroys the guest, restores the
+// backup's protected flag and writes the verdict, and so one slow step cannot
+// starve the next.
+const (
+	destroyTimeout   = 5 * time.Minute
+	unprotectTimeout = 2 * time.Minute
+	notesTimeout     = 2 * time.Minute
+)
 
 // InFlight stages, in order. Each is recorded before the step it names.
 const (
@@ -59,24 +65,27 @@ type job struct {
 }
 
 // proofOne proofs backup b in the temporary guest vmid and always tears it
-// down again, then writes the verdict to the backup's notes.
-func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int) model.GuestResult {
+// down again, then writes the verdict to the backup's notes. A panic while
+// proofing becomes an ERROR verdict; teardown still runs.
+func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int) (res model.GuestResult) {
 	log := d.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	j := &job{d: d, b: b, vmid: vmid, log: log.With("guest", b.Key.String(), "vmid", vmid, "volid", b.VolID)}
-	res := model.GuestResult{Backup: b, TempVMID: vmid}
+	res = model.GuestResult{Backup: b, TempVMID: vmid}
 
+	defer func() {
+		if p := recover(); p != nil {
+			j.log.Error("panic while proofing", "panic", p, "stack", string(debug.Stack()))
+			res.Verdict, res.Reason = model.Error, fmt.Sprintf("internal error: %v", p)
+		} else if ctx.Err() != nil {
+			res.Verdict, res.Reason = model.Error, "cancelled"
+		}
+		j.teardown(&res)
+		j.annotate(res)
+	}()
 	j.prove(ctx, &res)
-	if ctx.Err() != nil {
-		res.Verdict, res.Reason = model.Error, "cancelled"
-	}
-
-	tctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
-	defer cancel()
-	j.teardown(tctx, &res)
-	j.annotate(tctx, res)
 	return res
 }
 
@@ -190,21 +199,29 @@ func (j *job) originalIdentity(ctx context.Context) (probe.GuestInfo, error) {
 
 // teardown destroys the guest and restores the backup's protected flag. The
 // InFlight entry is removed only when both succeed; otherwise the janitor
-// finishes the job. A failed destroy makes the verdict ERROR; a failed
-// unprotect only notes it in the reason.
-func (j *job) teardown(ctx context.Context, res *model.GuestResult) {
+// finishes the job. A failed destroy turns PROVEN into ERROR (so the guest
+// is proofed again next run) and otherwise only notes it in the reason, as
+// does a failed unprotect.
+func (j *job) teardown(res *model.GuestResult) {
 	clean := true
 	if j.restoreTried {
+		ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
+		defer cancel()
 		if err := j.d.Target.Destroy(ctx, j.b.Key.Kind, j.vmid); err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
-			res.Verdict = model.Error
-			res.Reason += "; cleanup failed: destroy"
+			if res.Verdict == model.Proven {
+				res.Verdict, res.Reason = model.Error, "cleanup failed: destroy (booted ok)"
+			} else {
+				res.Reason += "; cleanup failed: destroy"
+			}
 			clean = false
 		} else if err := j.setStage(stageDestroyed); err != nil {
 			j.log.Error("record destroyed stage", "err", err)
 		}
 	}
 	if j.protectSet {
+		ctx, cancel := context.WithTimeout(context.Background(), unprotectTimeout)
+		defer cancel()
 		if err := j.setProtected(ctx, false); err != nil {
 			j.log.Error("restore backup protected flag failed; left for the janitor", "err", err)
 			res.Reason += "; cleanup failed: unprotect"
@@ -225,10 +242,12 @@ func (j *job) teardown(ctx context.Context, res *model.GuestResult) {
 
 // annotate writes the verdict line to the backup's notes and records PROVEN
 // times. A failed notes write is logged; it never changes the verdict.
-func (j *job) annotate(ctx context.Context, res model.GuestResult) {
+func (j *job) annotate(res model.GuestResult) {
 	if res.Verdict == model.Skipped {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), notesTimeout)
+	defer cancel()
 	at := j.d.Now()
 	text := notes.Merge(j.b.Notes, notes.Line(res.Verdict, at, res.Reason))
 	if err := j.d.API.SetVolumeAttrs(ctx, j.d.Cfg.Target.Node, j.b.Storage, j.b.VolID, &text, nil); err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/config"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe/probetest"
 	"git.breadthanalytics.com/tdiana/pbv/internal/pve/pvefake"
@@ -74,9 +75,9 @@ func (r *recorder) entries() []string {
 
 type recAPI struct {
 	*pvefake.Fake
-	rec                      *recorder
-	failNotes, failUnprotect bool
-	storages                 []string
+	rec                                   *recorder
+	failNotes, failProtect, failUnprotect bool
+	storages                              []string
 }
 
 func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
@@ -91,6 +92,9 @@ func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string
 		a.rec.add(ctx, fmt.Sprintf("SetProtected=%t", *protected))
 		if a.failUnprotect && !*protected {
 			return errors.New("unprotect refused")
+		}
+		if a.failProtect && *protected {
+			return errors.New("protect refused")
 		}
 	}
 	return a.Fake.SetVolumeAttrs(ctx, node, storage, volid, notes, protected)
@@ -244,6 +248,12 @@ func TestAlreadyProtected(t *testing.T) {
 	f := newFixture(t)
 	f.b.Protected = true
 	f.api.Backups["pbs"][0].Protected = true
+	f.tgt.onBoot = func(context.Context) error {
+		if j, ok := f.inFlight(); !ok || j.ProtectedOrig == nil || !*j.ProtectedOrig {
+			t.Errorf("InFlight job = %+v", j)
+		}
+		return nil
+	}
 	res := f.run(context.Background())
 	if res.Verdict != model.Proven {
 		t.Fatalf("verdict %s %q", res.Verdict, res.Reason)
@@ -341,25 +351,119 @@ func TestProbeFailedNotes(t *testing.T) {
 	}
 }
 
-func TestDestroyFailureKeepsInFlight(t *testing.T) {
+func TestDestroyFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(f *fixture)
+		verdict model.Verdict
+		reason  string
+		stage   string
+	}{
+		{"proven becomes error", func(*fixture) {}, model.Error, "cleanup failed: destroy (booted ok)", "started"},
+		{"failed kept", func(f *fixture) {
+			ex := healthy()
+			ex[failedC] = out("postgresql.service loaded failed failed PG\n")
+			f.tgt.Exec[tmpVMID] = ex
+		}, model.Failed, "failed: postgresql.service; cleanup failed: destroy", "started"},
+		{"booted kept", func(f *fixture) {
+			f.tgt.Boot[tmpVMID] = target.BootInfo{AgentMissing: true}
+		}, model.Booted, "guest agent missing; cleanup failed: destroy", "started"},
+		{"error kept", func(f *fixture) {
+			f.tgt.SanitizeErr = map[int]error{tmpVMID: fmt.Errorf("%w: hostpci0", target.ErrUnsafe)}
+		}, model.Error, "unsafe config: hostpci0; cleanup failed: destroy", "restored"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			tc.setup(f)
+			f.tgt.DestroyErr = map[int]error{tmpVMID: errors.New("destroy timed out")}
+			res := f.run(context.Background())
+			if res.Verdict != tc.verdict || res.Reason != tc.reason {
+				t.Errorf("result %s %q", res.Verdict, res.Reason)
+			}
+			j, ok := f.inFlight()
+			if !ok || j.Stage != tc.stage {
+				t.Errorf("InFlight = %+v, %v", j, ok)
+			}
+			if f.protected() {
+				t.Error("backup left protected")
+			}
+			want := notes.Line(tc.verdict, now, tc.reason)
+			if !strings.HasPrefix(f.notes(), want+"\n") {
+				t.Errorf("notes %q", f.notes())
+			}
+			if len(f.store.Snapshot().LastProven) != 0 {
+				t.Error("LastProven set")
+			}
+		})
+	}
+}
+
+type panicExec struct{}
+
+func (panicExec) Exec(context.Context, []string) (probe.ExecResult, error) {
+	panic("boom from guest")
+}
+
+func TestPanicStillTearsDown(t *testing.T) {
 	f := newFixture(t)
-	f.tgt.DestroyErr = map[int]error{tmpVMID: errors.New("destroy timed out")}
+	f.tgt.Exec[tmpVMID] = panicExec{}
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || !strings.Contains(res.Reason, "cleanup failed") {
+	if res.Verdict != model.Error || res.Reason != "internal error: boom from guest" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
-	j, ok := f.inFlight()
-	if !ok || j.Stage != "started" {
-		t.Errorf("InFlight = %+v, %v", j, ok)
+	got := f.rec.entries()
+	want := []string{"Destroy @started", "SetProtected=false @destroyed", "SetNotes @-"}
+	if len(got) < 3 || !slices.Equal(got[len(got)-3:], want) {
+		t.Errorf("calls %q", got)
 	}
-	if f.protected() {
-		t.Error("backup left protected")
+	if _, ok := f.inFlight(); ok {
+		t.Error("InFlight entry not removed")
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR ") {
-		t.Errorf("notes %q", f.notes())
+	if !strings.Contains(f.logBuf.String(), "boom from guest") || !strings.Contains(f.logBuf.String(), "stack=") {
+		t.Errorf("panic not logged with stack: %q", f.logBuf)
 	}
-	if len(f.store.Snapshot().LastProven) != 0 {
-		t.Error("LastProven set for ERROR")
+}
+
+func TestSanitizeErrorNeverStarts(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.SanitizeErr = map[int]error{tmpVMID: errors.New("read config 990000: connection reset")}
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "sanitize failed: read config 990000: connection reset" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	calls := strings.Join(f.rec.entries(), "\n")
+	if strings.Contains(calls, "Start") || !strings.Contains(calls, "Destroy") {
+		t.Errorf("calls:\n%s", calls)
+	}
+}
+
+func TestProtectFailure(t *testing.T) {
+	f := newFixture(t)
+	f.api.failProtect = true
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "protect backup: protect refused" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	want := []string{"SetProtected=true @protected", "SetProtected=false @protected", "SetNotes @-"}
+	if got := f.rec.entries(); !slices.Equal(got, want) {
+		t.Errorf("calls %q", got)
+	}
+	if _, ok := f.inFlight(); ok {
+		t.Error("InFlight entry not removed")
+	}
+}
+
+func TestStartFailure(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.StartErr = map[int]error{tmpVMID: errors.New("not enough memory")}
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != "start failed: not enough memory" {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	calls := strings.Join(f.rec.entries(), "\n")
+	if strings.Contains(calls, "WaitBooted") || !strings.Contains(calls, "Destroy") {
+		t.Errorf("calls:\n%s", calls)
 	}
 }
 
