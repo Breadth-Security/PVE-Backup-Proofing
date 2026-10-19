@@ -1,8 +1,10 @@
 package notes
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 )
@@ -64,5 +66,25 @@ func TestLineCollapsesNewlines(t *testing.T) {
 	}
 	if merged := Merge("db01", got); merged != want+"\ndb01" {
 		t.Fatalf("merge %q", merged)
+	}
+}
+
+func TestLineCapsReason(t *testing.T) {
+	at := time.Date(2026, 10, 19, 2, 14, 0, 0, time.UTC)
+	prefix := "PBP FAILED 2026-10-19 02:14 · "
+	exact := strings.Repeat("ü", maxReason)
+	if got := Line(model.Failed, at, exact); got != prefix+exact {
+		t.Errorf("reason of exactly %d chars changed: %q", maxReason, got)
+	}
+	long := strings.Repeat("x", 150) + strings.Repeat("é", 100)
+	got := strings.TrimPrefix(Line(model.Failed, at, long), prefix)
+	if n := utf8.RuneCountInString(got); n != maxReason {
+		t.Errorf("capped reason has %d chars, want %d", n, maxReason)
+	}
+	if !strings.HasSuffix(got, "…") || !strings.HasPrefix(got, strings.Repeat("x", 150)+"é") {
+		t.Errorf("capped reason = %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Error("cap split a multi-byte character")
 	}
 }
