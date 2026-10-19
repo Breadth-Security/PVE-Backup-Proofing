@@ -238,15 +238,18 @@ func (s cmdErr) Exec(ctx context.Context, argv []string) (probe.ExecResult, erro
 	return s.Scripted.Exec(ctx, argv)
 }
 
+// A transport error while tracing leaves the unit untraced (never covered),
+// but the guest cannot be judged: the verdict is ERROR, not FAILED.
 func TestExecErrorDuringTracingUntraced(t *testing.T) {
 	ex := failing(map[string]string{"a.mount": "Type=nfs\nWhat=nas:/a\nWhere=/a\n"})
 	o := runMissing(cmdErr{ex, "systemctl", errors.New("boom")})
-	if o.Verdict != model.Failed || o.Reason != "failed: a.mount" {
+	if o.Verdict != model.Error || o.Reason != "probe transport error: boom" || len(o.NotCovered) != 0 ||
+		!reflect.DeepEqual(o.FailedUnits, []string{"a.mount"}) {
 		t.Fatalf("got %+v", o)
 	}
 	ex = failing(map[string]string{"d.mount": "What=/dev/vdb\nWhere=/d\n"})
 	o = runMissing(cmdErr{ex, "test", errors.New("boom")}, scsi1)
-	if o.Verdict != model.Failed {
+	if o.Verdict != model.Error || len(o.NotCovered) != 0 {
 		t.Fatalf("got %+v", o)
 	}
 }

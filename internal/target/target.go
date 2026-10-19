@@ -8,6 +8,7 @@ package target
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
@@ -30,7 +31,20 @@ var (
 	ErrOutOfRange = errors.New("VMID outside reserved range")
 	// ErrNotOwned: the guest is not tagged "pbp" (or is not the expected kind).
 	ErrNotOwned = errors.New("guest not owned by PBP")
+	// ErrBootFailed: the guest itself did not boot (never reached running,
+	// or a container never accepted exec while SSH worked). Only this boot
+	// error says something about the backup; any other is a node fault.
+	ErrBootFailed = errors.New("guest did not boot")
 )
+
+// bootFailure is a boot failure that matches ErrBootFailed and keeps its own
+// message.
+type bootFailure struct{ msg string }
+
+func (e bootFailure) Error() string        { return e.msg }
+func (e bootFailure) Is(target error) bool { return target == ErrBootFailed }
+
+func bootFailed(format string, a ...any) error { return bootFailure{fmt.Sprintf(format, a...)} }
 
 // OwnerTag marks guests PBP created.
 const OwnerTag = "pbp"
@@ -64,7 +78,9 @@ type Target interface {
 	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, volid string) ([]model.MissingPiece, error)
 	// Start starts a sanitized guest; it refuses one that is not.
 	Start(ctx context.Context, kind model.GuestKind, vmid int) error
-	// WaitBooted waits until the guest runs and can be looked into.
+	// WaitBooted waits until the guest runs and can be looked into. An
+	// error matching ErrBootFailed means the guest did not boot; any other
+	// error is a node, API or transport fault.
 	WaitBooted(ctx context.Context, kind model.GuestKind, vmid int, timeout time.Duration) (BootInfo, error)
 	// Executor runs commands inside the guest.
 	Executor(kind model.GuestKind, vmid int) probe.Executor

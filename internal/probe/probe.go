@@ -36,14 +36,21 @@ type Outcome struct {
 	BootLog      string
 }
 
-// Run probes the guest, dispatching on its OS family.
+// Run probes the guest, dispatching on its OS family. A transport error
+// (the executor could not run a command) is ERROR, never FAILED.
 func Run(ctx context.Context, ex Executor, in Input) Outcome {
+	g := &guard{ex: ex}
+	var out Outcome
 	switch in.OS {
 	case Linux:
-		return runLinux(ctx, ex, in)
+		out = runLinux(ctx, g, in)
 	case Windows:
-		return runWindows(ctx, ex, in)
+		out = runWindows(ctx, g, in)
 	default:
 		return Outcome{Verdict: model.Booted, Reason: "unknown guest OS"}
 	}
+	if err := g.transportErr(); err != nil && out.Verdict == model.Failed {
+		out.Verdict, out.Reason = model.Error, transportReason(err)
+	}
+	return out
 }

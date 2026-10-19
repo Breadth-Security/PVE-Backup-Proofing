@@ -241,11 +241,12 @@ func (e errExec) Exec(_ context.Context, argv []string) (probe.ExecResult, error
 }
 
 func TestExecErrors(t *testing.T) {
+	// A transport error (SSH, API) says nothing about the backup: ERROR.
 	boom := errors.New("boom")
-	if o := run(errExec{err: boom}, config.Checks{}); o.Verdict != model.Booted || o.Reason != "cannot run commands: boom" {
+	if o := run(errExec{err: boom}, config.Checks{}); o.Verdict != model.Error || o.Reason != "probe transport error: boom" {
 		t.Fatalf("got %+v", o)
 	}
-	if o := run(errExec{firstOK: true, err: boom}, config.Checks{}); o.Verdict != model.Failed || o.Reason != "probe error: boom" {
+	if o := run(errExec{firstOK: true, err: boom}, config.Checks{}); o.Verdict != model.Error || o.Reason != "probe transport error: boom" {
 		t.Fatalf("got %+v", o)
 	}
 	if o := run(errExec{err: probe.ErrExecBlocked}, config.Checks{}); o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
@@ -254,6 +255,29 @@ func TestExecErrors(t *testing.T) {
 	if o := run(errExec{firstOK: true, err: probe.ErrExecBlocked}, config.Checks{}); o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
 		t.Fatalf("got %+v", o)
 	}
+}
+
+// A transport error in a profile check is ERROR as well.
+func TestProfileCheckTransportError(t *testing.T) {
+	ex := cmdFails{healthy(), "ss", errors.New("ssh: connection lost")}
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Error || o.Reason != "probe transport error: ssh: connection lost" {
+		t.Fatalf("got %+v", o)
+	}
+}
+
+// cmdFails fails every command whose argv[0] is cmd.
+type cmdFails struct {
+	probetest.Scripted
+	cmd string
+	err error
+}
+
+func (c cmdFails) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if argv[0] == c.cmd {
+		return probe.ExecResult{}, c.err
+	}
+	return c.Scripted.Exec(ctx, argv)
 }
 
 func TestDispatch(t *testing.T) {

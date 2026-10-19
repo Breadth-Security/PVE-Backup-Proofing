@@ -159,8 +159,12 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	boot, err := d.Target.WaitBooted(ctx, kind, j.vmid, d.Cfg.Restore.BootTimeout)
 	res.BootDuration = boot.Duration
 	switch {
-	case err != nil:
+	case errors.Is(err, target.ErrBootFailed):
 		fail(model.Failed, "did not boot: %v", err)
+		return
+	case err != nil:
+		// A node, API or SSH fault while waiting: not the backup's fault.
+		fail(model.Error, "boot check error: %v", err)
 		return
 	case boot.AgentMissing:
 		res.AgentMissing = true

@@ -19,6 +19,7 @@ import (
 type agentAPI struct {
 	*pvefake.Fake
 	osID      string
+	osErr     error
 	pingFails int // pings that fail before one succeeds; -1 = never answers
 	execErr   error
 	statuses  []pve.AgentExecStatus // returned in order; the last repeats
@@ -40,7 +41,7 @@ func (a *agentAPI) AgentPing(ctx context.Context, node string, vmid int) error {
 }
 
 func (a *agentAPI) AgentOSInfo(ctx context.Context, node string, vmid int) (pve.OSInfo, error) {
-	return pve.OSInfo{ID: a.osID}, nil
+	return pve.OSInfo{ID: a.osID}, a.osErr
 }
 
 func (a *agentAPI) AgentExec(ctx context.Context, node string, vmid int, argv []string) (int, error) {
@@ -128,8 +129,83 @@ func TestWaitBootedVMNotRunning(t *testing.T) {
 	f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990000, "stopped", "pbp")}
 	f.Configs[990000] = map[string]string{"agent": "1"}
 	n := newTarget(t, f, f, nil)
-	if _, err := n.WaitBooted(context.Background(), model.KindQEMU, 990000, 20*time.Millisecond); err == nil {
-		t.Error("want error for guest that never runs")
+	if _, err := n.WaitBooted(context.Background(), model.KindQEMU, 990000, 20*time.Millisecond); !errors.Is(err, ErrBootFailed) {
+		t.Errorf("err = %v, want ErrBootFailed for a guest that never runs", err)
+	}
+}
+
+// Node and API faults are not boot failures: they must not blame the backup.
+func TestWaitBootedFaultsAreNotBootFailures(t *testing.T) {
+	ctx := context.Background()
+	t.Run("status API failing", func(t *testing.T) {
+		f := healthyFake()
+		runningVM(f, 990000, "1")
+		f.Fail["GuestStatus"] = errors.New("pve api: 500 internal")
+		_, err := newTarget(t, f, f, nil).WaitBooted(ctx, model.KindQEMU, 990000, 20*time.Millisecond)
+		if err == nil || errors.Is(err, ErrBootFailed) || !strings.Contains(err.Error(), "500") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("vm config unreadable", func(t *testing.T) {
+		f := healthyFake()
+		runningVM(f, 990000, "1")
+		f.Fail["GuestConfig"] = errors.New("pve api: 500 internal")
+		_, err := newTarget(t, f, f, nil).WaitBooted(ctx, model.KindQEMU, 990000, time.Second)
+		if err == nil || errors.Is(err, ErrBootFailed) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("agent test exec API error", func(t *testing.T) {
+		f := healthyFake()
+		runningVM(f, 990000, "1")
+		api := &agentAPI{Fake: f, osID: "debian", execErr: errors.New("pve api: 500 internal")}
+		_, err := newTarget(t, api, f, nil).WaitBooted(ctx, model.KindQEMU, 990000, time.Second)
+		if err == nil || errors.Is(err, ErrBootFailed) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("lxc ssh transport failing", func(t *testing.T) {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
+		f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
+		ssh := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) { return sshx.Result{}, errors.New("ssh: connection refused") }}
+		_, err := newTarget(t, f, f, ssh).WaitBooted(ctx, model.KindLXC, 990001, 30*time.Millisecond)
+		if err == nil || errors.Is(err, ErrBootFailed) || !strings.Contains(err.Error(), "connection refused") {
+			t.Errorf("err = %v", err)
+		}
+	})
+}
+
+// If OS info fails after the agent answered, a working "true" exec means a
+// Linux guest; otherwise PBP cannot look inside (BOOTED), never FAILED.
+func TestWaitBootedVMOSInfoFails(t *testing.T) {
+	ctx := context.Background()
+	osErr := errors.New("guest-get-osinfo not supported")
+	for _, tc := range []struct {
+		name    string
+		execErr error
+		want    BootInfo
+	}{
+		{"exec works", nil, BootInfo{OS: probe.Linux}},
+		{"exec blocked", errors.New("guest-exec has been disabled"), BootInfo{OS: probe.Unknown, ExecBlocked: true}},
+		{"exec fails", errors.New("agent: command failed"), BootInfo{OS: probe.Unknown, ExecBlocked: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := healthyFake()
+			runningVM(f, 990000, "1")
+			api := &agentAPI{Fake: f, osErr: osErr, execErr: tc.execErr}
+			got, err := newTarget(t, api, f, nil).WaitBooted(ctx, model.KindQEMU, 990000, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got.Duration = 0
+			if got != tc.want {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+			if len(api.argv) == 0 || strings.Join(api.argv[0], " ") != "true" {
+				t.Errorf("argv = %q", api.argv)
+			}
+		})
 	}
 }
 
@@ -196,8 +272,8 @@ func TestWaitBootedLXC(t *testing.T) {
 	t.Run("exec never succeeds", func(t *testing.T) {
 		f := mk("debian")
 		ssh := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) { return sshx.Result{ExitCode: 1}, nil }}
-		if _, err := newTarget(t, f, f, ssh).WaitBooted(ctx, model.KindLXC, 990001, 30*time.Millisecond); err == nil {
-			t.Error("want timeout error")
+		if _, err := newTarget(t, f, f, ssh).WaitBooted(ctx, model.KindLXC, 990001, 30*time.Millisecond); !errors.Is(err, ErrBootFailed) {
+			t.Errorf("err = %v, want ErrBootFailed", err)
 		}
 	})
 }

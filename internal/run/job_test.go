@@ -541,7 +541,8 @@ func TestBootOutcomes(t *testing.T) {
 	}{
 		{"agent missing", target.BootInfo{OS: probe.Unknown, AgentMissing: true}, nil, model.Booted, "guest agent missing", true},
 		{"exec blocked", target.BootInfo{OS: probe.Linux, ExecBlocked: true}, nil, model.Booted, "agent cannot run commands", false},
-		{"no boot", target.BootInfo{}, errors.New("guest 990000 not running after 5m0s"), model.Failed, "did not boot: guest 990000 not running after 5m0s", false},
+		{"no boot", target.BootInfo{}, fmt.Errorf("%w: status stopped", target.ErrBootFailed), model.Failed, "did not boot: guest did not boot: status stopped", false},
+		{"node fault", target.BootInfo{}, errors.New("pve api: 500 internal"), model.Error, "boot check error: pve api: 500 internal", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

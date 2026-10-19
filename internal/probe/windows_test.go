@@ -2,6 +2,7 @@ package probe_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -52,14 +53,20 @@ func TestWindowsProvenWithIgnored(t *testing.T) {
 
 func TestWindowsExecUnavailable(t *testing.T) {
 	for name, ex := range map[string]probe.Executor{
-		"127":     probetest.Scripted{},
-		"err":     errExec{err: probe.ErrExecBlocked},
-		"generic": errExec{err: context.DeadlineExceeded},
+		"127": probetest.Scripted{},
+		"err": errExec{err: probe.ErrExecBlocked},
 	} {
 		o := runWin(ex, config.Checks{})
 		if o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
 			t.Errorf("%s: got %v %q", name, o.Verdict, o.Reason)
 		}
+	}
+}
+
+func TestWindowsTransportError(t *testing.T) {
+	o := runWin(errExec{err: errors.New("agent exec: 500 internal")}, config.Checks{})
+	if o.Verdict != model.Error || o.Reason != "probe transport error: agent exec: 500 internal" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
 

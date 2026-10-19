@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,6 +30,9 @@ func serviceNames(out string) []string {
 // and profile checks are not applied to Windows guests in v1.
 func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
 	res, err := ex.Exec(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsScript})
+	if err != nil && !errors.Is(err, ErrExecBlocked) {
+		return Outcome{Verdict: model.Error, Reason: transportReason(err)}
+	}
 	if err != nil || res.ExitCode == 127 {
 		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}
 	}
