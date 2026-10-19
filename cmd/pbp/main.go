@@ -221,13 +221,8 @@ func (a *app) lock(cmd string) (func(), int) {
 func (a *app) daemon(ctx context.Context, cfg config.Config) int {
 	slog.SetDefault(report.NewLogger(a.stdout, nil))
 	slog.Info("pbp daemon starting", "version", version, "go", runtime.Version())
-	if err := os.MkdirAll(daemon.StateDir(), 0o700); err == nil {
-		err = os.WriteFile(startedPath(), []byte(a.now().Format(time.RFC3339)+"\n"), 0o600)
-		if err != nil {
-			slog.Error("record daemon start", "err", err)
-		}
-	} else {
-		slog.Error("create state dir", "err", err)
+	if err := writeStarted(startedPath(), a.now()); err != nil {
+		slog.Error("record daemon start", "err", err)
 	}
 	err := daemon.Serve(ctx, cfg, func(ctx context.Context, trigger string) {
 		a.runOnce(ctx, cfg, run.Options{Trigger: trigger})
@@ -299,9 +294,6 @@ func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) m
 	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store, Log: log, Now: a.now, Notifier: w.notifier}
 	s := run.Run(ctx, d, opt)
-	for _, r := range s.Results {
-		report.LogGuest(log, r)
-	}
 	return s
 }
 
@@ -366,6 +358,19 @@ func (a *app) health(cfg config.Config) int {
 	}
 	fprintln(a.stdout, "ok")
 	return exitOK
+}
+
+// writeStarted records the daemon start time atomically (temp file, then
+// rename), so health never reads a half-written file.
+func writeStarted(path string, t time.Time) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(t.Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // readStarted reads the daemon start time; a missing file is the zero time,

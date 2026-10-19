@@ -115,6 +115,8 @@ func TestValidateErrors(t *testing.T) {
 		{"profile port zero", "sources:", "checks: {profiles: [{name: x, unit: a, ports: [80, 0]}]}\nsources:", "checks.profiles[0].ports[1]"},
 		{"profile port high", "sources:", "checks: {profiles: [{name: x, unit: a, ports: [65536]}]}\nsources:", "checks.profiles[0].ports[0]"},
 		{"guest empty match", "sources:", "checks: {guests: [{match: {}, services: [a]}]}\nsources:", "checks.guests[0].match"},
+		{"guest vmid negative", "sources:", "checks: {guests: [{match: {vmid: -1, name: x}}]}\nsources:", "checks.guests[0].match.vmid"},
+		{"guest vmid too high", "sources:", "checks: {guests: [{match: {vmid: 1000000000}}]}\nsources:", "checks.guests[0].match.vmid"},
 		{"guest port", "sources:", "checks: {guests: [{match: {vmid: 5}, ports: [70000]}]}\nsources:", "checks.guests[0].ports[0]"},
 	}
 	for _, tc := range cases {
@@ -174,7 +176,7 @@ func TestNullIgnoreListsUseDefaults(t *testing.T) {
 
 // A profile or guest with no checks is valid (the unit is just required active).
 func TestChecklessProfileAndGuestValid(t *testing.T) {
-	if _, err := loadStr(t, minimal+"checks: {profiles: [{name: x, unit: a}], guests: [{match: {name: web}}]}\n"); err != nil {
+	if _, err := loadStr(t, minimal+"checks: {profiles: [{name: x, unit: a}], guests: [{match: {name: web}}, {match: {vmid: 999999999}}]}\n"); err != nil {
 		t.Fatal(err)
 	}
 }

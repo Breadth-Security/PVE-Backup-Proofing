@@ -227,8 +227,9 @@ type storeBreaksOnRestore struct {
 }
 
 func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
-	// Removing the directory breaks the store's writes even for root, which
-	// ignores permission bits (the Docker build runs the tests as root).
+	// Remove the directory rather than chmod it: the Docker build runs the
+	// tests as root, which ignores permission bits, but cannot write into a
+	// directory that no longer exists.
 	if err := os.RemoveAll(a.dir); err != nil {
 		return "", err
 	}
@@ -255,6 +256,9 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 
 	if res.Verdict != model.Error || len(f.tgt.calls) != 0 {
 		t.Errorf("result %s %q, destroy calls %v", res.Verdict, res.Reason, f.tgt.calls)
+	}
+	if err := f.store.Update(func(*state.State) error { return nil }); err == nil {
+		t.Error("the state store is still writable; the test needs it broken")
 	}
 	if j, ok := f.store.Snapshot().InFlight[990000]; !ok || j.Stage != state.StageRestored {
 		t.Fatalf("InFlight = %+v, %v; the test needs the stale record", j, ok)

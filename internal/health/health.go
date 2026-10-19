@@ -45,10 +45,7 @@ func OverrunLimit(maxRun, bootTimeout, probeTimeout time.Duration) time.Duration
 // running after maxRun (24h if 0), or when the scheduled time following the
 // newest run's end (its start if no end was recorded; startedAt, the
 // daemon's start, if there are no runs) passed more than 30 minutes ago. A zero startedAt with no runs is healthy.
-func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Duration, startedAt time.Time) (ok bool, reason string) {
-	if maxRun <= 0 {
-		maxRun = defaultMaxRun
-	}
+func Evaluate(st state.State, now time.Time, sched cron.Schedule, limit time.Duration, startedAt time.Time) (ok bool, reason string) {
 	runs := st.Runs
 	for i := len(runs) - 1; i >= 0; i-- {
 		if runs[i].Outcome == state.OutcomeRunning {
@@ -66,7 +63,7 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Du
 		if last.Outcome == state.OutcomeRunning {
 			// The daemon skips ticks while a run is active, so only the
 			// run's own length matters.
-			if now.Sub(last.Started) > maxRun {
+			if now.Sub(last.Started) > limit {
 				return false, ReasonOverran
 			}
 			return true, ""

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -245,6 +246,21 @@ func TestRunWiring(t *testing.T) {
 	if n := strings.Count(string(b), `"msg":"guest result"`); n != 1 {
 		t.Errorf("guest 101 logged %d result records, want exactly 1:\n%s", n, b)
 	}
+	// The record carries the run correlation and precedes "run finished".
+	var rec struct{ Run, Trigger string }
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, `"msg":"guest result"`) {
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rec.Run != id || rec.Trigger != "manual" {
+		t.Errorf("guest record run/trigger = %+v", rec)
+	}
+	if strings.Index(string(b), `"msg":"guest result"`) > strings.Index(string(b), `"msg":"run finished"`) {
+		t.Errorf("guest result logged after run finished:\n%s", b)
+	}
 	ents, _ := os.ReadDir(e.logDir)
 	var names []string
 	for _, en := range ents {
@@ -355,6 +371,62 @@ func TestHealth(t *testing.T) {
 	}
 	if code := e.run("health"); code != exitFail || e.out.Len() == 0 {
 		t.Errorf("bad config: %d %q", code, e.out)
+	}
+}
+
+// The overrun limit is max_run_duration + boot_timeout + probe_timeout + 10m
+// (1h + 5m + 5m + 10m = 1h20m here), not max_run_duration alone.
+func TestHealthOverrunLimitWiring(t *testing.T) {
+	e := newEnv(t)
+	cfg, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = bytes.Replace(cfg, []byte("restore: {storage: local-zfs}"), []byte("restore: {storage: local-zfs, max_run_duration: 1h}"), 1)
+	if err := os.WriteFile(e.cfgPath, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 19, 2, 30, 0, 0, time.Local)
+	e.a.now = func() time.Time { return now }
+	store, err := state.Open(statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := now.Add(-70 * time.Minute) // past 1h, inside 1h20m
+	rec := state.RunRecord{ID: "r1", Trigger: "schedule", Outcome: state.OutcomeRunning, Started: started}
+	if err := store.AppendRun(rec, 5); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.run("health"); code != exitOK {
+		t.Errorf("inside limit: %d %q", code, e.out)
+	}
+	e.a.now = func() time.Time { return now.Add(11 * time.Minute) } // 81m
+	if code := e.run("health"); code != exitFail || e.out.String() != "run overran\n" {
+		t.Errorf("past limit: %d %q", code, e.out)
+	}
+}
+
+func TestReadStartedUnreadable(t *testing.T) {
+	dir := t.TempDir() // a directory where the file should be cannot be read
+	if _, err := readStarted(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Errorf("want error naming %s, got %v", dir, err)
+	}
+	if got, err := readStarted(filepath.Join(dir, "missing")); err != nil || !got.IsZero() {
+		t.Errorf("missing file: %v, %v", got, err)
+	}
+}
+
+func TestWriteStartedIsAtomic(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sub", "daemon.started")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStarted(p)
+	if err != nil || !got.Equal(fixedNow) {
+		t.Errorf("read back %v, %v", got, err)
+	}
+	if _, err := os.Stat(p + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp file left behind: %v", err)
 	}
 }
 

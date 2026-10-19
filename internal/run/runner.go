@@ -13,6 +13,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/discovery"
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/pbv/internal/report"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/pbv/internal/state"
 	"git.breadthanalytics.com/tdiana/pbv/internal/target"
@@ -135,9 +136,12 @@ func guarded(log *slog.Logger, fn func() ([]model.GuestResult, []string)) (res [
 	return fn()
 }
 
-// finish notifies and records the run's outcome. Per-guest results are
-// logged once by the caller (report.LogGuest).
+// finish logs each guest result once, then notifies and records the run's
+// outcome.
 func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
+	for _, r := range s.Results {
+		report.LogGuest(log, r)
+	}
 	sev := s.Severity()
 	outcome := state.OutcomeOK
 	switch {

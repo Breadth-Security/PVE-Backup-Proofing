@@ -213,13 +213,16 @@ func (c Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// reporter records one validation error against a config key path.
+type reporter func(key, format string, a ...any)
+
 // maxVMID is the largest VMID Proxmox accepts.
 const maxVMID = 999999999
 
 // validateChecks validates the user profiles and per-guest checks. A profile
 // or guest with no checks is valid: a profile then only requires its unit to
 // be active.
-func (c Config) validateChecks(bad func(key, format string, a ...any)) {
+func (c Config) validateChecks(bad reporter) {
 	seen := map[string]bool{}
 	for i, p := range c.Checks.Profiles {
 		key := fmt.Sprintf("checks.profiles[%d]", i)
@@ -248,7 +251,7 @@ func (c Config) validateChecks(bad func(key, format string, a ...any)) {
 }
 
 // validate checks that every port is a valid TCP port, naming key in errors.
-func (cs CheckSet) validate(bad func(key, format string, a ...any), key string) {
+func (cs CheckSet) validate(bad reporter, key string) {
 	for j, port := range cs.Ports {
 		if port < 1 || port > 65535 {
 			bad(fmt.Sprintf("%s.ports[%d]", key, j), "must be 1..65535, got %d", port)
@@ -258,7 +261,7 @@ func (cs CheckSet) validate(bad func(key, format string, a ...any), key string) 
 
 // duration validates a duration key against a minimum (at least 1s: a
 // smaller value is almost certainly a unit typo).
-func duration(bad func(key, format string, a ...any), key string, d, min time.Duration) {
+func duration(bad reporter, key string, d, min time.Duration) {
 	if d < min {
 		bad(key, "must be >= %s, got %s (check the unit)", min, d)
 	}
