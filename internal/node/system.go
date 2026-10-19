@@ -26,10 +26,21 @@ import (
 // DefaultTemplateDir is where PVE looks for notification templates.
 const DefaultTemplateDir = "/etc/pve/notification-templates/default"
 
-// notifyScript sends one notification through PVE's own notification system.
-// The payload (already validated by Serve) arrives on stdin; the template
-// name is fixed to pbp.
-const notifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
+// Absolute paths of the binaries the helper runs (Debian 13 / PVE 9,
+// merged-usr). Nothing is looked up through PATH.
+const (
+	binPct  = "/usr/sbin/pct"
+	binIP   = "/usr/sbin/ip"
+	binOVS  = "/usr/bin/ovs-vsctl"
+	binPerl = "/usr/bin/perl"
+	// lxcConfDir is this node's container config dir (a pmxcfs symlink to
+	// nodes/<this node>/lxc), so only local containers are found.
+	lxcConfDir = "/etc/pve/lxc"
+)
+
+// cmdEnv is the whole environment of every command the helper runs; the
+// caller's environment is never inherited.
+var cmdEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
 
 const (
 	// waitDelay bounds how long a killed command may keep its output pipes
@@ -44,9 +55,11 @@ const (
 // System is everything the helper does to the node. Serve validates the
 // request first; a System runs the command it is told to.
 type System interface {
-	// PctConfig returns `pct config <vmid>` as key/value pairs. It fails for
-	// a VM or a missing guest.
-	PctConfig(ctx context.Context, vmid int) (map[string]string, error)
+	// CTConfig returns the main section of this node's container config
+	// /etc/pve/lxc/<vmid>.conf as key/value pairs (comment/description
+	// lines and [snapshot]/[pending] sections excluded). It fails for a VM
+	// or a missing guest.
+	CTConfig(ctx context.Context, vmid int) (map[string]string, error)
 	// PctExec runs `pct exec <vmid> -- <argv>` with the streams passed
 	// through and returns the guest command's exit code.
 	PctExec(ctx context.Context, vmid int, argv []string, stdin io.Reader, stdout, stderr io.Writer) (exit int, err error)
@@ -68,21 +81,27 @@ type RealSystem struct {
 	TemplateDir string
 	ProcRoot    string
 	run         runFunc
+	bins        bins   // test seam; NewSystem sets the real paths
+	lxcDir      string // test seam; NewSystem sets lxcConfDir
 }
+
+type bins struct{ pct, ip, ovs, perl string }
 
 var _ System = (*RealSystem)(nil)
 
 // NewSystem returns the System for a real Proxmox node.
 func NewSystem() *RealSystem {
-	return &RealSystem{TemplateDir: DefaultTemplateDir, ProcRoot: "/proc", run: capture}
+	return &RealSystem{
+		TemplateDir: DefaultTemplateDir, ProcRoot: "/proc", run: capture,
+		bins:   bins{pct: binPct, ip: binIP, ovs: binOVS, perl: binPerl},
+		lxcDir: lxcConfDir,
+	}
 }
-
-// errNotFound marks a command whose binary does not exist.
-var errNotFound = exec.ErrNotFound
 
 func command(ctx context.Context, name string, args []string) *exec.Cmd {
 	// #nosec G204 -- name is a fixed binary; args are validated list elements, never a shell string.
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = cmdEnv
 	// Own process group so the whole tree can be killed on expiry.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -149,7 +168,7 @@ func pctExecArgs(vmid int, argv []string) []string {
 
 // PctExec implements System.
 func (s *RealSystem) PctExec(ctx context.Context, vmid int, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	return stream(ctx, "pct", pctExecArgs(vmid, argv), stdin, stdout, stderr)
+	return stream(ctx, s.bins.pct, pctExecArgs(vmid, argv), stdin, stdout, stderr)
 }
 
 // runOK runs a command and fails unless it exits 0.
@@ -165,13 +184,17 @@ func (s *RealSystem) runOK(ctx context.Context, name string, args ...string) (st
 	return out, nil
 }
 
-// PctConfig implements System.
-func (s *RealSystem) PctConfig(ctx context.Context, vmid int) (map[string]string, error) {
-	out, err := s.runOK(ctx, "pct", "config", strconv.Itoa(vmid))
+// CTConfig implements System by reading the container's config file
+// directly (no pct call). ParseConfigText skips '#' lines (the
+// description) and stops at the first "[section]" line.
+func (s *RealSystem) CTConfig(ctx context.Context, vmid int) (map[string]string, error) {
+	p := filepath.Join(s.lxcDir, strconv.Itoa(vmid)+".conf")
+	// #nosec G304 -- path built from the fixed dir and an integer VMID.
+	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
-	return sanitize.ParseConfigText(out), nil
+	return sanitize.ParseConfigText(string(b)), nil
 }
 
 // BridgeState implements System: disable_ipv6, `ip -j addr` and the members
@@ -187,10 +210,15 @@ func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.
 	}
 	st.DisableIPv6 = strings.TrimSpace(string(b))
 
-	_, errOut, exit, err := s.run(ctx, "ovs-vsctl", []string{ovsTimeout, "br-exists", bridge}, nil)
+	var errOut string
+	var exit int
+	if _, err = os.Stat(s.bins.ovs); errors.Is(err, fs.ErrNotExist) {
+		exit = 2 // Open vSwitch is not installed: not an OVS bridge
+		err = nil
+	} else if err == nil {
+		_, errOut, exit, err = s.run(ctx, s.bins.ovs, []string{ovsTimeout, "br-exists", bridge}, nil)
+	}
 	switch {
-	case errors.Is(err, errNotFound):
-		st.OVS = false // Open vSwitch is not installed
 	case err != nil:
 		return st, fmt.Errorf("bridge %s: ovs-vsctl br-exists: %w", bridge, err)
 	case exit == 0:
@@ -201,7 +229,7 @@ func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.
 		return st, fmt.Errorf("bridge %s: ovs-vsctl br-exists exited %d: %s", bridge, exit, strings.TrimSpace(errOut))
 	}
 
-	out, err := s.runOK(ctx, "ip", "-j", "addr", "show", "dev", bridge)
+	out, err := s.runOK(ctx, s.bins.ip, "-j", "addr", "show", "dev", bridge)
 	if err != nil {
 		return st, fmt.Errorf("bridge %s: %w", bridge, err)
 	}
@@ -212,14 +240,14 @@ func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.
 	st.Addrs = json.RawMessage(out)
 
 	if st.OVS {
-		out, err = s.runOK(ctx, "ovs-vsctl", ovsTimeout, "list-ports", bridge)
+		out, err = s.runOK(ctx, s.bins.ovs, ovsTimeout, "list-ports", bridge)
 		if err != nil {
 			return st, fmt.Errorf("bridge %s: %w", bridge, err)
 		}
 		st.Members = append(st.Members, strings.Fields(out)...)
 		return st, nil
 	}
-	out, err = s.runOK(ctx, "ip", "-j", "link", "show", "master", bridge)
+	out, err = s.runOK(ctx, s.bins.ip, "-j", "link", "show", "master", bridge)
 	if err != nil {
 		return st, fmt.Errorf("bridge %s: %w", bridge, err)
 	}
@@ -241,7 +269,7 @@ func (s *RealSystem) BridgeState(ctx context.Context, bridge string) (nodeproto.
 // notify (including a template that failed to render) as an "ERROR:" line
 // on stderr and still exits 0, so such lines fail the call too.
 func (s *RealSystem) Notify(ctx context.Context, payload []byte) error {
-	_, errOut, exit, err := s.run(ctx, "perl", []string{"-e", notifyScript}, payload)
+	_, errOut, exit, err := s.run(ctx, s.bins.perl, []string{"-e", report.NotifyScript}, payload)
 	if err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}

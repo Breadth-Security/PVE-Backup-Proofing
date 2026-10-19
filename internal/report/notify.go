@@ -17,7 +17,9 @@ const (
 	// not exist (see readTemplateCmd).
 	exitMissing = 3
 
-	notifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
+	// NotifyScript sends one notification through PVE::Notify: a
+	// {severity, data, fields} JSON payload on stdin, template name pbp.
+	NotifyScript = `use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, 'pbp', $in->{data}, $in->{fields});`
 )
 
 var templateFiles = []string{"pbp-subject.txt.hbs", "pbp-body.txt.hbs"}
@@ -81,7 +83,7 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	if err != nil {
 		return fmt.Errorf("report: encode notification: %w", err)
 	}
-	res, err := p.SSH.Run(ctx, "perl -e "+sshx.Quote(notifyScript), payload)
+	res, err := p.SSH.Run(ctx, "perl -e "+sshx.Quote(NotifyScript), payload)
 	if err != nil {
 		return fmt.Errorf("report: send notification: %w", err)
 	}

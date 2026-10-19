@@ -56,6 +56,7 @@ func TestLoadConfigInvalid(t *testing.T) {
 		{"empty bridge", "vmid_range: [990000, 990009]\nbridge: \"\"\n", "bridge"},
 		{"missing bridge", "vmid_range: [990000, 990009]\n", "bridge"},
 		{"bridge with slash", "vmid_range: [990000, 990009]\nbridge: ../all\n", "bridge"},
+		{"bridge leading dash", "vmid_range: [990000, 990009]\nbridge: -vmbr99\n", "bridge"},
 		{"bridge too long", "vmid_range: [990000, 990009]\nbridge: vmbr0123456789ab\n", "bridge"},
 		{"timeout too short", "vmid_range: [990000, 990009]\nbridge: vmbr99\nrequest_timeout: 5s\n", "request_timeout"},
 		{"timeout unitless", "vmid_range: [990000, 990009]\nbridge: vmbr99\nrequest_timeout: 900\n", "request_timeout"},

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 )
 
@@ -32,7 +33,9 @@ type cannedRunner struct {
 }
 
 func (c *cannedRunner) run(ctx context.Context, name string, args []string, stdin []byte) (string, string, int, error) {
-	cmd := strings.Join(append([]string{name}, args...), " ")
+	// Keyed by the binary's base name; the absolute path is checked by
+	// TestNewSystemDefaults.
+	cmd := strings.Join(append([]string{filepath.Base(name)}, args...), " ")
 	c.calls = append(c.calls, cmd)
 	c.stdins = append(c.stdins, string(stdin))
 	a, ok := c.answers[cmd]
@@ -65,7 +68,7 @@ func TestRealBridgeStateLinux(t *testing.T) {
 		"ip -j addr show dev vmbr99":              {stdout: addrJSON + "\n"},
 		"ip -j link show master vmbr99":           {stdout: `[{"ifname":"veth990001i0"},{"ifname":"fwpr990002p0"}]`},
 	}}
-	s := &RealSystem{ProcRoot: procWith(t, "vmbr99", "1\n"), run: r.run}
+	s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", "1\n"), run: r.run}
 	got, err := s.BridgeState(context.Background(), "vmbr99")
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +92,7 @@ func TestRealBridgeStateLinuxNoMembers(t *testing.T) {
 		"ip -j addr show dev vmbr99":              {stdout: addrJSON},
 		"ip -j link show master vmbr99":           {stdout: "\n"},
 	}}
-	s := &RealSystem{ProcRoot: procWith(t, "vmbr99", "0"), run: r.run}
+	s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", "0"), run: r.run}
 	got, err := s.BridgeState(context.Background(), "vmbr99")
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +108,7 @@ func TestRealBridgeStateOVS(t *testing.T) {
 		"ip -j addr show dev vmbr99":               {stdout: addrJSON},
 		"ovs-vsctl --timeout=10 list-ports vmbr99": {stdout: "fwln990001o0\ntap990002i0\n"},
 	}}
-	s := &RealSystem{ProcRoot: procWith(t, "vmbr99", "1"), run: r.run}
+	s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", "1"), run: r.run}
 	got, err := s.BridgeState(context.Background(), "vmbr99")
 	if err != nil {
 		t.Fatal(err)
@@ -117,17 +120,23 @@ func TestRealBridgeStateOVS(t *testing.T) {
 
 func TestRealBridgeStateOVSNotInstalled(t *testing.T) {
 	r := &cannedRunner{answers: map[string]cannedCmd{
-		"ovs-vsctl --timeout=10 br-exists vmbr99": {exit: -1, err: errNotFound},
-		"ip -j addr show dev vmbr99":              {stdout: addrJSON},
-		"ip -j link show master vmbr99":           {stdout: "[]"},
+		"ip -j addr show dev vmbr99":    {stdout: addrJSON},
+		"ip -j link show master vmbr99": {stdout: "[]"},
 	}}
-	s := &RealSystem{ProcRoot: procWith(t, "vmbr99", "1"), run: r.run}
+	b := fakeBins(t)
+	b.ovs = filepath.Join(t.TempDir(), "absent", "ovs-vsctl")
+	s := &RealSystem{bins: b, ProcRoot: procWith(t, "vmbr99", "1"), run: r.run}
 	got, err := s.BridgeState(context.Background(), "vmbr99")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.OVS {
 		t.Error("OVS without ovs-vsctl")
+	}
+	for _, c := range r.calls {
+		if strings.HasPrefix(c, "ovs-vsctl") {
+			t.Errorf("ran absent ovs-vsctl: %s", c)
+		}
 	}
 }
 
@@ -161,7 +170,7 @@ func TestRealBridgeStateErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := base()
 			tc.mutate(m)
-			s := &RealSystem{ProcRoot: procWith(t, "vmbr99", tc.ipv6), run: (&cannedRunner{answers: m}).run}
+			s := &RealSystem{bins: fakeBins(t), ProcRoot: procWith(t, "vmbr99", tc.ipv6), run: (&cannedRunner{answers: m}).run}
 			if _, err := s.BridgeState(context.Background(), "vmbr99"); err == nil {
 				t.Error("no error")
 			}
@@ -169,25 +178,95 @@ func TestRealBridgeStateErrors(t *testing.T) {
 	}
 }
 
-func TestRealPctConfig(t *testing.T) {
-	r := &cannedRunner{answers: map[string]cannedCmd{
-		"pct config 990001": {stdout: "arch: amd64\nhostname: proof-1\ntags: keep;pbp\n"},
-		"pct config 990002": {exit: 2, stderr: "Configuration file 'nodes/pve1/lxc/990002.conf' does not exist\n"},
-	}}
-	s := &RealSystem{run: r.run}
-	c, err := s.PctConfig(context.Background(), 990001)
+func TestRealCTConfig(t *testing.T) {
+	dir := t.TempDir()
+	write := func(vmid, body string) {
+		if err := os.WriteFile(filepath.Join(dir, vmid+".conf"), []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("990001", "#tags: decoy\narch: amd64\nhostname: proof-1\ntags: keep;pbp\n\n[snap1]\ntags: other\n")
+	write("990002", "#tags: pbp\n#%20tags%3A pbp\narch: amd64\n")
+	write("990003", "arch: amd64\n[pending]\ntags: pbp\n")
+	s := &RealSystem{lxcDir: dir}
+	ctx := context.Background()
+
+	c, err := s.CTConfig(ctx, 990001)
 	if err != nil || c["tags"] != "keep;pbp" || c["hostname"] != "proof-1" {
-		t.Errorf("got %v, %v", c, err)
+		t.Errorf("990001: got %v, %v", c, err)
 	}
-	if _, err := s.PctConfig(context.Background(), 990002); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("err %v", err)
+	for _, vmid := range []int{990002, 990003} {
+		c, err := s.CTConfig(ctx, vmid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := c["tags"]; ok {
+			t.Errorf("%d: tags %q taken from a description or section line", vmid, c["tags"])
+		}
 	}
+	if _, err := s.CTConfig(ctx, 990009); err == nil {
+		t.Error("missing config accepted")
+	}
+}
+
+// Through Serve: description and [pending] tags do not make a container
+// PBP-owned, and a missing config file is refused.
+func TestServeWithRealCTConfig(t *testing.T) {
+	dir := t.TempDir()
+	for vmid, body := range map[string]string{
+		"990002": "#tags: pbp\narch: amd64\n",
+		"990003": "arch: amd64\n[pending]\ntags: pbp\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, vmid+".conf"), []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		vmid int
+		want string
+	}{{990002, "pbp tag"}, {990003, "pbp tag"}, {990004, "not a container"}} {
+		f := newFake()
+		sys := &realCT{fakeSystem: f, real: &RealSystem{lxcDir: dir}}
+		r := serve(t, sys, req(t, nodeproto.Request{Op: "exec", VMID: tc.vmid, Argv: []string{"id"}}), "")
+		assertHelperFailure(t, r, nodeproto.KindRefused)
+		_, reason, _ := nodeproto.HelperFailure(r.exit, r.stderr, testNonce)
+		if !strings.Contains(reason, tc.want) {
+			t.Errorf("%d: reason %q, want %q", tc.vmid, reason, tc.want)
+		}
+		if len(f.execCalls) != 0 {
+			t.Errorf("%d: pct exec called", tc.vmid)
+		}
+	}
+}
+
+// realCT is the fake System with RealSystem's CTConfig.
+type realCT struct {
+	*fakeSystem
+	real *RealSystem
+}
+
+func (r *realCT) CTConfig(ctx context.Context, vmid int) (map[string]string, error) {
+	return r.real.CTConfig(ctx, vmid)
+}
+
+// fakeBins points the binaries at existing (never executed) files, so the
+// ovs-vsctl presence check sees one.
+func fakeBins(t *testing.T) bins {
+	t.Helper()
+	dir := t.TempDir()
+	b := bins{pct: dir + "/pct", ip: dir + "/ip", ovs: dir + "/ovs-vsctl", perl: dir + "/perl"}
+	for _, p := range []string{b.pct, b.ip, b.ovs, b.perl} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return b
 }
 
 func TestRealNotify(t *testing.T) {
 	payload := `{"severity":"info","data":{},"fields":{"type":"pbp"}}`
-	ok := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + notifyScript: {}}}
-	s := &RealSystem{run: ok.run}
+	ok := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + report.NotifyScript: {}}}
+	s := &RealSystem{bins: fakeBins(t), run: ok.run}
 	if err := s.Notify(context.Background(), []byte(payload)); err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +278,8 @@ func TestRealNotify(t *testing.T) {
 		{exit: 2, stderr: "Can't locate PVE/Notify.pm"},
 		{stderr: "some log\nERROR: could not notify via target `mail-to-root`: template failed\n"},
 	} {
-		bad := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + notifyScript: a}}
-		s := &RealSystem{run: bad.run}
+		bad := &cannedRunner{answers: map[string]cannedCmd{"perl -e " + report.NotifyScript: a}}
+		s := &RealSystem{bins: fakeBins(t), run: bad.run}
 		if err := s.Notify(context.Background(), []byte(payload)); err == nil {
 			t.Errorf("%+v: no error", a)
 		}
@@ -239,8 +318,12 @@ func TestRealTemplateHashes(t *testing.T) {
 
 func TestNewSystemDefaults(t *testing.T) {
 	s := NewSystem()
-	if s.TemplateDir != DefaultTemplateDir || s.ProcRoot != "/proc" || s.run == nil {
+	if s.TemplateDir != DefaultTemplateDir || s.ProcRoot != "/proc" || s.run == nil || s.lxcDir != "/etc/pve/lxc" {
 		t.Errorf("got %+v", s)
+	}
+	want := bins{pct: "/usr/sbin/pct", ip: "/usr/sbin/ip", ovs: "/usr/bin/ovs-vsctl", perl: "/usr/bin/perl"}
+	if s.bins != want {
+		t.Errorf("bins %+v, want %+v", s.bins, want)
 	}
 }
 
@@ -257,6 +340,17 @@ func TestStreamPassesThrough(t *testing.T) {
 	exit, err := stream(context.Background(), "/bin/sh", []string{"-c", "cat; echo err >&2; exit 7"}, strings.NewReader("in"), &out, &errb)
 	if err != nil || exit != 7 || out.String() != "in" || errb.String() != "err\n" {
 		t.Errorf("exit %d err %v out %q stderr %q", exit, err, out.String(), errb.String())
+	}
+}
+
+func TestStreamEnvIsMinimal(t *testing.T) {
+	t.Setenv("PBP_LEAK_TEST", "leaked")
+	var out strings.Builder
+	if _, err := stream(context.Background(), "/usr/bin/env", nil, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(strings.Fields(out.String()), " "); got != "PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8" {
+		t.Errorf("env %q", got)
 	}
 }
 

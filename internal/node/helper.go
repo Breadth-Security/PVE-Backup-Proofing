@@ -171,12 +171,18 @@ func writeJSON(w io.Writer, v any) *failure {
 
 // execGuest runs argv in the container only if it is in range, is an LXC
 // and carries the pbp tag; pct exec is never reached otherwise.
+//
+// There is an inherent check-then-use window between reading the container
+// config and pct exec: in it, the container could be removed, untagged, or
+// replaced by a VM. Doing any of that needs root (or PVE API rights) on the
+// node, and the range check, which does not depend on the config, still
+// holds, so the window cannot be used to reach a guest outside the range.
 func execGuest(ctx context.Context, cfg Config, sys System, req nodeproto.Request, stdin io.Reader, stdout, stderr io.Writer) (int, *failure) {
 	lo, hi := cfg.VMIDRange[0], cfg.VMIDRange[1]
 	if req.VMID < lo || req.VMID > hi {
 		return 0, refused("vmid %d is outside the reserved range [%d, %d]", req.VMID, lo, hi)
 	}
-	conf, err := sys.PctConfig(ctx, req.VMID)
+	conf, err := sys.CTConfig(ctx, req.VMID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, timedOut
@@ -196,9 +202,26 @@ func execGuest(ctx context.Context, cfg Config, sys System, req nodeproto.Reques
 // notify validates the {severity, data, fields} payload, forces
 // fields.type to pbp and hands it to PVE::Notify.
 func notify(ctx context.Context, sys System, stdin io.Reader) *failure {
-	raw, err := io.ReadAll(io.LimitReader(stdin, maxNotifyPayload+1))
-	if err != nil {
-		return internalErr("read payload: %v", err)
+	// The read must not outlive the deadline; on expiry the reader
+	// goroutine is left behind and reclaimed when the process exits.
+	type readResult struct {
+		b   []byte
+		err error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(stdin, maxNotifyPayload+1))
+		ch <- readResult{b, err}
+	}()
+	var raw []byte
+	select {
+	case <-ctx.Done():
+		return timedOut
+	case r := <-ch:
+		if r.err != nil {
+			return internalErr("read payload: %v", r.err)
+		}
+		raw = r.b
 	}
 	if len(raw) > maxNotifyPayload {
 		return refused("notify payload larger than %d bytes", maxNotifyPayload)

@@ -42,14 +42,14 @@ type fakeSystem struct {
 	notified    [][]byte
 }
 
-func (f *fakeSystem) PctConfig(ctx context.Context, vmid int) (map[string]string, error) {
+func (f *fakeSystem) CTConfig(ctx context.Context, vmid int) (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.configCalls = append(f.configCalls, vmid)
 	if c, ok := f.Guests[vmid]; ok {
 		return c, nil
 	}
-	return nil, fmt.Errorf("Configuration file 'nodes/pve1/lxc/%d.conf' does not exist", vmid)
+	return nil, fmt.Errorf("open /etc/pve/lxc/%d.conf: no such file or directory", vmid)
 }
 
 func (f *fakeSystem) PctExec(ctx context.Context, vmid int, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -216,7 +216,7 @@ func TestServeRefusesGuestsItDoesNotOwn(t *testing.T) {
 				t.Errorf("pct exec called %d times", len(f.execCalls))
 			}
 			if tc.wantReason == "outside" && len(f.configCalls) != 0 {
-				t.Errorf("pct config called for an out-of-range VMID")
+				t.Errorf("container config read for an out-of-range VMID")
 			}
 		})
 	}
@@ -416,6 +416,24 @@ func TestServeNotifyRefusals(t *testing.T) {
 				t.Error("Notify called")
 			}
 		})
+	}
+}
+
+// A notify whose stdin never delivers must not outlive the deadline.
+func TestServeNotifyStdinBlocksPastDeadline(t *testing.T) {
+	f := newFake()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	var out, errb bytes.Buffer
+	start := time.Now()
+	exit := Serve(context.Background(), testCfg, f, "0.2.0",
+		req(t, nodeproto.Request{Op: "notify", Deadline: time.Now().Add(200 * time.Millisecond)}), pr, &out, &errb)
+	if el := time.Since(start); el > time.Second {
+		t.Errorf("took %v", el)
+	}
+	assertHelperFailure(t, result{exit, out.String(), errb.String()}, nodeproto.KindTimeout)
+	if len(f.notified) != 0 {
+		t.Error("Notify called")
 	}
 }
 

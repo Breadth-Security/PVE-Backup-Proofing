@@ -28,8 +28,9 @@ const (
 )
 
 // reBridge accepts Linux interface names; the name is also used in a /proc
-// path, so '/' and names like ".." must never get through.
-var reBridge = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,14}$`)
+// path and as a command argument, so '/', names like ".." and a leading '-'
+// (option injection) must never get through.
+var reBridge = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}$`)
 
 // Config is the helper's view of what PBP may touch on this node.
 type Config struct {
