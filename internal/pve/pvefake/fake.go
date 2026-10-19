@@ -79,7 +79,27 @@ func (f *Fake) ListBackups(ctx context.Context, node, storage string) ([]model.B
 	if err := f.begin("ListBackups", node, storage); err != nil {
 		return nil, err
 	}
-	return append([]model.Backup(nil), f.Backups[storage]...), nil
+	out := append([]model.Backup(nil), f.Backups[storage]...)
+	for i := range out {
+		// Like PBS: the listing shows only the first line ("comment").
+		out[i].Notes, _, _ = strings.Cut(out[i].Notes, "\n")
+	}
+	return out, nil
+}
+
+// VolumeNotes returns the full notes of a seeded backup.
+func (f *Fake) VolumeNotes(ctx context.Context, node, storage, volid string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin("VolumeNotes", node, storage, volid); err != nil {
+		return "", err
+	}
+	for _, b := range f.Backups[storage] {
+		if b.VolID == volid {
+			return b.Notes, nil
+		}
+	}
+	return "", fmt.Errorf("volume %s does not exist", volid)
 }
 
 func (f *Fake) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {

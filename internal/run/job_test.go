@@ -635,3 +635,35 @@ func TestLXCNameFromHostname(t *testing.T) {
 		t.Errorf("name %q", res.Name)
 	}
 }
+
+// A listed backup carries only the first line of its notes (PBS "comment").
+// The annotation must merge into the full notes, read from the volume, so
+// user lines below the first are kept (seen on pve1: a second run would have
+// dropped the vzdump guest-name note).
+func TestNotesMergeIntoFullVolumeNotes(t *testing.T) {
+	f := newFixture(t)
+	f.api.Backups["pbs"][0].Notes = "PBP ERROR 2026-10-18 02:00 · old\ndb01\nmonthly keep"
+	f.b.Notes = "PBP ERROR 2026-10-18 02:00 · old" // what the listing shows
+	res := f.run(context.Background())
+	want := "PBP PROVEN 2026-10-19 02:14 · " + res.Reason + "\ndb01\nmonthly keep"
+	if f.notes() != want {
+		t.Errorf("notes %q want %q", f.notes(), want)
+	}
+}
+
+// If the full notes cannot be read, writing would risk dropping user lines:
+// the notes are left alone, the failure logged and the verdict kept.
+func TestNotesReadFailureLeavesNotes(t *testing.T) {
+	f := newFixture(t)
+	f.api.Fail["VolumeNotes"] = errors.New("notes unreadable")
+	res := f.run(context.Background())
+	if res.Verdict != model.Proven {
+		t.Errorf("verdict %s %q", res.Verdict, res.Reason)
+	}
+	if f.notes() != "db01\nmonthly keep" {
+		t.Errorf("notes changed: %q", f.notes())
+	}
+	if !strings.Contains(f.logBuf.String(), "notes unreadable") {
+		t.Errorf("failure not logged: %q", f.logBuf)
+	}
+}

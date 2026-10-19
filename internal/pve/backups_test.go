@@ -129,3 +129,23 @@ func TestListBackupsSkipsNonGuestBackups(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// The content listing reports only the first line of a PBS backup's notes
+// (its "comment"); the full notes come from the volume's attributes.
+func TestVolumeNotes(t *testing.T) {
+	var method, escPath string
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, escPath = r.Method, r.URL.EscapedPath()
+		w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond","protected":false,"size":1}}`))
+	}))
+	got, err := c.VolumeNotes(context.Background(), "pve1", "PBS-Baremetal", "PBS-Baremetal:backup/ct/110/2026-10-19T06:24:17Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond" {
+		t.Errorf("notes = %q", got)
+	}
+	if want := "/api2/json/nodes/pve1/storage/PBS-Baremetal/content/PBS-Baremetal:backup%2Fct%2F110%2F2026-10-19T06:24:17Z"; method != "GET" || escPath != want {
+		t.Errorf("%s %s", method, escPath)
+	}
+}

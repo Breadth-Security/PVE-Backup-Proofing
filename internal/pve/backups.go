@@ -21,6 +21,8 @@ type contentEntry struct {
 }
 
 // ListBackups returns all guest (qemu and lxc) backup volumes on a storage.
+// For PBS storages each Notes holds only the first line of the backup's
+// notes (the PBS "comment"); VolumeNotes reads them in full.
 func (c *Client) ListBackups(ctx context.Context, node, storage string) ([]model.Backup, error) {
 	var entries []contentEntry
 	path := "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content"
@@ -47,6 +49,21 @@ func (c *Client) ListBackups(ctx context.Context, node, storage string) ([]model
 	return out, nil
 }
 
+// VolumeNotes returns a backup volume's full notes.
+func (c *Client) VolumeNotes(ctx context.Context, node, storage, volid string) (string, error) {
+	var r struct {
+		Notes string `json:"notes"`
+	}
+	if err := c.do(ctx, http.MethodGet, volumePath(node, storage, volid), nil, nil, &r); err != nil {
+		return "", err
+	}
+	return r.Notes, nil
+}
+
+func volumePath(node, storage, volid string) string {
+	return "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content/" + url.PathEscape(volid)
+}
+
 // SetVolumeAttrs updates notes and/or protected on a backup volume; nil fields are left untouched.
 func (c *Client) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
 	form := url.Values{}
@@ -60,6 +77,5 @@ func (c *Client) SetVolumeAttrs(ctx context.Context, node, storage, volid string
 			form.Set("protected", "0")
 		}
 	}
-	path := "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content/" + url.PathEscape(volid)
-	return c.do(ctx, http.MethodPut, path, nil, form, nil)
+	return c.do(ctx, http.MethodPut, volumePath(node, storage, volid), nil, form, nil)
 }

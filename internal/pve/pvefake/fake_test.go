@@ -140,3 +140,20 @@ func TestConcurrentUse(t *testing.T) {
 		t.Errorf("leftover guests: %+v", g)
 	}
 }
+
+// Like PBS, the listing shows only the first line of the notes; VolumeNotes
+// returns them in full.
+func TestNotesFirstLineInListing(t *testing.T) {
+	f := New()
+	f.Backups["pbs"] = []model.Backup{{Storage: "pbs", VolID: "pbs:backup/ct/1/x", Notes: "first\nsecond"}}
+	bs, _ := f.ListBackups(context.Background(), "pve1", "pbs")
+	if bs[0].Notes != "first" {
+		t.Errorf("listed notes %q", bs[0].Notes)
+	}
+	if n, err := f.VolumeNotes(context.Background(), "pve1", "pbs", "pbs:backup/ct/1/x"); err != nil || n != "first\nsecond" {
+		t.Errorf("VolumeNotes %q %v", n, err)
+	}
+	if f.Backups["pbs"][0].Notes != "first\nsecond" {
+		t.Error("listing modified the seeded notes")
+	}
+}

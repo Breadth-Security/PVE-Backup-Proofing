@@ -276,9 +276,16 @@ func (j *job) annotate(res model.GuestResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), notesTimeout)
 	defer cancel()
 	at := j.d.Now()
-	text := notes.Merge(j.b.Notes, notes.Line(res.Verdict, at, res.Reason))
-	if err := j.d.API.SetVolumeAttrs(ctx, j.d.Cfg.Target.Node, j.b.Storage, j.b.VolID, &text, nil); err != nil {
-		j.log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
+	// The listed notes are only the first line on PBS; merge into the full
+	// notes, and write nothing if they cannot be read.
+	node := j.d.Cfg.Target.Node
+	if full, err := j.d.API.VolumeNotes(ctx, node, j.b.Storage, j.b.VolID); err != nil {
+		j.log.Error("read backup notes failed; notes not written", "verdict", res.Verdict, "err", err)
+	} else {
+		text := notes.Merge(full, notes.Line(res.Verdict, at, res.Reason))
+		if err := j.d.API.SetVolumeAttrs(ctx, node, j.b.Storage, j.b.VolID, &text, nil); err != nil {
+			j.log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
+		}
 	}
 	if res.Verdict != model.Proven {
 		return
