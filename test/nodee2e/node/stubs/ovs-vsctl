@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stub /usr/bin/ovs-vsctl: logs argv; vmbr99 is a Linux bridge, not OVS, so
+# br-exists answers 2 ("no such OVS bridge") like the real tool.
+for a in "$@"; do printf '<%s> ' "$a"; done >> /var/log/pbp-e2e/ovs-vsctl.log
+echo >> /var/log/pbp-e2e/ovs-vsctl.log
+for a in "$@"; do
+    [ "$a" = "br-exists" ] && exit 2
+done
+echo "ovs-vsctl stub: unsupported: $*" >&2
+exit 1

@@ -1,0 +1,3 @@
+Defaults:pbp env_reset
+Defaults:pbp env_keep = "SSH_ORIGINAL_COMMAND SSH_CONNECTION"
+pbp ALL=(root) NOPASSWD: /usr/bin/pbp node
