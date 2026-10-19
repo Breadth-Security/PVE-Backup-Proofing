@@ -80,6 +80,8 @@ func TestDefaultsAndAbsence(t *testing.T) {
 	}
 }
 
+const RS = "restore: {storage: local-zfs}"
+
 func TestValidateErrors(t *testing.T) {
 	cases := []struct{ name, from, to, key string }{
 		{"node", "node: pve1", "node: ''", "target.node"},
@@ -94,6 +96,13 @@ func TestValidateErrors(t *testing.T) {
 		{"notify", "sources:", "notify: {when: sometimes}\nsources:", "notify.when"},
 		{"tls", `api: {tls_fingerprint: "AB"}`, "api: {}", "target.api.tls_fingerprint"},
 		{"known hosts", "known_hosts_file: /kh", "known_hosts_file: ''", "target.ssh.known_hosts_file"},
+		{"boot timeout short", RS, "restore: {storage: local-zfs, boot_timeout: 29s}", "restore.boot_timeout"},
+		{"boot timeout unitless", RS, "restore: {storage: local-zfs, boot_timeout: 300}", "restore.boot_timeout"},
+		{"max run negative", RS, "restore: {storage: local-zfs, max_run_duration: -1h}", "restore.max_run_duration"},
+		{"max run unitless", RS, "restore: {storage: local-zfs, max_run_duration: 3600}", "restore.max_run_duration"},
+		{"margin high", RS, "restore: {storage: local-zfs, space_margin_percent: 101}", "restore.space_margin_percent"},
+		{"margin negative", RS, "restore: {storage: local-zfs, space_margin_percent: -1}", "restore.space_margin_percent"},
+		{"retain runs", "sources:", "logging: {retain_runs: 0}\nsources:", "logging.retain_runs"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,6 +129,34 @@ func TestValidateErrors(t *testing.T) {
 				t.Fatalf("want validation line starting %q, got %v", tc.key+": ", inner)
 			}
 		})
+	}
+}
+
+// A duration without a unit must be rejected with an error naming the key,
+// and so must one under 1s (almost certainly a unit typo).
+func TestUnitlessDurationMessage(t *testing.T) {
+	_, err := loadStr(t, strings.Replace(minimal, RS, "restore: {storage: local-zfs, boot_timeout: 300}", 1))
+	if err == nil || !strings.Contains(err.Error(), "restore.boot_timeout: 300 has no unit") {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = loadStr(t, strings.Replace(minimal, RS, "restore: {storage: local-zfs, max_run_duration: 500ms}", 1))
+	if err == nil || !strings.Contains(err.Error(), "restore.max_run_duration: must be >= 1s, got 500ms") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidBounds(t *testing.T) {
+	c, err := loadStr(t, strings.Replace(minimal, RS,
+		"restore: {storage: local-zfs, boot_timeout: 30s, max_run_duration: 0s, space_margin_percent: 0}", 1)+
+		"logging: {retain_runs: 1}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Restore.BootTimeout != 30*time.Second || c.Restore.MaxRunDuration != 0 || c.Restore.SpaceMarginPercent != 0 || c.Logging.RetainRuns != 1 {
+		t.Fatalf("%+v", c)
+	}
+	if _, err := loadStr(t, strings.Replace(minimal, RS, "restore: {storage: local-zfs, space_margin_percent: 100}", 1)); err != nil {
+		t.Fatal(err)
 	}
 }
 

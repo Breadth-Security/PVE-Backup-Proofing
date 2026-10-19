@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -123,6 +124,9 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	if err := unitlessDurations(data); err != nil {
+		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	c := defaults()
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -171,10 +175,66 @@ func (c Config) validate() error {
 	if c.Restore.Storage == "" {
 		bad("restore.storage", "required")
 	}
+	r := c.Restore
+	if r.SpaceMarginPercent < 0 || r.SpaceMarginPercent > 100 {
+		bad("restore.space_margin_percent", "must be 0..100, got %d", r.SpaceMarginPercent)
+	}
+	duration(bad, "restore.boot_timeout", r.BootTimeout, 30*time.Second)
+	if r.MaxRunDuration != 0 {
+		duration(bad, "restore.max_run_duration", r.MaxRunDuration, time.Second)
+	}
+	if c.Logging.RetainRuns < 1 {
+		bad("logging.retain_runs", "must be >= 1, got %d", c.Logging.RetainRuns)
+	}
 	if c.Notify.When != "always" && c.Notify.When != "problems" {
 		bad("notify.when", "must be \"always\" or \"problems\", got %q", c.Notify.When)
 	}
 	return errors.Join(errs...)
+}
+
+// duration validates a duration key against a minimum (at least 1s: a
+// smaller value is almost certainly a unit typo).
+func duration(bad func(key, format string, a ...any), key string, d, min time.Duration) {
+	if d < min {
+		bad(key, "must be >= %s, got %s (check the unit)", min, d)
+	}
+}
+
+// durationKeys are the config keys holding durations, as dotted paths.
+var durationKeys = []string{"restore.boot_timeout", "restore.max_run_duration"}
+
+// unitlessDurations names every duration key written as a bare number
+// ("300"), which has no unit. The YAML decoder rejects these with only a
+// line number; this names the key.
+func unitlessDurations(data []byte) error {
+	var root yaml.Node
+	if yaml.Unmarshal(data, &root) != nil || len(root.Content) == 0 {
+		return nil // the real decode reports the syntax error
+	}
+	var errs []error
+	for _, key := range durationKeys {
+		n := root.Content[0]
+		for _, part := range strings.Split(key, ".") {
+			n = mapValue(n, part)
+		}
+		if n != nil && n.Kind == yaml.ScalarNode && (n.Tag == "!!int" || n.Tag == "!!float") {
+			errs = append(errs, fmt.Errorf("%s: %s has no unit; durations need one, e.g. 5m or 90s", key, n.Value))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// mapValue returns the value node of key in mapping n, or nil.
+func mapValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // EffectiveProfiles returns the built-in profiles with same-Name user profiles
