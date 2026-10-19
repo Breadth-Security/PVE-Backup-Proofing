@@ -35,7 +35,9 @@ func TestSanitizeQEMUReferenceVM(t *testing.T) {
 	if p.Set["onboot"] != "0" || p.Set["tags"] != "prod;db;pbp" {
 		t.Errorf("onboot/tags not forced: %v", p.Set)
 	}
-	if !reflect.DeepEqual(p.Delete, []string{"startup"}) {
+	// startup is kept: with onboot=0 it has no effect, and changing it on a
+	// VM needs Sys.Modify on "/" (pve1: a 403 for deleting it).
+	if len(p.Delete) != 0 {
 		t.Errorf("Delete = %v", p.Delete)
 	}
 	if len(p.Removed) != 0 || len(p.Unsafe) != 0 {
@@ -195,7 +197,7 @@ func TestSanitizeDeleteSorted(t *testing.T) {
 	p := Sanitize(model.KindQEMU, map[string]string{
 		"usb1": "host=1:2", "usb0": "host=3:4", "startup": "x", "hookscript": "h", "hostpci0": "a",
 	}, br)
-	if !sort.StringsAreSorted(p.Delete) || len(p.Delete) != 5 {
+	if !sort.StringsAreSorted(p.Delete) || len(p.Delete) != 4 {
 		t.Errorf("Delete = %v", p.Delete)
 	}
 }

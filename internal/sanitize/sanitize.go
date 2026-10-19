@@ -26,7 +26,9 @@ var (
 	reMP       = regexp.MustCompile(`^mp\d+$`)
 )
 
-// Sanitize computes the plan for a restored guest config. Disk keys are kept.
+// Sanitize computes the plan for a restored guest config. Disk keys are kept,
+// and so is "startup": with onboot=0 it has no effect, and changing it on a VM
+// needs Sys.Modify on "/".
 //
 // HA resources and replication jobs need no handling: both are keyed by VMID
 // and the restore uses a fresh VMID, so none can exist for the restored copy
@@ -46,7 +48,7 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		switch {
 		case reNet.MatchString(k):
 			p.Set[k] = sanitizeNet(v, bridge)
-		case k == "startup", k == "hookscript":
+		case k == "hookscript":
 			p.Delete = append(p.Delete, k)
 		case kind == model.KindQEMU && k == "args":
 			p.Unsafe = append(p.Unsafe, "args")
