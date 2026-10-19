@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd pbp >/dev/null; then
+        if getent group pbp >/dev/null; then
+            adduser --system --ingroup pbp --no-create-home --home /var/lib/pbp \
+                --shell /usr/sbin/nologin pbp
+        else
+            adduser --system --group --no-create-home --home /var/lib/pbp \
+                --shell /usr/sbin/nologin pbp
+        fi
+    fi
+
+    install -d -m 0750 -o root -g pbp /etc/pbp
+    install -d -m 0700 -o pbp -g pbp /var/lib/pbp
+    install -d -m 0750 -o pbp -g pbp /var/log/pbp
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        # Enable on a fresh install, or when the package was removed earlier
+        # (prerm leaves the marker). A plain upgrade keeps whatever the admin chose.
+        if [ -z "$2" ] || [ -f /var/lib/pbp/.disabled-by-remove ]; then
+            systemctl enable pbp.service || true
+            rm -f /var/lib/pbp/.disabled-by-remove
+        fi
+        # Never start without a config; the unit's ConditionPathExists would
+        # skip it anyway, but stay explicit.
+        if [ -f /etc/pbp/config.yaml ]; then
+            if [ -n "$2" ]; then
+                systemctl try-restart pbp.service || true
+            fi
+            if systemctl is-enabled --quiet pbp.service && ! systemctl is-active --quiet pbp.service; then
+                systemctl start pbp.service || true
+            fi
+        fi
+    fi
+fi
+
+exit 0

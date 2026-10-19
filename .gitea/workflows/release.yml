@@ -1,0 +1,148 @@
+name: release
+
+# Builds the release artifacts (.deb and tarball for amd64 and arm64, plus
+# SHA256SUMS) with packaging/build.sh and publishes them as a Gitea release.
+# Pushing a tag v<version> publishes. A manual dispatch builds everything but
+# publishes nothing (a dry run).
+#
+# The release is created with the job's automatic token. If the Gitea
+# instance does not let that token write releases, create a token with the
+# write:repository scope and store it as the repository secret RELEASE_TOKEN;
+# it is used in preference when set.
+#
+# Versions: tag v1.2.0 builds 1.2.0 and v1.2.0-rc1 builds 1.2.0~rc1 (see
+# packaging/debversion.sh). Packages, tarballs and release assets all carry
+# that Debian version; the release itself keeps the tag name.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the dry run (default 0.0.0~dev+<shortsha>)"
+        required: false
+
+# No `permissions:` block: Gitea ignores it. What the job may do is decided by
+# the token it is given (see RELEASE_TOKEN above).
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local # use exactly the toolchain installed below; never switch
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned Go toolchain
+        id: toolchain
+        run: |
+          v=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
+          [ -n "$v" ] || { echo "go.mod has no toolchain line"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.toolchain.outputs.version }}
+      - name: Work out the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # Only a tag push takes its version from the ref; a dispatch never
+          # does, whatever ref it was started on.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v=$(packaging/debversion.sh "$GITHUB_REF_NAME")
+          elif [ -n "$INPUT_VERSION" ]; then
+            v=$(packaging/debversion.sh "$INPUT_VERSION")
+          else
+            v="0.0.0~dev+$(echo "$GITHUB_SHA" | cut -c1-7)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+      - name: Test version mapping
+        run: packaging/debversion_test.sh
+      - name: go vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+      - name: go test -race
+        run: go test -race -count=1 ./...
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update -qq || apt-get update -qq
+          sudo apt-get install -y -qq lintian gettext-base jq || apt-get install -y -qq lintian gettext-base jq
+      - name: Build packages
+        run: packaging/build.sh "${{ steps.version.outputs.version }}" dist
+      - name: Lintian
+        run: |
+          # Errors fail the job; warnings are printed.
+          lintian --fail-on error dist/*.deb
+      - name: Checksums
+        run: |
+          cd dist || exit 1
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          fail_auth() {
+            echo "Gitea refused the token (HTTP $1). Create a token with the write:repository scope and store it as the repository secret RELEASE_TOKEN." >&2
+            exit 1
+          }
+          prerelease=false
+          case "$TAG" in *-*) prerelease=true ;; esac
+          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" '{tag_name:$t,name:$t,prerelease:$p}')
+          code=$(curl -sS -o release.json -w '%{http_code}' -X POST "$API/releases" \
+            -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$body")
+          case "$code" in
+            201) ;;
+            401|403) fail_auth "$code" ;;
+            409)
+              # A re-run: reuse the release that already exists for this tag.
+              code=$(curl -sS -o release.json -w '%{http_code}' "$API/releases/tags/$TAG" \
+                -H "Authorization: token $TOKEN")
+              case "$code" in
+                200) ;;
+                401|403) fail_auth "$code" ;;
+                *) echo "could not read the existing release (HTTP $code)"; cat release.json; exit 1 ;;
+              esac ;;
+            *) echo "creating the release failed (HTTP $code)"; cat release.json; exit 1 ;;
+          esac
+          id=$(jq -r '.id // empty' release.json)
+          [ -n "$id" ] || { echo "no release id in the API response"; cat release.json; exit 1; }
+          # Assets are named with the Debian version (1.2.0~rc1), not the tag.
+          for f in dist/*; do
+            name=$(basename "$f")
+            # A re-run after a partial upload: replace an asset that is already there.
+            code=$(curl -sS -o assets.json -w '%{http_code}' "$API/releases/$id/assets" \
+              -H "Authorization: token $TOKEN")
+            case "$code" in
+              200) ;;
+              401|403) fail_auth "$code" ;;
+              *) echo "listing assets failed (HTTP $code)"; cat assets.json; exit 1 ;;
+            esac
+            old=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' assets.json)
+            for aid in $old; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/releases/$id/assets/$aid" \
+                -H "Authorization: token $TOKEN")
+              case "$code" in
+                204) echo "deleted existing $name" ;;
+                401|403) fail_auth "$code" ;;
+                *) echo "deleting existing $name failed (HTTP $code)"; exit 1 ;;
+              esac
+            done
+            code=$(curl -sS -o upload.json -w '%{http_code}' -X POST "$API/releases/$id/assets?name=$(jq -rn --arg n "$name" '$n | @uri')" \
+              -H "Authorization: token $TOKEN" -F "attachment=@$f")
+            case "$code" in
+              201) echo "uploaded $name" ;;
+              401|403) fail_auth "$code" ;;
+              *) echo "uploading $name failed (HTTP $code)"; cat upload.json; exit 1 ;;
+            esac
+          done

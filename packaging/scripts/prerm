@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+    systemctl stop pbp.service || true
+    systemctl disable pbp.service || true
+    # Lets a later reinstall tell "disabled by removal" from "disabled by the admin".
+    touch /var/lib/pbp/.disabled-by-remove || true
+fi
+
+exit 0

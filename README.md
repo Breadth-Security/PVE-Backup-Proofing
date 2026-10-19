@@ -190,6 +190,48 @@ Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroles
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
+## Install from the .deb
+
+As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. Do the setup steps above first (VMID range, bridge, API token, SSH key); only the file layout differs.
+
+1. Download the `.deb` and `SHA256SUMS` from the release and verify:
+
+   ```
+   sha256sum -c SHA256SUMS --ignore-missing
+   sudo apt install ./pbp_<version>_<arch>.deb
+   ```
+
+2. Create the config, secrets and `known_hosts`. The package creates `/etc/pbp` (`0750 root:pbp`) but never creates or overwrites `config.yaml`:
+
+   ```
+   sudo cp /usr/share/doc/pbp/config.example.yaml /etc/pbp/config.yaml   # then edit
+   sudo install -d -m 0750 -o root -g pbp /etc/pbp/secrets
+   sudo install -m 0640 -o root -g pbp pve_token /etc/pbp/secrets/pve_token
+   sudo install -m 0640 -o root -g pbp pve_ssh_key /etc/pbp/secrets/pve_ssh_key
+   ssh-keyscan -t ed25519 pve1.example.lan | sudo tee /etc/pbp/known_hosts
+   sudo chown root:pbp /etc/pbp/config.yaml /etc/pbp/known_hosts
+   sudo chmod 0640 /etc/pbp/config.yaml /etc/pbp/known_hosts
+   ```
+
+   In `config.yaml` set `token_secret_file` and `key_file` to `/etc/pbp/secrets/...` and `known_hosts_file: /etc/pbp/known_hosts`. The service can read `/etc/pbp` but not write to it.
+
+3. Check, then start:
+
+   ```
+   sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
+   sudo systemctl start pbp
+   ```
+
+   `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished. The unit is enabled on install but only starts once `/etc/pbp/config.yaml` exists.
+
+Logs: `journalctl -u pbp -f`, and the per-run files in `/var/log/pbp` (read them as root or `pbp`). State is in `/var/lib/pbp`.
+
+Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.2.0-rc1` produces `1.2.0~rc1`, which sorts before `1.2.0`. File names carry that Debian version (`pbp_1.2.0~rc1_amd64.deb`).
+
+**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched and the running service is restarted. **Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user.
+
+PBP can run on the PVE host itself, but it then holds root SSH access to the same machine that it restores guests onto (reducing that root access is planned). Prefer a separate host.
+
 ## Operating
 
 ```
@@ -279,7 +321,10 @@ docker build -t pbp:latest .            # multi-stage; static binary on distrole
 docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp a version
 docker run --rm pbp:latest version      # prints the stamped version (default "dev")
 go test ./... && go vet ./...
+packaging/build.sh 1.2.3 dist           # .debs, tarballs and SHA256SUMS for amd64 and arm64
 ```
+
+`packaging/build.sh` needs Go, `envsubst` (gettext-base) and network access for the pinned nfpm. The `release` workflow runs it when a tag `v<version>` is pushed, runs lintian on the packages (errors fail the job) and creates the Gitea release with the packages, tarballs and `SHA256SUMS` attached. Run it by hand (workflow dispatch) for a dry run that builds but publishes nothing. It authenticates with the job's automatic token; if your Gitea refuses that (HTTP 401/403), create a token with the `write:repository` scope and store it as the repository secret `RELEASE_TOKEN`, which is used in preference when set.
 
 ## Code scanning
 

@@ -1,0 +1,43 @@
+[Unit]
+Description=PBP - Proxmox Backup Proofing daemon
+Documentation=file:///usr/share/doc/pbp/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/pbp/config.yaml
+
+[Service]
+Type=simple
+User=pbp
+Group=pbp
+Environment=PBP_CONFIG=/etc/pbp/config.yaml PBP_STATE_DIR=/var/lib/pbp
+ExecStart=/usr/bin/pbp daemon
+Restart=on-failure
+RestartSec=30s
+# On SIGTERM the daemon waits up to 10 minutes for an in-flight guest to be
+# torn down; do not shorten this.
+TimeoutStopSec=11min
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=-/var/lib/pbp -/var/log/pbp
+ReadOnlyPaths=/etc/pbp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

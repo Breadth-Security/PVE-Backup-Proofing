@@ -1,0 +1,51 @@
+# Rendered by packaging/build.sh, which exports VERSION, ARCH and BIN.
+name: pbp
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: none
+section: admin
+priority: optional
+maintainer: Tony D <tony.diana@gmail.com>
+description: |
+  Proxmox Backup Proofing
+  Restores the newest backup of each guest into an isolated bridge on a
+  Proxmox VE node, boots it, checks that it works, and tears it down again.
+vendor: Breadth Analytics
+homepage: https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing
+license: Apache-2.0
+depends:
+  - adduser
+contents:
+  - src: ${BIN}
+    dst: /usr/bin/pbp
+    file_info:
+      mode: 0755
+  - src: packaging/pbp.service
+    dst: /usr/lib/systemd/system/pbp.service
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/pbp/README.md
+    file_info:
+      mode: 0644
+  - src: packaging/copyright
+    dst: /usr/share/doc/pbp/copyright
+    file_info:
+      mode: 0644
+  - src: config.example.yaml
+    dst: /usr/share/doc/pbp/config.example.yaml
+    file_info:
+      mode: 0644
+  - src: ${CHANGELOG}
+    dst: /usr/share/doc/pbp/changelog.gz
+    file_info:
+      mode: 0644
+  - src: packaging/lintian-overrides
+    dst: /usr/share/lintian/overrides/pbp
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/scripts/postinst
+  preremove: packaging/scripts/prerm
+  postremove: packaging/scripts/postrm

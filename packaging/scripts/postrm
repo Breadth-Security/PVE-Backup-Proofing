@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/pbp /var/log/pbp /etc/pbp
+    if getent passwd pbp >/dev/null; then
+        deluser --system pbp || true
+    fi
+    if getent group pbp >/dev/null; then
+        delgroup --system pbp || true
+    fi
+fi
+
+exit 0
