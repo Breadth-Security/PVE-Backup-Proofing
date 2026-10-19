@@ -315,3 +315,20 @@ func TestFailOnOtherMethods(t *testing.T) {
 		t.Errorf("failed calls changed state: %+v", f.GuestList)
 	}
 }
+
+// SetVolumeAttrs logs the guest the backup belongs to, "unknown" for an unseeded volid.
+func TestSetVolumeAttrsLogsGuest(t *testing.T) {
+	ctx := context.Background()
+	f := New()
+	f.Backups["PBS"] = []model.Backup{{Storage: "PBS", VolID: volid, Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}}}
+	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", "PBS:nope", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"SetVolumeAttrs pve1 PBS " + volid + " guest=qemu/100", "SetVolumeAttrs pve1 PBS PBS:nope guest=unknown"}
+	if got := f.CallLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %q", got)
+	}
+}

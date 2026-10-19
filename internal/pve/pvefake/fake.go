@@ -106,10 +106,17 @@ func (f *Fake) VolumeNotes(ctx context.Context, node, storage, volid string) (st
 func (f *Fake) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("SetVolumeAttrs", node, storage, volid); err != nil {
+	list := f.Backups[storage]
+	// The log names the backup's guest so tests can assert which guests' backups were written.
+	guest := "unknown"
+	for _, b := range list {
+		if b.VolID == volid {
+			guest = b.Key.String()
+		}
+	}
+	if err := f.begin("SetVolumeAttrs", node, storage, volid, "guest="+guest); err != nil {
 		return err
 	}
-	list := f.Backups[storage]
 	for i := range list {
 		if list[i].VolID != volid {
 			continue

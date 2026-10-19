@@ -121,9 +121,13 @@ func TestGuestConfigLXCRawLines(t *testing.T) {
 
 // A malformed raw lxc entry is an error, not silently dropped.
 func TestGuestConfigLXCMalformedPair(t *testing.T) {
-	c, _ := capture(t, `{"data":{"lxc":[["lxc.cgroup2.devices.allow"]]}}`)
-	if _, err := c.GuestConfig(context.Background(), "pve1", model.KindLXC, 101); err == nil {
-		t.Fatal("malformed lxc pair accepted")
+	for name, entry := range map[string]string{"one element": `["lxc.cgroup2.devices.allow"]`, "three elements": `["a","b","c"]`} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := capture(t, `{"data":{"lxc":[`+entry+`]}}`)
+			if _, err := c.GuestConfig(context.Background(), "pve1", model.KindLXC, 101); err == nil {
+				t.Fatal("malformed lxc pair accepted")
+			}
+		})
 	}
 }
 

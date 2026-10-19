@@ -26,7 +26,9 @@ func TestNotCoveredLogLineVariants(t *testing.T) {
 		{MissingPiece{Kind: "passthrough", Key: "hostpci0", Path: "/dev/x", Detail: "gpu"}, "Found u.service depends on /dev/x (device hostpci0, gpu): not backed up, skipped"},
 		{MissingPiece{Kind: "network-storage", Path: "/mnt/nfs"}, "Found u.service depends on /mnt/nfs (network storage): not backed up, skipped"},
 		{MissingPiece{Kind: "future-kind", Key: "x1", Path: "/p", Detail: "d"}, "Found u.service depends on /p (future-kind x1, d): not backed up, skipped"},
-		{MissingPiece{Kind: "network-storage"}, "Found u.service depends on  (network storage): not backed up, skipped"},
+		{MissingPiece{Kind: "network-storage"}, "Found u.service depends on network-storage (network storage): not backed up, skipped"},
+		{MissingPiece{Kind: "future-kind"}, "Found u.service depends on future-kind (future-kind): not backed up, skipped"},
+		{MissingPiece{Kind: "bind-mount"}, "Found u.service depends on bind-mount (bind mount): not backed up, skipped"},
 	}
 	for _, c := range cases {
 		if got := (NotCovered{Unit: "u.service", Piece: c.p}).LogLine(); got != c.want {

@@ -86,7 +86,7 @@ func TestRestoreFailureLeavingGuestIsDestroyedViaState(t *testing.T) {
 	if f.protected(ownVol) {
 		t.Error("backup left protected")
 	}
-	assertNoStrayMutation(t, f.api.CallLog(), f.d.Cfg.Target.VMIDRange)
+	assertNoStrayMutation(t, f.api.CallLog(), f.d.Cfg.Target.VMIDRange, nil)
 }
 
 // If the node refuses the restore request, no guest of PBP's exists: a guest

@@ -2,6 +2,7 @@
 package model
 
 import (
+	"cmp"
 	"fmt"
 	"time"
 )
@@ -57,29 +58,28 @@ type NotCovered struct {
 // LogLine renders the human-readable "not covered" log message.
 func (n NotCovered) LogLine() string {
 	p := n.Piece
-	var what string
+	name := cmp.Or(p.Path, p.Key, p.Kind)
+	what := p.Kind // unknown kinds are shown as they are
 	switch p.Kind {
 	case "excluded-disk":
-		what = "disk " + p.Key
+		what = "disk"
 	case "excluded-mountpoint":
-		what = "mount point " + p.Key
+		what = "mount point"
 	case "bind-mount":
-		what = "bind mount " + p.Key
+		what = "bind mount"
 	case "passthrough":
-		what = "device " + p.Key
+		what = "device"
 	case "network-storage":
 		what = "network storage"
-	default:
-		what = p.Kind + " " + p.Key
+		p.Key = "" // not part of the description
+	}
+	if p.Key != "" {
+		what += " " + p.Key
 	}
 	if p.Detail != "" {
 		what += ", " + p.Detail
 	}
-	path := p.Path
-	if path == "" {
-		path = p.Key
-	}
-	return fmt.Sprintf("Found %s depends on %s (%s): not backed up, skipped", n.Unit, path, what)
+	return fmt.Sprintf("Found %s depends on %s (%s): not backed up, skipped", n.Unit, name, what)
 }
 
 type GuestResult struct {
