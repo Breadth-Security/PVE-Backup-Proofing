@@ -223,3 +223,23 @@ func TestSanitizeLXCNetBridgeFirstField(t *testing.T) {
 		t.Errorf("net0 = %q", p.Set["net0"])
 	}
 }
+
+func TestSanitizeQEMUIvshmemRemoved(t *testing.T) {
+	p := Sanitize(model.KindQEMU, map[string]string{"ivshmem": "size=32,name=prod"}, br)
+	if !reflect.DeepEqual(p.Delete, []string{"ivshmem"}) ||
+		!reflect.DeepEqual(p.Removed, []model.MissingPiece{{Kind: "passthrough", Key: "ivshmem"}}) {
+		t.Errorf("plan = %+v", p)
+	}
+}
+
+func TestSanitizeQEMURngHwrng(t *testing.T) {
+	p := Sanitize(model.KindQEMU, map[string]string{
+		"rng0": "source=/dev/hwrng,max_bytes=1024",
+		"rng1": "source=/dev/urandom",
+		"rng2": "source=/dev/random",
+	}, br)
+	if !reflect.DeepEqual(p.Delete, []string{"rng0"}) ||
+		!reflect.DeepEqual(p.Removed, []model.MissingPiece{{Kind: "passthrough", Key: "rng0"}}) {
+		t.Errorf("plan = %+v", p)
+	}
+}

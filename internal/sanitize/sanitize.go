@@ -20,6 +20,7 @@ var (
 	reNet      = regexp.MustCompile(`^net\d+$`)
 	rePCIEtc   = regexp.MustCompile(`^(hostpci|usb|parallel|serial)\d+$`)
 	reVirtiofs = regexp.MustCompile(`^virtiofs\d+$`)
+	reRNG      = regexp.MustCompile(`^rng\d+$`)
 	reDev      = regexp.MustCompile(`^dev\d+$`)
 	reMP       = regexp.MustCompile(`^mp\d+$`)
 )
@@ -50,8 +51,13 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 			if strings.TrimSpace(v) != "socket" {
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
-		case kind == model.KindQEMU && reVirtiofs.MatchString(k):
+		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
+			// ivshmem with a name would attach to the production guest's host shm.
 			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+		case kind == model.KindQEMU && reRNG.MatchString(k):
+			if src, _ := optValue(v, "source"); src == "/dev/hwrng" {
+				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			}
 		case kind == model.KindLXC && reDev.MatchString(k):
 			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 		case kind == model.KindLXC && reMP.MatchString(k):
