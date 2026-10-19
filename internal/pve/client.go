@@ -73,11 +73,12 @@ func New(cfg config.API) (*Client, error) {
 		want := normalizeFingerprint(cfg.TLSFingerprint)
 		// Chain verification is replaced by the pin below.
 		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
+		// VerifyConnection (unlike VerifyPeerCertificate) also runs on resumed sessions.
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
 				return errors.New("no server certificate presented")
 			}
-			sum := sha256.Sum256(rawCerts[0])
+			sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
 			if got := fmt.Sprintf("%x", sum[:]); got != want {
 				return fmt.Errorf("server certificate fingerprint %s does not match pinned fingerprint", got)
 			}
@@ -192,7 +193,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return v.Version, nil
 }
 
-// WaitTask polls a task until it stops. A non-OK exit status yields *TaskError.
+// WaitTask polls a task until it stops. Exit status OK or "WARNINGS: n" is success; anything else yields *TaskError.
 func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
 	base := "/nodes/" + url.PathEscape(node) + "/tasks/" + url.PathEscape(upid)
 	for {
@@ -204,7 +205,7 @@ func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
 			return err
 		}
 		if st.Status == "stopped" {
-			if st.ExitStatus == "OK" {
+			if st.ExitStatus == "OK" || strings.HasPrefix(st.ExitStatus, "WARNINGS:") {
 				return nil
 			}
 			return &TaskError{UPID: upid, ExitStatus: st.ExitStatus, Log: c.taskLogTail(ctx, base)}

@@ -113,6 +113,8 @@ func TestFingerprintPin(t *testing.T) {
 	c, _ = New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: wrong})
 	if _, err := c.Version(context.Background()); err == nil {
 		t.Error("wrong fingerprint accepted")
+	} else if !strings.Contains(err.Error(), "pinned fingerprint") {
+		t.Errorf("error does not mention the pin mismatch: %v", err)
 	}
 }
 
@@ -271,5 +273,14 @@ func TestWaitTaskContextCancel(t *testing.T) {
 	defer cancel()
 	if err := c.WaitTask(ctx, "pve1", "UPID:x:"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestWaitTaskWarningsIsSuccess(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"WARNINGS: 2"}}`))
+	}))
+	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:2:"); err != nil {
+		t.Fatalf("WARNINGS treated as failure: %v", err)
 	}
 }
