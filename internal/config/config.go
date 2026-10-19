@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -137,7 +138,18 @@ func Load(path string) (Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Config{}, fmt.Errorf("config %s is empty", path)
+		}
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	// A key present with a null value decodes to nil and would wipe the
+	// default; only an explicit [] means "none".
+	if c.Checks.IgnoreUnits == nil {
+		c.Checks.IgnoreUnits = DefaultIgnoreUnits()
+	}
+	if c.Checks.WindowsIgnoreServices == nil {
+		c.Checks.WindowsIgnoreServices = DefaultWindowsIgnore()
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
@@ -166,8 +178,8 @@ func (c Config) validate() error {
 	if t.Bridge == "" {
 		bad("target.bridge", "required")
 	}
-	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo {
-		bad("target.vmid_range", "need 100 <= lo <= hi, got [%d, %d]", lo, hi)
+	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi > maxVMID {
+		bad("target.vmid_range", "need 100 <= lo <= hi <= %d, got [%d, %d]", maxVMID, lo, hi)
 	}
 	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported)")
@@ -197,7 +209,51 @@ func (c Config) validate() error {
 	if c.Notify.When != "always" && c.Notify.When != "problems" {
 		bad("notify.when", "must be \"always\" or \"problems\", got %q", c.Notify.When)
 	}
+	c.validateChecks(bad)
 	return errors.Join(errs...)
+}
+
+// maxVMID is the largest VMID Proxmox accepts.
+const maxVMID = 999999999
+
+// validateChecks validates the user profiles and per-guest checks. A profile
+// or guest with no checks is valid: a profile then only requires its unit to
+// be active.
+func (c Config) validateChecks(bad func(key, format string, a ...any)) {
+	seen := map[string]bool{}
+	for i, p := range c.Checks.Profiles {
+		key := fmt.Sprintf("checks.profiles[%d]", i)
+		switch {
+		case p.Name == "":
+			bad(key+".name", "required")
+		case seen[p.Name]:
+			bad(key+".name", "duplicate profile name %q", p.Name)
+		default:
+			seen[p.Name] = true
+		}
+		if p.Unit == "" {
+			bad(key+".unit", "required")
+		}
+		p.CheckSet.validate(bad, key)
+	}
+	for i, g := range c.Checks.Guests {
+		key := fmt.Sprintf("checks.guests[%d]", i)
+		if m := g.Match; m.VMID == 0 && m.Name == "" && m.Tag == "" {
+			bad(key+".match", "set at least one of vmid, name or tag")
+		} else if m.VMID < 0 || m.VMID > maxVMID {
+			bad(key+".match.vmid", "must be 1..%d, got %d", maxVMID, m.VMID)
+		}
+		g.CheckSet.validate(bad, key)
+	}
+}
+
+// validate checks that every port is a valid TCP port, naming key in errors.
+func (cs CheckSet) validate(bad func(key, format string, a ...any), key string) {
+	for j, port := range cs.Ports {
+		if port < 1 || port > 65535 {
+			bad(fmt.Sprintf("%s.ports[%d]", key, j), "must be 1..65535, got %d", port)
+		}
+	}
 }
 
 // duration validates a duration key against a minimum (at least 1s: a
