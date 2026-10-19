@@ -269,3 +269,29 @@ See [`config.example.yaml`](config.example.yaml), which documents every key. Sec
 docker build -t pbp:latest .            # multi-stage; static binary on distroless
 go test ./... && go vet ./...
 ```
+
+## Code scanning
+
+Five workflows in [`.gitea/workflows/`](.gitea/workflows/) scan the code: Trivy, govulncheck, gosec, staticcheck and golangci-lint. Each runs on every pull request, on pushes to `main` and weekly (Monday 06:17 UTC), and each **blocks** the pull request when it reports a finding. Tool versions are pinned in the workflow files. To run them locally from the repository root:
+
+```
+# govulncheck
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+# staticcheck
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 -tags integration ./...
+
+# gosec
+go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
+
+# golangci-lint (config: .golangci.yml)
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --build-tags integration ./...
+
+# Trivy (vulnerabilities, secrets, misconfigurations)
+docker run --rm -v "$PWD":/src:ro aquasec/trivy:0.76.0 fs --exit-code 1 --ignore-unfixed \
+  --scanners vuln,secret,misconfig --skip-dirs /src/.superpowers /src
+```
+
+An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site.

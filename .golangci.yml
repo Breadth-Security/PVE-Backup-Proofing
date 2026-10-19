@@ -1,0 +1,3 @@
+# Default linter set (errcheck, govet, ineffassign, staticcheck, unused).
+# Build tags are passed on the command line so both tag sets are linted.
+version: "2"
