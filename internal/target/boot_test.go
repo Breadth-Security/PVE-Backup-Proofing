@@ -247,10 +247,10 @@ func TestWaitBootedLXC(t *testing.T) {
 		if got.OS != probe.Linux || got.AgentMissing || got.ExecBlocked {
 			t.Errorf("got %+v", got)
 		}
-		if ssh.Calls[0] != "timeout --kill-after=5s 1s pct exec 990001 -- 'true'" {
-			t.Errorf("ssh calls = %q", ssh.Calls)
+		if ssh.CallLog()[0] != "timeout --kill-after=5s 1s pct exec 990001 -- 'true'" {
+			t.Errorf("ssh calls = %q", ssh.CallLog())
 		}
-		for _, c := range ssh.Calls {
+		for _, c := range ssh.CallLog() {
 			if strings.Contains(c, "pct status") {
 				t.Errorf("must use API status, not %q", c)
 			}
@@ -320,8 +320,8 @@ func TestExecutorRefusesOutsideRange(t *testing.T) {
 			t.Errorf("%s: err = %v", kind, err)
 		}
 	}
-	if len(ssh.Calls) != 0 || len(f.CallLog()) != 0 {
-		t.Errorf("calls made: %q %q", ssh.Calls, f.CallLog())
+	if len(ssh.CallLog()) != 0 || len(f.CallLog()) != 0 {
+		t.Errorf("calls made: %q %q", ssh.CallLog(), f.CallLog())
 	}
 }
 
@@ -342,8 +342,8 @@ func TestLXCExecutor(t *testing.T) {
 	if res != (probe.ExecResult{Stdout: "o", Stderr: "e", ExitCode: 2}) {
 		t.Errorf("res = %+v", res)
 	}
-	if want := `pct exec 990002 -- 'sh' '-c' 'echo '\''hi'\'''`; ssh.Calls[0] != want {
-		t.Errorf("cmd = %q, want %q", ssh.Calls[0], want)
+	if want := `pct exec 990002 -- 'sh' '-c' 'echo '\''hi'\'''`; ssh.CallLog()[0] != want {
+		t.Errorf("cmd = %q, want %q", ssh.CallLog()[0], want)
 	}
 	if _, err := n.Executor(model.KindLXC, 990002).Exec(ctx, []string{"boom"}); err == nil {
 		t.Error("transport error not returned")
@@ -378,8 +378,8 @@ func TestLXCExecutorBoundsRemoteCommand(t *testing.T) {
 		"timeout --kill-after=5s 1s pct exec 990002 -- 'true'",
 		"pct exec 990002 -- 'true'",
 	}
-	if !slices.Equal(ssh.Calls, want) {
-		t.Errorf("cmds = %q, want %q", ssh.Calls, want)
+	if !slices.Equal(ssh.CallLog(), want) {
+		t.Errorf("cmds = %q, want %q", ssh.CallLog(), want)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -229,6 +230,9 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 	if s, err := conn.NewSession(); err == nil {
 		return s, nil
 	}
+	// Any NewSession error is treated as a dropped connection (the ssh
+	// package does not distinguish a dead transport from a refused channel):
+	// reconnect once, and let the second failure surface.
 	c.dropConn(conn)
 	conn, err = c.ensureConn(ctx)
 	if err != nil {
@@ -299,19 +303,26 @@ func (c *Client) Close() error {
 // Fake is a mutex-safe Runner for other packages' tests.
 type Fake struct {
 	Handler func(cmd string, stdin []byte) (Result, error)
-	Calls   []string
 
-	mu sync.Mutex
+	mu    sync.Mutex
+	calls []string
 }
 
 // Run records cmd and delegates to Handler (zero Result if nil).
 func (f *Fake) Run(_ context.Context, cmd string, stdin []byte) (Result, error) {
 	f.mu.Lock()
-	f.Calls = append(f.Calls, cmd)
+	f.calls = append(f.calls, cmd)
 	h := f.Handler
 	f.mu.Unlock()
 	if h == nil {
 		return Result{}, nil
 	}
 	return h(cmd, stdin)
+}
+
+// CallLog returns a copy of the commands run so far, in order.
+func (f *Fake) CallLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
 }

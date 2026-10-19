@@ -229,8 +229,8 @@ func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	if err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Calls) != 2 {
-		t.Fatal(f.Calls)
+	if len(f.CallLog()) != 2 {
+		t.Fatal(f.CallLog())
 	}
 }
 
