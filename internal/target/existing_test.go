@@ -422,7 +422,7 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	want := []string{
 		"Restore pve1 qemu 990000 " + vmVol + " " + store,
 		"WaitTask pve1 UPID:pve1:fake:restore:990000:",
-		"SetGuestConfig pve1 qemu 990000", // tags come from the backup's config: no read first
+		"SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]", // tags come from the backup's config: no read first
 	}
 	if !slices.Equal(calls, want) {
 		t.Errorf("calls = %q", calls)
@@ -455,7 +455,8 @@ func TestRestoreClearsProtection(t *testing.T) {
 	if got := f.Configs[990000]["protection"]; got != "0" {
 		t.Errorf("protection after restore = %q", got)
 	}
-	if got := f.CallLog(); slices.Index(got, "SetGuestConfig pve1 qemu 990000") != len(got)-1 {
+	want := "SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]"
+	if got := f.CallLog(); slices.Index(got, want) != len(got)-1 {
 		t.Errorf("want one SetGuestConfig as the last call, got %q", got)
 	}
 	f.Fail["SetGuestConfig"] = errors.New("boom")
@@ -840,7 +841,7 @@ func TestDestroy(t *testing.T) {
 				muts = append(muts, c)
 			}
 		}
-		want := []string{"SetGuestConfig pve1 qemu 990008", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
+		want := []string{"SetGuestConfig pve1 qemu 990008 set=map[protection:0] del=[]", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
 		if !slices.Equal(muts, want) {
 			t.Errorf("mutating calls = %q", muts)
 		}
