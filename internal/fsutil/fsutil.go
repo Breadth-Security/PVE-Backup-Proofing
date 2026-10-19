@@ -13,7 +13,9 @@ import (
 // The directory itself is not synced: a caller that needs the rename to
 // survive a power loss syncs it.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
-	dir, base := filepath.Split(path)
+	// filepath.Dir, not Split: a bare filename gives "." (the same directory),
+	// where Split's "" would make CreateTemp use $TMPDIR and break the rename.
+	dir, base := filepath.Dir(path), filepath.Base(path)
 	// CreateTemp makes the file 0600 with a fresh name, so neither a temp
 	// file left by a crash nor the umask can widen its mode.
 	f, err := os.CreateTemp(dir, "."+base+".tmp*")

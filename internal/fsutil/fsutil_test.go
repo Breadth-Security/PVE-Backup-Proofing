@@ -66,3 +66,18 @@ func TestWriteFileAtomicMissingDir(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+// A bare filename is written in the current directory, not $TMPDIR, so the
+// rename stays on one filesystem and atomic. $TMPDIR points at a directory
+// that does not exist: a temp file created there would fail the write.
+func TestWriteFileAtomicBareFilename(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TMPDIR", filepath.Join(dir, "no-such-tmpdir"))
+	if err := WriteFileAtomic("bare", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries(t, dir); len(got) != 1 || got[0] != "bare" {
+		t.Fatalf("dir entries = %q, want [bare]", got)
+	}
+}

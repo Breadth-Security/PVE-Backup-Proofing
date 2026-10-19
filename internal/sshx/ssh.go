@@ -254,6 +254,10 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 // single-quoted argument (Quote), so the shell sees it exactly as sent
 // unwrapped and nothing in it can reach the wrapper. Without a deadline cmd
 // is returned unchanged.
+//
+// A wrapped command runs under /bin/sh (dash on PVE), an unwrapped one under
+// the remote user's login shell (bash for root): commands sent through Run
+// must stay POSIX sh, or they may break only when a deadline is set.
 func bounded(ctx context.Context, cmd string) string {
 	dl, ok := ctx.Deadline()
 	if !ok {

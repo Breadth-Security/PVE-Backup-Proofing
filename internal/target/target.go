@@ -123,7 +123,8 @@ type Target interface {
 }
 
 // Recorded is the restore a caller's state store records as started at a
-// VMID. The zero value means there is no such record.
+// VMID. VolID alone decides whether there is a record: an empty VolID (with
+// or without a Name) means none, so Destroy allows tagged guests only.
 type Recorded struct {
 	// VolID is the backup the restore was for.
 	VolID string
