@@ -76,13 +76,13 @@ Pick a range of free VMIDs, for example `990000`-`990049`, set as `target.vmid_r
 
 Restored guests are plugged into a bridge that has no physical ports, no bond members and no IP address. They can talk to each other but not to your network, so a restored copy of a server cannot take over its production twin's address or reach anything real. PBP verifies this at every preflight and refuses to run otherwise.
 
-PBP does not create the bridge; you do. Name it in `target.bridge`.
+PBP does not create the bridge; you do. Name it in `target.bridge`. PVE requires bridge names of the form vmbrN (here `vmbr99`).
 
 **Linux bridge.** Add a stanza to `/etc/network/interfaces` on the node, then apply it with `ifreload -a`:
 
 ```
-auto vmbr-pbp
-iface vmbr-pbp inet manual
+auto vmbr99
+iface vmbr99 inet manual
         bridge-ports none
         bridge-stp off
         bridge-fd 0
@@ -93,8 +93,8 @@ No `address` line, no gateway, and `bridge-ports none` so that nothing is attach
 **Open vSwitch bridge.** Create an `OVSBridge` with no `ovs_ports` and no address, either in the GUI (Node > System > Network > Create > OVS Bridge, leaving "Bridge ports" empty), or in `/etc/network/interfaces`:
 
 ```
-auto vmbr-pbp
-iface vmbr-pbp inet manual
+auto vmbr99
+iface vmbr99 inet manual
         ovs_type OVSBridge
 ```
 

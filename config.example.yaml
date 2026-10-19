@@ -19,7 +19,7 @@ target:
     port: 22                   # default
     key_file: /run/secrets/pve_ssh_key
     known_hosts_file: /etc/pbp/known_hosts
-  bridge: vmbr-pbp             # operator-created, no ports, no IP; PBP verifies
+  bridge: vmbr99             # operator-created, no ports, no IP; PBP verifies
   vmid_range: [990000, 990049]
 
 sources:

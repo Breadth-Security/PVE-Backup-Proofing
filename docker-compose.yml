@@ -8,7 +8,7 @@ services:
     # that before it sends SIGKILL, or a restart could orphan a guest.
     stop_grace_period: 11m
     environment:
-      TZ: Europe/London        # the schedule in config.yaml is cron in this zone
+      TZ: Europe/London        # set to your zone; drives the cron schedule
     volumes:
       - ./config.yaml:/etc/pbp/config.yaml:ro
       - ./known_hosts:/etc/pbp/known_hosts:ro
