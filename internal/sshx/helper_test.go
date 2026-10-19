@@ -250,3 +250,78 @@ func TestProbeGuardClassifiesHelperTimeouts(t *testing.T) {
 		}
 	}
 }
+
+func replyStdout(t *testing.T, out string) sshx.Helper {
+	return sshx.Helper{R: reply(t, func(nodeproto.Request, []byte) sshx.Result { return sshx.Result{Stdout: out} })}
+}
+
+const (
+	goodBridge = `{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":[],"members":[]}`
+	goodConfig = `{"vmid_range":[990000,990009],"bridge":"vmbr9","request_timeout":"15m0s","version":"0.2.1"}`
+)
+
+func TestMalformedRepliesAreHelperErrors(t *testing.T) {
+	ctx := context.Background()
+	if _, err := replyStdout(t, goodBridge).Bridge(ctx); err != nil {
+		t.Fatalf("good bridge: %v", err)
+	}
+	if _, err := replyStdout(t, goodConfig).Config(ctx); err != nil {
+		t.Fatalf("good config: %v", err)
+	}
+	bridges := []string{
+		"null", "{}", `{"x":1}`, goodBridge + "garbage", goodBridge + goodBridge, "",
+		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":[]}`,                           // no members
+		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":[],"members":null}`,            // null members
+		`{"name":"vmbr9","ovs":false,"addrs":[],"members":[]}`,                                 // no disable_ipv6
+		`{"name":"","ovs":false,"disable_ipv6":"1","addrs":[],"members":[]}`,                   // empty name
+		`{"name":"vmbr9","ovs":false,"disable_ipv6":"1","addrs":[],"members":[],"extra":true}`, // unknown field
+	}
+	for _, out := range bridges {
+		if _, err := replyStdout(t, out).Bridge(ctx); !errors.Is(err, sshx.ErrHelper) {
+			t.Errorf("bridge %q: got %v", out, err)
+		}
+	}
+	configs := []string{
+		"null", "{}", `{"x":1}`, goodConfig + "x",
+		`{"vmid_range":[990000,990009],"bridge":"","request_timeout":"15m0s","version":"0.2.1"}`,
+		`{"vmid_range":[990009,990000],"bridge":"b","request_timeout":"15m0s","version":"0.2.1"}`,
+		`{"vmid_range":[0,0],"bridge":"b","request_timeout":"15m0s","version":"0.2.1"}`,
+		`{"vmid_range":[990000,990009],"bridge":"b","request_timeout":"soon","version":"0.2.1"}`, // duration parse
+		`{"vmid_range":[990000,990009],"bridge":"b","request_timeout":"0s","version":"0.2.1"}`,
+		`{"vmid_range":[990000,990009],"bridge":"b","request_timeout":"15m0s","version":""}`,
+		`{"vmid_range":[990000,990009],"bridge":"b","request_timeout":"15m0s"}`,
+	}
+	for _, out := range configs {
+		if _, err := replyStdout(t, out).Config(ctx); !errors.Is(err, sshx.ErrHelper) {
+			t.Errorf("config %q: got %v", out, err)
+		}
+	}
+	for _, out := range []string{"null", "", `{"a":1}`, `{"a":"x"}x`, "[]"} {
+		if _, err := replyStdout(t, out).Templates(ctx); !errors.Is(err, sshx.ErrHelper) {
+			t.Errorf("templates %q: got %v", out, err)
+		}
+	}
+	if m, err := replyStdout(t, "{}").Templates(ctx); err != nil || m == nil {
+		t.Errorf("empty templates: %v %v", m, err)
+	}
+	for _, out := range []string{"", "\n"} {
+		if _, err := replyStdout(t, out).Version(ctx); !errors.Is(err, sshx.ErrHelper) {
+			t.Errorf("version %q: got %v", out, err)
+		}
+	}
+}
+
+func TestOnlyKnownRefusalCodesAreExposed(t *testing.T) {
+	for reason, want := range map[string][2]string{
+		"out-of-range: a: b": {"out-of-range", "a: b"},
+		"usage: x":           {"", "usage: x"},
+		"bad-severity: s":    {"bad-severity", "s"},
+	} {
+		h := sshx.Helper{R: reply(t, failure(nodeproto.KindRefused, reason))}
+		_, err := h.Exec(context.Background(), 5, []string{"id"})
+		var re *sshx.RefusedError
+		if !errors.As(err, &re) || re.Code != want[0] || re.Reason != want[1] {
+			t.Errorf("%q: got %#v", reason, err)
+		}
+	}
+}

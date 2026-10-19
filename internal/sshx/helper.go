@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -87,17 +88,19 @@ func (h Helper) call(ctx context.Context, req nodeproto.Request, stdin []byte) (
 	}
 }
 
-// splitCode splits "<code>: <detail>". Without a lowercase-kebab code prefix
-// the whole text is the detail and the code is empty.
+// refusalCodes are the fixed codes internal/node refuses with.
+var refusalCodes = map[string]bool{
+	"bad-request": true, "unsupported-op": true, "out-of-range": true,
+	"not-container": true, "untagged": true, "payload-too-large": true,
+	"bad-payload": true, "bad-severity": true,
+}
+
+// splitCode splits "<code>: <detail>". Unless the prefix is a known code the
+// whole text is the detail and the code is empty.
 func splitCode(reason string) (code, detail string) {
 	c, d, found := strings.Cut(reason, ": ")
-	if !found || c == "" {
+	if !found || !refusalCodes[c] {
 		return "", reason
-	}
-	for _, r := range c {
-		if !(r >= 'a' && r <= 'z' || r == '-') {
-			return "", reason
-		}
 	}
 	return c, d
 }
@@ -115,15 +118,38 @@ func (h Helper) query(ctx context.Context, op string, stdin []byte) (string, err
 	return res.Stdout, nil
 }
 
-func (h Helper) queryJSON(ctx context.Context, op string, v any) error {
-	out, err := h.query(ctx, op, nil)
-	if err != nil {
-		return err
+// decodeStrict decodes a helper reply that must be exactly one JSON object
+// holding exactly the keys in want, none of them null (templates, whose
+// keys are data, is decoded separately). Anything else is ErrHelper.
+func decodeStrict(op, out string, want ...string) (map[string]json.RawMessage, error) {
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("%w: %s reply: %s", ErrHelper, op, fmt.Sprintf(format, a...))
 	}
-	if err := json.Unmarshal([]byte(out), v); err != nil {
-		return fmt.Errorf("%w: decode %s reply: %v", ErrHelper, op, err)
+	dec := json.NewDecoder(strings.NewReader(out))
+	var m map[string]json.RawMessage
+	if err := dec.Decode(&m); err != nil {
+		return nil, bad("%v", err)
 	}
-	return nil
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, bad("trailing data")
+	}
+	if m == nil {
+		return nil, bad("not an object")
+	}
+	if len(m) != len(want) {
+		return nil, bad("unexpected fields")
+	}
+	for _, k := range want {
+		v, ok := m[k]
+		if !ok || string(v) == "null" {
+			return nil, bad("missing or null field %q", k)
+		}
+	}
+	return m, nil
+}
+
+func (h Helper) rawReply(ctx context.Context, op string) (string, error) {
+	return h.query(ctx, op, nil)
 }
 
 // Exec runs argv inside container vmid. A non-zero ExitCode is the guest
@@ -134,11 +160,25 @@ func (h Helper) Exec(ctx context.Context, vmid int, argv []string) (Result, erro
 	return h.call(ctx, nodeproto.Request{Op: "exec", VMID: vmid, Argv: argv}, nil)
 }
 
-// Bridge returns the state of the configured bridge.
+// Bridge returns the state of the configured bridge. The reply must carry
+// every field (an isolated bridge sends "members":[]), so a truncated or
+// empty reply is an error rather than a zero-valued bridge.
 func (h Helper) Bridge(ctx context.Context) (nodeproto.BridgeState, error) {
 	var st nodeproto.BridgeState
-	err := h.queryJSON(ctx, "bridge", &st)
-	return st, err
+	out, err := h.rawReply(ctx, "bridge")
+	if err != nil {
+		return st, err
+	}
+	if _, err := decodeStrict("bridge", out, "name", "ovs", "disable_ipv6", "addrs", "members"); err != nil {
+		return st, err
+	}
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		return nodeproto.BridgeState{}, fmt.Errorf("%w: bridge reply: %v", ErrHelper, err)
+	}
+	if st.Name == "" || st.Members == nil {
+		return nodeproto.BridgeState{}, fmt.Errorf("%w: bridge reply: empty name or members", ErrHelper)
+	}
+	return st, nil
 }
 
 // Notify sends payload (the helper's notify JSON) to the node's notifier.
@@ -150,22 +190,54 @@ func (h Helper) Notify(ctx context.Context, payload []byte) error {
 	return err
 }
 
-// Config returns the helper's node.yaml settings and version.
+// Config returns the helper's node.yaml settings and version, validated.
 func (h Helper) Config(ctx context.Context) (nodeproto.NodeConfig, error) {
+	out, err := h.rawReply(ctx, "config")
+	if err != nil {
+		return nodeproto.NodeConfig{}, err
+	}
+	if _, err := decodeStrict("config", out, "vmid_range", "bridge", "request_timeout", "version"); err != nil {
+		return nodeproto.NodeConfig{}, err
+	}
 	var c nodeproto.NodeConfig
-	err := h.queryJSON(ctx, "config", &c)
-	return c, err
+	if err := json.Unmarshal([]byte(out), &c); err != nil {
+		return nodeproto.NodeConfig{}, fmt.Errorf("%w: config reply: %v", ErrHelper, err)
+	}
+	if c.Bridge == "" || c.Version == "" || c.RequestTimeout <= 0 || c.VMIDRange[0] <= 0 || c.VMIDRange[0] > c.VMIDRange[1] {
+		return nodeproto.NodeConfig{}, fmt.Errorf("%w: config reply has invalid values: %+v", ErrHelper, c)
+	}
+	return c, nil
 }
 
 // Templates returns the installed template hashes by name.
 func (h Helper) Templates(ctx context.Context) (map[string]string, error) {
+	out, err := h.rawReply(ctx, "templates")
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(strings.NewReader(out))
 	var m map[string]string
-	err := h.queryJSON(ctx, "templates", &m)
-	return m, err
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("%w: templates reply: %v", ErrHelper, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%w: templates reply: trailing data", ErrHelper)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("%w: templates reply: not an object", ErrHelper)
+	}
+	return m, nil
 }
 
 // Version returns the helper's version string.
 func (h Helper) Version(ctx context.Context) (string, error) {
 	out, err := h.query(ctx, "version", nil)
-	return strings.TrimSpace(out), err
+	if err != nil {
+		return "", err
+	}
+	v := strings.TrimSpace(out)
+	if v == "" {
+		return "", fmt.Errorf("%w: version reply is empty", ErrHelper)
+	}
+	return v, nil
 }
