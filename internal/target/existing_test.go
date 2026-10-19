@@ -573,6 +573,10 @@ func TestClassifyRestoreError(t *testing.T) {
 		{errors.New("pve: 500 internal"), model.Error},
 		{context.DeadlineExceeded, model.Error},
 		{ErrOutOfRange, model.Error},
+		{errors.New("unable to create VM 990000: config file already exists"), model.Error},
+		{errors.New("can't lock file '/var/lock/qemu-server/lock-990000.conf' - got timeout"), model.Error},
+		{errors.New("CAN'T LOCK storage"), model.Error},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"VM 990000 Is Locked (create)"}}, model.Error},
 	}
 	for _, tc := range tests {
 		if got := ClassifyRestoreError(tc.err); got != tc.want {

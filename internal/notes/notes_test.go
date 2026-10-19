@@ -54,3 +54,15 @@ func TestHasProven(t *testing.T) {
 		})
 	}
 }
+
+func TestLineCollapsesNewlines(t *testing.T) {
+	at := time.Date(2026, 10, 19, 2, 14, 0, 0, time.UTC)
+	want := "PBP ERROR 2026-10-19 02:14 · restore failed: task error: line one line two"
+	got := Line(model.Error, at, "restore failed: task error:\r\n  line one\n\nline two\n")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if merged := Merge("db01", got); merged != want+"\ndb01" {
+		t.Fatalf("merge %q", merged)
+	}
+}

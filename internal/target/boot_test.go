@@ -133,6 +133,18 @@ func TestWaitBootedVMNotRunning(t *testing.T) {
 	}
 }
 
+func TestWaitBootedNotRunningCancelled(t *testing.T) {
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990000, "stopped", "pbp")}
+	n := newTarget(t, f, f, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	_, err := n.WaitBooted(ctx, model.KindQEMU, 990000, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
 func TestWaitBootedLXC(t *testing.T) {
 	ctx := context.Background()
 	mk := func(ostype string) *pvefake.Fake {

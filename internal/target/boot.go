@@ -26,7 +26,7 @@ func (n *ExistingNode) WaitBooted(ctx context.Context, kind model.GuestKind, vmi
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	if err := n.waitRunning(tctx, kind, vmid, timeout); err != nil {
+	if err := n.waitRunning(ctx, tctx, kind, vmid, timeout); err != nil {
 		return BootInfo{}, err
 	}
 	var info BootInfo
@@ -52,17 +52,22 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func (n *ExistingNode) waitRunning(ctx context.Context, kind model.GuestKind, vmid int, timeout time.Duration) error {
+// waitRunning polls under tctx (the boot timeout). If the parent ctx ended,
+// that is reported instead of a timeout.
+func (n *ExistingNode) waitRunning(ctx, tctx context.Context, kind model.GuestKind, vmid int, timeout time.Duration) error {
 	var last string
 	var lastErr error
 	for {
-		last, lastErr = n.api.GuestStatus(ctx, n.node, kind, vmid)
+		last, lastErr = n.api.GuestStatus(tctx, n.node, kind, vmid)
 		if lastErr == nil && last == "running" {
 			return nil
 		}
-		if !sleep(ctx, n.statusPoll) {
+		if !sleep(tctx, n.statusPoll) {
 			break
 		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	if lastErr != nil {
 		return fmt.Errorf("guest %d not running after %s: %w", vmid, timeout, lastErr)

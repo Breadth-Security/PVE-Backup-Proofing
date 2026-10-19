@@ -15,10 +15,14 @@ const sep = " · "
 var (
 	pbpLine    = regexp.MustCompile(`^PBP (PROVEN|FAILED|BOOTED|SKIPPED|ERROR) \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
 	provenLine = regexp.MustCompile(`^PBP PROVEN \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
+	lineBreak  = regexp.MustCompile(`[ \t]*[\r\n][ \t\r\n]*`)
 )
 
-// Line composes a PBP notes line, formatting at in its own location.
+// Line composes a PBP notes line, formatting at in its own location. Line
+// breaks in reason (and the whitespace around them) become a single space so
+// the PBP line never spills into the user's notes.
 func Line(v model.Verdict, at time.Time, reason string) string {
+	reason = strings.TrimSpace(lineBreak.ReplaceAllString(reason, " "))
 	return "PBP " + string(v) + " " + at.Format("2006-01-02 15:04") + sep + reason
 }
 
