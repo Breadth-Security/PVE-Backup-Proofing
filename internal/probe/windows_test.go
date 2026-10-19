@@ -172,3 +172,33 @@ func TestWindowsWrappedExecBlocked(t *testing.T) {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
+
+// startedExec signals started on its first call, then hangs until ctx ends.
+type startedExec struct{ started chan struct{} }
+
+func (e startedExec) Exec(ctx context.Context, _ []string) (probe.ExecResult, error) {
+	close(e.started)
+	<-ctx.Done()
+	return probe.ExecResult{}, ctx.Err()
+}
+
+// The probe ending before the first answer is ERROR, never BOOTED or FAILED.
+func TestWindowsProbeEnded(t *testing.T) {
+	in := probe.Input{OS: probe.Windows, Checks: config.Checks{CommandTimeout: time.Hour}}
+
+	// A deadline that has already passed: the command sees the probe end.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if o := probe.Run(ctx, startedExec{make(chan struct{})}, in); o.Verdict != model.Error || o.Reason != "probe timed out" {
+		t.Errorf("deadline: got %v %q", o.Verdict, o.Reason)
+	}
+
+	// Cancelled once the command is running.
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	ex := startedExec{make(chan struct{})}
+	go func() { <-ex.started; cancel() }()
+	if o := probe.Run(ctx, ex, in); o.Verdict != model.Error || o.Reason != "probe cancelled" {
+		t.Errorf("cancel: got %v %q", o.Verdict, o.Reason)
+	}
+}
