@@ -88,3 +88,32 @@ func TestLineCapsReason(t *testing.T) {
 		t.Error("cap split a multi-byte character")
 	}
 }
+
+// Line formats in the time's own location; the result must still be
+// recognised as a PBP line.
+func TestLineNonUTC(t *testing.T) {
+	at := time.Date(2026, 10, 19, 23, 45, 0, 0, time.FixedZone("x", 5*3600+1800))
+	got := Line(model.Proven, at, "ok")
+	if want := "PBP PROVEN 2026-10-19 23:45 · ok"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if !HasProven(got) || Merge(got+"\ndb01", "PBP FAILED 2026-10-20 00:00 · x") != "PBP FAILED 2026-10-20 00:00 · x\ndb01" {
+		t.Fatal("non-UTC line not recognised as a PBP line")
+	}
+}
+
+func TestMergeDropsStackedPBPLines(t *testing.T) {
+	l := "PBP FAILED 2026-10-19 02:31 · boom"
+	in := "PBP PROVEN 2026-10-18 02:10 · ok\nPBP ERROR 2026-10-17 02:10 · e\ndb01\nPBP BOOTED 2026-10-16 02:10 · b"
+	if got, want := Merge(in, l), l+"\ndb01"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+// The matcher looks at every line: a PROVEN line after a FAILED one counts.
+func TestHasProvenAfterFailedMidNotes(t *testing.T) {
+	in := "db01\nPBP FAILED 2026-10-18 02:10 · boom\nPBP PROVEN 2026-10-17 02:10 · ok\nmonthly"
+	if !HasProven(in) {
+		t.Fatal("PROVEN line after a FAILED line not found")
+	}
+}

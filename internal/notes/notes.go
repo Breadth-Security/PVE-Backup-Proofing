@@ -17,9 +17,18 @@ const sep = " · "
 // reason.
 const maxReason = 200
 
+// linePattern matches the start of a PBP line carrying one of verdicts.
+func linePattern(verdicts ...model.Verdict) *regexp.Regexp {
+	alt := make([]string, len(verdicts))
+	for i, v := range verdicts {
+		alt[i] = string(v)
+	}
+	return regexp.MustCompile(`^PBP (` + strings.Join(alt, "|") + `) \d{4}-\d{2}-\d{2} \d{2}:\d{2}` + sep)
+}
+
 var (
-	pbpLine    = regexp.MustCompile(`^PBP (PROVEN|FAILED|BOOTED|SKIPPED|ERROR) \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
-	provenLine = regexp.MustCompile(`^PBP PROVEN \d{4}-\d{2}-\d{2} \d{2}:\d{2} · `)
+	pbpLine    = linePattern(model.Proven, model.Failed, model.Booted, model.Skipped, model.Error)
+	provenLine = linePattern(model.Proven)
 	lineBreak  = regexp.MustCompile(`[ \t]*[\r\n][ \t\r\n]*`)
 )
 
