@@ -48,22 +48,34 @@ func TestRestoreThenGuestConfig(t *testing.T) {
 func TestLifecycle(t *testing.T) {
 	ctx := context.Background()
 	f := seeded()
-	f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch")
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+		t.Fatal(err)
+	}
 	status := func() string { s, _ := f.GuestStatus(ctx, "pve1", model.KindQEMU, 9100); return s }
-	f.Start(ctx, "pve1", model.KindQEMU, 9100)
+	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9100); err != nil {
+		t.Fatal(err)
+	}
 	if status() != "running" {
 		t.Errorf("after Start: %q", status())
 	}
-	f.Shutdown(ctx, "pve1", model.KindQEMU, 9100)
+	if _, err := f.Shutdown(ctx, "pve1", model.KindQEMU, 9100); err != nil {
+		t.Fatal(err)
+	}
 	if status() != "stopped" {
 		t.Errorf("after Shutdown: %q", status())
 	}
-	f.Start(ctx, "pve1", model.KindQEMU, 9100)
-	f.Stop(ctx, "pve1", model.KindQEMU, 9100)
+	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Stop(ctx, "pve1", model.KindQEMU, 9100); err != nil {
+		t.Fatal(err)
+	}
 	if status() != "stopped" {
 		t.Errorf("after Stop: %q", status())
 	}
-	f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 9100, map[string]string{"onboot": "0"}, []string{"cores"})
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 9100, map[string]string{"onboot": "0"}, []string{"cores"}); err != nil {
+		t.Fatal(err)
+	}
 	cfg, _ := f.GuestConfig(ctx, "pve1", model.KindQEMU, 9100)
 	if cfg["onboot"] != "0" || cfg["cores"] != "" {
 		t.Errorf("cfg = %v", cfg)
@@ -84,7 +96,9 @@ func TestFailInjectionAndCalls(t *testing.T) {
 	f := seeded()
 	boom := errors.New("boom")
 	f.Fail["Start"] = boom
-	f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch")
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9100); err != boom {
 		t.Errorf("Start err = %v", err)
 	}
@@ -130,9 +144,15 @@ func TestConcurrentUse(t *testing.T) {
 		wg.Add(1)
 		go func(vmid int) {
 			defer wg.Done()
-			f.Restore(ctx, "pve1", model.KindQEMU, vmid, volid, "scratch")
-			f.Start(ctx, "pve1", model.KindQEMU, vmid)
-			f.Destroy(ctx, "pve1", model.KindQEMU, vmid)
+			if _, err := f.Restore(ctx, "pve1", model.KindQEMU, vmid, volid, "scratch"); err != nil {
+				t.Error(err)
+			}
+			if _, err := f.Start(ctx, "pve1", model.KindQEMU, vmid); err != nil {
+				t.Error(err)
+			}
+			if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, vmid); err != nil {
+				t.Error(err)
+			}
 		}(9000 + i)
 	}
 	wg.Wait()

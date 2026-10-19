@@ -184,7 +184,9 @@ func TestRunWiring(t *testing.T) {
 		if err := os.WriteFile(p, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		os.Chtimes(p, old, old)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
 		old = old.Add(time.Hour)
 	}
 
@@ -293,21 +295,29 @@ func TestHealth(t *testing.T) {
 
 	// Daemon started yesterday noon and never ran: the 02:00 run (container
 	// time zone) was missed.
-	os.MkdirAll(daemon.StateDir(), 0o700)
+	if err := os.MkdirAll(daemon.StateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 10, 19, 3, 0, 0, 0, time.Local)
-	os.WriteFile(startedPath(), []byte(now.Add(-15*time.Hour).Format(time.RFC3339)+"\n"), 0o600)
+	if err := os.WriteFile(startedPath(), []byte(now.Add(-15*time.Hour).Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	e.a.now = func() time.Time { return now }
 	if code := e.run("health"); code != exitFail || e.out.String() != "scheduled run missed\n" {
 		t.Errorf("missed: %d %q", code, e.out)
 	}
 
 	// Freshly started daemon.
-	os.WriteFile(startedPath(), []byte(now.Add(-10*time.Minute).Format(time.RFC3339)+"\n"), 0o600)
+	if err := os.WriteFile(startedPath(), []byte(now.Add(-10*time.Minute).Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if code := e.run("health"); code != exitOK {
 		t.Errorf("fresh: %d %q", code, e.out)
 	}
 
-	os.WriteFile(e.cfgPath, []byte("schedule: [\n"), 0o600)
+	if err := os.WriteFile(e.cfgPath, []byte("schedule: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if code := e.run("health"); code != exitFail || e.out.Len() == 0 {
 		t.Errorf("bad config: %d %q", code, e.out)
 	}

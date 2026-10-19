@@ -25,14 +25,16 @@ func AcquireLock(path string) (release func(), err error) {
 		return nil, fmt.Errorf("run lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrBusy
 		}
 		return nil, fmt.Errorf("run lock %s: %w", path, err)
 	}
 	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		// Closing the descriptor drops the lock even if the explicit
+		// unlock fails, so neither error is actionable.
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 	}, nil
 }

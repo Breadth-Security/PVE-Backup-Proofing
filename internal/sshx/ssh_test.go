@@ -36,7 +36,7 @@ func (s *testServer) dropConns() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.conns {
-		c.Close()
+		_ = c.Close()
 	}
 	s.conns = nil
 }
@@ -79,7 +79,7 @@ func newServerKeys(t *testing.T, ecdsaToo, trustHost bool) *testServer {
 		t.Fatal(err)
 	}
 	s := &testServer{addr: ln.Addr().String(), ln: ln}
-	t.Cleanup(func() { ln.Close(); s.dropConns() })
+	t.Cleanup(func() { _ = ln.Close(); s.dropConns() })
 
 	khKey := ssh.PublicKey(nil)
 	if trustHost {
@@ -89,14 +89,18 @@ func newServerKeys(t *testing.T, ecdsaToo, trustHost bool) *testServer {
 		khKey, _ = ssh.NewPublicKey(other)
 	}
 	khFile := filepath.Join(dir, "known_hosts")
-	os.WriteFile(khFile, []byte(knownhosts.Line([]string{s.addr}, khKey)+"\n"), 0o600)
+	if err := os.WriteFile(khFile, []byte(knownhosts.Line([]string{s.addr}, khKey)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	blk, err := ssh.MarshalPrivateKey(clientPriv, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	keyFile := filepath.Join(dir, "id")
-	os.WriteFile(keyFile, pem.EncodeToMemory(blk), 0o600)
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(blk), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	host, port, _ := net.SplitHostPort(s.addr)
 	p := 0
@@ -125,11 +129,11 @@ func serve(c net.Conn, cfg *ssh.ServerConfig) {
 	if err != nil {
 		return
 	}
-	defer sc.Close()
+	defer func() { _ = sc.Close() }()
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
-			nc.Reject(ssh.UnknownChannelType, "no")
+			_ = nc.Reject(ssh.UnknownChannelType, "no")
 			continue
 		}
 		ch, creqs, err := nc.Accept()
@@ -141,28 +145,28 @@ func serve(c net.Conn, cfg *ssh.ServerConfig) {
 }
 
 func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	for r := range reqs {
 		if r.Type != "exec" {
-			r.Reply(false, nil)
+			_ = r.Reply(false, nil)
 			continue
 		}
-		r.Reply(true, nil)
+		_ = r.Reply(true, nil)
 		cmd := string(r.Payload[4:])
 		code := byte(0)
 		switch {
 		case strings.HasPrefix(cmd, "exit3"):
 			code = 3
-			io.WriteString(ch, "out")
-			io.WriteString(ch.Stderr(), "err")
+			_, _ = io.WriteString(ch, "out")
+			_, _ = io.WriteString(ch.Stderr(), "err")
 		case strings.HasPrefix(cmd, "cat"):
-			io.Copy(ch, ch)
+			_, _ = io.Copy(ch, ch)
 		case strings.HasPrefix(cmd, "sleep"):
 			select {}
 		default:
-			io.WriteString(ch, "ok:"+cmd)
+			_, _ = io.WriteString(ch, "ok:"+cmd)
 		}
-		ch.SendRequest("exit-status", false, []byte{0, 0, 0, code})
+		_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, code})
 		return
 	}
 }
@@ -173,7 +177,7 @@ func TestRunExitCodeAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	res, err := c.Run(context.Background(), "exit3", nil)
 	if err != nil {
 		t.Fatalf("non-zero exit must not be error: %v", err)
@@ -189,7 +193,7 @@ func TestRunStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	res, err := c.Run(context.Background(), "cat", []byte("hello"))
 	if err != nil || res.Stdout != "hello" || res.ExitCode != 0 {
 		t.Fatalf("got %+v err %v", res, err)
@@ -213,7 +217,7 @@ func TestRunCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	start := time.Now()
@@ -237,7 +241,7 @@ func TestRunDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -255,7 +259,7 @@ func TestReconnectAfterDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if _, err := c.Run(context.Background(), "exit3", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +277,7 @@ func TestConcurrentRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -294,7 +298,9 @@ func TestFake(t *testing.T) {
 	}}
 	var r Runner = f
 	res, _ := r.Run(context.Background(), "a", nil)
-	r.Run(context.Background(), "b", nil)
+	if _, err := r.Run(context.Background(), "b", nil); err != nil {
+		t.Fatal(err)
+	}
 	if res.Stdout != "x" || len(f.Calls) != 2 || f.Calls[1] != "b" {
 		t.Fatalf("%+v %v", res, f.Calls)
 	}
@@ -309,13 +315,15 @@ func TestDialKnownHostsOnlyEd25519WithEcdsaServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("should negotiate ed25519 per known_hosts: %v", err)
 	}
-	c.Close()
+	_ = c.Close()
 }
 
 func TestDialNoKnownHostsEntry(t *testing.T) {
 	s := newServer(t, true)
 	empty := filepath.Join(t.TempDir(), "kh")
-	os.WriteFile(empty, nil, 0o600)
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	s.cfg.KnownHostsFile = empty
 	_, err := Dial(s.cfg)
 	if err == nil || !strings.Contains(err.Error(), "knownhosts") {
@@ -333,10 +341,10 @@ func silentListener(t *testing.T) string {
 	var mu sync.Mutex
 	var conns []net.Conn
 	t.Cleanup(func() {
-		ln.Close()
+		_ = ln.Close()
 		mu.Lock()
 		for _, c := range conns {
-			c.Close()
+			_ = c.Close()
 		}
 		mu.Unlock()
 	})
@@ -376,7 +384,7 @@ func stuckClient(t *testing.T) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	s.dropConns()
 	time.Sleep(50 * time.Millisecond)
 	c.addr = silentListener(t)
@@ -399,7 +407,7 @@ func TestRunCtxDuringReconnect(t *testing.T) {
 
 func TestRunNotBlockedByStuckConnect(t *testing.T) {
 	c := stuckClient(t)
-	go c.Run(context.Background(), "exit3", nil) // stuck connecting
+	go func() { _, _ = c.Run(context.Background(), "exit3", nil) }() // stuck connecting
 	time.Sleep(200 * time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()

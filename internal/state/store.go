@@ -174,15 +174,15 @@ func (s *Store) write(st State) (err error) {
 	}
 	defer func() {
 		if err != nil {
-			os.Remove(tmp)
+			_ = os.Remove(tmp) // best-effort cleanup; err is already being returned
 		}
 	}()
 	if _, err = f.Write(b); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("state: write %s: %w", tmp, err)
 	}
 	if err = f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("state: fsync %s: %w", tmp, err)
 	}
 	if err = f.Close(); err != nil {
@@ -195,7 +195,7 @@ func (s *Store) write(st State) (err error) {
 	if err != nil {
 		return fmt.Errorf("state: open dir: %w", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }() // read-only directory handle
 	if err = d.Sync(); err != nil {
 		return fmt.Errorf("state: fsync dir: %w", err)
 	}

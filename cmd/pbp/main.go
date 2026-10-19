@@ -41,6 +41,12 @@ const (
 
 const msgBusy = "a run is already in progress"
 
+// A failed write to stdout or stderr cannot be reported anywhere else, so
+// these console writers deliberately drop the error.
+func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) }
+func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
@@ -84,7 +90,7 @@ func connectReal(cfg config.Config) wiring {
 	cl, sshErr := sshx.Dial(cfg.Target.SSH)
 	closeFn := func() {}
 	if sshErr == nil {
-		ssh, closeFn = cl, func() { cl.Close() }
+		ssh, closeFn = cl, func() { _ = cl.Close() }
 	}
 	w := assemble(cfg, api, apiErr, ssh, sshErr)
 	w.close = closeFn
@@ -129,7 +135,7 @@ func (u unreachable) Prepare(context.Context) error { return u.err }
 
 func (a *app) main(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprint(a.stderr, usage)
+		fprint(a.stderr, usage)
 		return exitUsage
 	}
 	cmd := args[0]
@@ -142,14 +148,14 @@ func (a *app) main(ctx context.Context, args []string) int {
 		guest = fs.Int("guest", 0, "proof only this guest's newest backup")
 	case "daemon", "check", "health":
 	default:
-		fmt.Fprintf(a.stderr, "pbp: unknown subcommand %q\n%s", cmd, usage)
+		fprintf(a.stderr, "pbp: unknown subcommand %q\n%s", cmd, usage)
 		return exitUsage
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(a.stderr, "pbp %s: unexpected arguments %q\n%s", cmd, fs.Args(), usage)
+		fprintf(a.stderr, "pbp %s: unexpected arguments %q\n%s", cmd, fs.Args(), usage)
 		return exitUsage
 	}
 
@@ -157,9 +163,9 @@ func (a *app) main(ctx context.Context, args []string) int {
 	cfg, err := config.Load(path)
 	if err != nil {
 		if cmd == "health" {
-			fmt.Fprintln(a.stdout, err)
+			fprintln(a.stdout, err)
 		} else {
-			fmt.Fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
+			fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
 		}
 		return exitFail
 	}
@@ -182,11 +188,11 @@ func startedPath() string { return filepath.Join(daemon.StateDir(), "daemon.star
 func (a *app) lock(cmd string) (func(), int) {
 	release, err := daemon.AcquireLock(daemon.LockPath())
 	if errors.Is(err, daemon.ErrBusy) {
-		fmt.Fprintln(a.stderr, msgBusy)
+		fprintln(a.stderr, msgBusy)
 		return nil, exitBusy
 	}
 	if err != nil {
-		fmt.Fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
+		fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
 		return nil, exitFail
 	}
 	return release, exitOK
@@ -220,13 +226,13 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 	defer release()
 	s := a.runOnce(ctx, cfg, run.Options{Trigger: "manual", OnlyVMID: guest})
 	c := s.Counts()
-	fmt.Fprintf(a.stdout, "run %s: %s; proven %d, failed %d, booted %d, skipped %d, error %d\n",
+	fprintf(a.stdout, "run %s: %s; proven %d, failed %d, booted %d, skipped %d, error %d\n",
 		s.ID, s.Severity(), c[model.Proven], c[model.Failed], c[model.Booted], c[model.Skipped], c[model.Error])
 	if s.RunError != "" {
-		fmt.Fprintf(a.stdout, "run error: %s\n", s.RunError)
+		fprintf(a.stdout, "run error: %s\n", s.RunError)
 	}
 	if guest != 0 && s.RunError == "" && len(s.Results) == 0 {
-		fmt.Fprintf(a.stdout, "no backup found for guest %d\n", guest)
+		fprintf(a.stdout, "no backup found for guest %d\n", guest)
 		return exitFail
 	}
 	if s.Severity() == "error" {
@@ -245,7 +251,7 @@ func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) m
 		log = report.NewLogger(a.stdout, nil)
 		log.Error("open run log", "err", logErr)
 	} else {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		log = report.NewLogger(a.stdout, f)
 	}
 	defer func() {
@@ -284,15 +290,15 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 		return code
 	}
 	defer release()
-	fmt.Fprintf(a.stdout, "config %s: ok\n", path)
+	fprintf(a.stdout, "config %s: ok\n", path)
 	ok := true
 	line := func(name string, err error) {
 		if err != nil {
 			ok = false
-			fmt.Fprintf(a.stdout, "%s: FAIL: %v\n", name, err)
+			fprintf(a.stdout, "%s: FAIL: %v\n", name, err)
 			return
 		}
-		fmt.Fprintf(a.stdout, "%s: ok\n", name)
+		fprintf(a.stdout, "%s: ok\n", name)
 	}
 	store, err := state.Open(statePath())
 	line("state "+statePath(), err)
@@ -317,7 +323,7 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 // only the config and the state directory.
 func (a *app) health(cfg config.Config) int {
 	fail := func(reason string) int {
-		fmt.Fprintln(a.stdout, reason)
+		fprintln(a.stdout, reason)
 		return exitFail
 	}
 	sched, err := cron.ParseStandard(cfg.Schedule)
@@ -335,7 +341,7 @@ func (a *app) health(cfg config.Config) int {
 	if ok, reason := health.Evaluate(st, a.now(), sched, cfg.Restore.MaxRunDuration, startedAt); !ok {
 		return fail(reason)
 	}
-	fmt.Fprintln(a.stdout, "ok")
+	fprintln(a.stdout, "ok")
 	return exitOK
 }
 

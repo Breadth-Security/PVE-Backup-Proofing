@@ -507,7 +507,7 @@ func TestBrokenBackupFails(t *testing.T) {
 	const unit = "pbp-it-broken.service"
 	v := strconv.Itoa(vmid)
 	destroyCT := func() {
-		e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct destroy "+v+" --purge; }", nil)
+		_, _ = e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct destroy "+v+" --purge; }", nil)
 	}
 	t.Cleanup(destroyCT)
 
@@ -616,7 +616,7 @@ wait:
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 			t.Fatal("stage started not reached")
 		}
 		b, err := os.ReadFile(filepath.Join(stateDir, "state.json"))
@@ -637,8 +637,8 @@ wait:
 	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	<-exited
-	t.Logf("killed pbp at stage started: %+v", job)
+	waitErr := <-exited // a SIGKILLed process exits with an error; expected
+	t.Logf("killed pbp at stage started (%v): %+v", waitErr, job)
 
 	// The kill left a guest and (if it was off) the protected flag set.
 	gs, err := e.tgt.Owned(ctx)
@@ -689,7 +689,7 @@ func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, co
 	}
 	v := strconv.Itoa(vmid)
 	destroyCT := func() {
-		e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct set "+v+" --protection 0; pct destroy "+v+" --purge; }", nil)
+		_, _ = e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct set "+v+" --protection 0; pct destroy "+v+" --purge; }", nil)
 	}
 	t.Cleanup(destroyCT)
 	e.sh(t, fmt.Sprintf("pct create %s %s --hostname %s --unprivileged 1 --memory 256 --cores 1 "+
