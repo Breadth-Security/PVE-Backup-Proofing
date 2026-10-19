@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target/bridgetest"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/bridgetest"
 )
 
 // Ownership by state (design section 11.2): a guest in the range is PBP's if

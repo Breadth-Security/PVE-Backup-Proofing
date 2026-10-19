@@ -27,16 +27,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/discovery"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/report"
-	"git.breadthanalytics.com/tdiana/pbv/internal/run"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/discovery"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
 // pbpNotesLine is the PBP verdict line every proofed backup must start with.
@@ -586,7 +586,7 @@ func TestCrashRecovery(t *testing.T) {
 	}
 
 	bin := filepath.Join(dir, "pbp")
-	build := exec.Command("go", "build", "-o", bin, "git.breadthanalytics.com/tdiana/pbv/cmd/pbp")
+	build := exec.Command("go", "build", "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}

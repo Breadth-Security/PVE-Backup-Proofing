@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 type contentEntry struct {

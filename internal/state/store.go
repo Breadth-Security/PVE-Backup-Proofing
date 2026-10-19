@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/fsutil"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 // Job stages, in order. Each is recorded before the step it names.

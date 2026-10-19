@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/notes"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
 )
 
 var ref = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)

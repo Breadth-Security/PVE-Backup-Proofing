@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/discovery"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/report"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sanitize"
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/discovery"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
 // notifyTimeout bounds sending the run summary. It runs on a fresh context so

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
 // GuestRef identifies a guest on the cluster.

@@ -18,17 +18,17 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/config"
-	"git.breadthanalytics.com/tdiana/pbv/internal/daemon"
-	"git.breadthanalytics.com/tdiana/pbv/internal/fsutil"
-	"git.breadthanalytics.com/tdiana/pbv/internal/health"
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/pve"
-	"git.breadthanalytics.com/tdiana/pbv/internal/report"
-	"git.breadthanalytics.com/tdiana/pbv/internal/run"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
-	"git.breadthanalytics.com/tdiana/pbv/internal/state"
-	"git.breadthanalytics.com/tdiana/pbv/internal/target"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/daemon"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
 const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n"

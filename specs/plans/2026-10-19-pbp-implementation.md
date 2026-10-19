@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Product name **PBP / Proxmox Backup Proofing**; binary `pbp`; never "validation"/"PBV" in code, image, or docs.
-- Go module path: `git.breadthanalytics.com/tdiana/pbv`.
+- Go module path: `git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing` (originally `git.breadthanalytics.com/tdiana/pbv`; renamed to match the repository).
 - Requires **PVE ≥ 9.0** (preflight refuses older), PBS ≥ 4.0.
 - Restored guests: only inside `target.vmid_range`, tagged `pbp`; never start before sanitize succeeded (§11).
 - Backup attributes PBP may write: `notes`, `protected` only; `protected` always restored to its original value.

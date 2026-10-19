@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/pbv/internal/model"
-	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
-	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
 
 // Executor returns an executor for the guest. For a VMID outside the range

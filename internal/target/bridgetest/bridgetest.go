@@ -2,7 +2,7 @@
 // runs over SSH, for tests.
 package bridgetest
 
-import "git.breadthanalytics.com/tdiana/pbv/internal/sshx"
+import "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 
 // Commands are the live bridge-state commands the target runs for a bridge.
 type Commands struct {
