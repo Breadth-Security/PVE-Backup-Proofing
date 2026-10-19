@@ -36,6 +36,7 @@ own backup and deletes exactly that backup again.
 | `PBP_IT_ADMIN_SSH_KEY` | all | Private key file of the test-only admin key (see below). The suite fails without it. |
 | `PBP_IT_ADMIN_KNOWN_HOSTS` | all | A `known_hosts` file for the admin connection (same host and port as `target.ssh`). |
 | `PBP_IT_ADMIN_USER` | all | Admin account for the fixtures. Default `root`; must differ from `target.ssh.user`. |
+| `PBP_IT_DAEMON_VERSION` | all | Version the harness presents as the daemon's (set on the target and in the `pbp` that `TestCrashRecovery` builds). Default: the node helper's own version, so the suite does not test version compatibility (unit tests do). |
 | `PBP_IT_LXC` | `TestProofSmallLXC`, `TestCrashRecovery` | VMID of a small container whose newest backup is proofed. |
 | `PBP_IT_VM_AGENT` | `TestProofVMWithAgent` | VMID of a VM with `agent: 1` and a working guest agent inside. |
 | `PBP_IT_VM_NOAGENT` | `TestProofVMWithoutAgent` | VMID of a VM without a guest agent. |

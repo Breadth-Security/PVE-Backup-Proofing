@@ -52,6 +52,7 @@ type env struct {
 	ssh     *sshx.Client // PBP's own connection: the pbp user, forced command
 	admin   *sshx.Client // test fixtures only: the test-only admin key, a real shell
 	tgt     *target.ExistingNode
+	version string // daemon version handed to the target and to the built pbp
 }
 
 var (
@@ -59,6 +60,23 @@ var (
 	theEnv  *env
 	envErr  error
 )
+
+// daemonVersion is the version the harness presents as the daemon's: the
+// PBP_IT_DAEMON_VERSION override, else the node helper's own version, so the
+// suite exercises everything except version compatibility (unit tests cover
+// that).
+func daemonVersion(ctx context.Context, h sshx.Helper) (string, error) {
+	if v := os.Getenv("PBP_IT_DAEMON_VERSION"); v != "" {
+		slog.Info("integration: daemon version from PBP_IT_DAEMON_VERSION", "version", v)
+		return v, nil
+	}
+	v, err := h.Version(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read node helper version (set PBP_IT_DAEMON_VERSION to override): %w", err)
+	}
+	slog.Info("integration: daemon version taken from the node helper", "version", v)
+	return v, nil
+}
 
 // setup loads PBP_IT_CONFIG and connects once per test binary. Without
 // PBP_IT_CONFIG every test is skipped.
@@ -90,7 +108,16 @@ func setup(t *testing.T) *env {
 			envErr = err
 			return
 		}
-		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, admin: admin, tgt: target.NewExistingNode(cfg, api, sshx.Helper{R: ssh})}
+		version, err := daemonVersion(context.Background(), sshx.Helper{R: ssh})
+		if err != nil {
+			_ = ssh.Close()
+			_ = admin.Close()
+			envErr = err
+			return
+		}
+		tgt := target.NewExistingNode(cfg, api, sshx.Helper{R: ssh})
+		tgt.SetDaemonVersion(version)
+		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, admin: admin, tgt: tgt, version: version}
 	})
 	if envErr != nil {
 		t.Fatal(envErr)
@@ -617,7 +644,7 @@ func TestCrashRecovery(t *testing.T) {
 	}
 
 	bin := filepath.Join(dir, "pbp")
-	build := exec.Command("go", "build", "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
+	build := exec.Command("go", "build", "-ldflags", "-X main.version="+e.version, "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
