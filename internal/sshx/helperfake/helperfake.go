@@ -81,7 +81,7 @@ func Fail(req nodeproto.Request, reason string) sshx.Result {
 	return marker(nodeproto.KindError, req, reason)
 }
 
-// Timeout is the helper's report that req's deadline passed.
+// Timeout is the helper's report that req's time ran out.
 func Timeout(req nodeproto.Request) sshx.Result {
 	return marker(nodeproto.KindTimeout, req, "")
 }

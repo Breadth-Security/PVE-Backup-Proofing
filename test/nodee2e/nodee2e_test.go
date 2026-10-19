@@ -447,8 +447,7 @@ func attack(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 func TestAttackerSameKey(t *testing.T) {
 	before := pctLog(t)
 	nonce := nodeproto.NewNonce()
-	dl := time.Now().Add(time.Minute).UnixMilli()
-	injected := fmt.Sprintf(`exec --deadline %d --nonce %s %d -- ["id"];id`, dl, nonce, taggedCT)
+	injected := fmt.Sprintf(`exec --timeout-ms %d --nonce %s %d -- ["id"];id`, time.Minute.Milliseconds(), nonce, taggedCT)
 	const (
 		refusedExit = nodeproto.ExitRefused
 		sshExit     = 255
@@ -703,7 +702,7 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		nonce := nodeproto.NewNonce()
 		start := time.Now()
 		cmd, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: taggedCT,
-			Argv: []string{"sleep", "61"}, Deadline: start.Add(deadlineIn), Nonce: nonce})
+			Argv: []string{"sleep", "61"}, Timeout: deadlineIn, Nonce: nonce})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -753,7 +752,7 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		defer c.Close()
 		start := time.Now()
 		cmd, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: taggedCT,
-			Argv: []string{"sleep", "62"}, Deadline: start.Add(deadlineIn), Nonce: nodeproto.NewNonce()})
+			Argv: []string{"sleep", "62"}, Timeout: deadlineIn, Nonce: nodeproto.NewNonce()})
 		if err != nil {
 			t.Fatal(err)
 		}

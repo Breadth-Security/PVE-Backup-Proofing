@@ -38,8 +38,8 @@ type lxcExec struct {
 }
 
 func (e lxcExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
-	// ctx's deadline travels in the request; the helper bounds the
-	// command on the node by it.
+	// The time ctx still allows travels in the request; the helper bounds
+	// the command on the node by it.
 	res, err := e.n.helper.Exec(ctx, e.vmid, argv)
 	if err != nil {
 		return probe.ExecResult{}, execErr(e.vmid, err)

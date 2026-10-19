@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
@@ -99,16 +98,15 @@ func ServeCoded(ctx context.Context, cfg Config, sys System, version string, req
 		return nodeproto.ExitRefused, f0.code
 	}
 
-	deadline := req.Deadline
-	if capAt := time.Now().Add(cfg.RequestTimeout); capAt.Before(deadline) {
-		deadline = capAt
-	}
-	if !time.Now().Before(deadline) {
+	// The client sends the time it still allows, so the deadline is set on
+	// the node's own clock (daemon/node clock skew cannot stretch it), and
+	// request_timeout caps it.
+	ctx, cancel := context.WithTimeout(ctx, min(req.Timeout, cfg.RequestTimeout))
+	defer cancel()
+	if ctx.Err() != nil {
 		writeMarker(errw, req.Nonce, timedOut)
 		return nodeproto.ExitRefused, ""
 	}
-	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
 
 	exit, f := dispatch(ctx, cfg, sys, version, req, stdin, stdout, errw)
 	if f == nil {

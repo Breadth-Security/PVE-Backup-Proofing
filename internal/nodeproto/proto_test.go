@@ -20,21 +20,24 @@ func mustEncode(t *testing.T, r Request) string {
 }
 
 func TestEncodeExample(t *testing.T) {
-	got := mustEncode(t, Request{Op: "exec", VMID: 990001, Argv: []string{"systemctl", "is-system-running", "--wait"}, Deadline: time.UnixMilli(1760900000000), Nonce: nonce})
-	want := `exec --deadline 1760900000000 --nonce 0123456789abcdef 990001 -- ["systemctl","is-system-running","--wait"]`
+	got := mustEncode(t, Request{Op: "exec", VMID: 990001, Argv: []string{"systemctl", "is-system-running", "--wait"}, Timeout: 90 * time.Second, Nonce: nonce})
+	want := `exec --timeout-ms 90000 --nonce 0123456789abcdef 990001 -- ["systemctl","is-system-running","--wait"]`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
 
 func TestEncodeErrors(t *testing.T) {
-	dl := time.UnixMilli(1)
+	dl := time.Second
 	for name, r := range map[string]Request{
-		"bad utf8":  {Op: "exec", VMID: 1, Argv: []string{"a\xff"}, Deadline: dl, Nonce: nonce},
-		"nul":       {Op: "exec", VMID: 1, Argv: []string{"a\x00"}, Deadline: dl, Nonce: nonce},
-		"bad op":    {Op: "reboot", Deadline: dl, Nonce: nonce},
-		"no nonce":  {Op: "bridge", Deadline: dl},
-		"bad nonce": {Op: "bridge", Deadline: dl, Nonce: "ABCDEF0123456789"},
+		"bad utf8":         {Op: "exec", VMID: 1, Argv: []string{"a\xff"}, Timeout: dl, Nonce: nonce},
+		"nul":              {Op: "exec", VMID: 1, Argv: []string{"a\x00"}, Timeout: dl, Nonce: nonce},
+		"bad op":           {Op: "reboot", Timeout: dl, Nonce: nonce},
+		"no nonce":         {Op: "bridge", Timeout: dl},
+		"bad nonce":        {Op: "bridge", Timeout: dl, Nonce: "ABCDEF0123456789"},
+		"no timeout":       {Op: "bridge", Nonce: nonce},
+		"negative timeout": {Op: "bridge", Timeout: -time.Second, Nonce: nonce},
+		"timeout too long": {Op: "bridge", Timeout: MaxTimeout + time.Millisecond, Nonce: nonce},
 	} {
 		if _, err := Encode(r); err == nil {
 			t.Errorf("%s: Encode accepted", name)
@@ -43,16 +46,16 @@ func TestEncodeErrors(t *testing.T) {
 }
 
 func TestRoundTrip(t *testing.T) {
-	dl := time.UnixMilli(1760900000000)
+	dl := 15 * time.Minute
 	reqs := []Request{
-		{Op: "exec", VMID: 990001, Argv: []string{"sh", "-c", "echo 'a b'\nx"}, Deadline: dl, Nonce: nonce},
-		{Op: "exec", VMID: 1, Argv: []string{`a"b`, `c\d`, "<>&", "héllo 世界 \U0001F600", "a\tb", "del\x7fx", "\u2028"}, Deadline: dl, Nonce: nonce},
-		{Op: "exec", VMID: 999999999, Argv: []string{"x"}, Deadline: time.UnixMilli(999999999999999), Nonce: nonce},
-		{Op: "bridge", Deadline: dl, Nonce: nonce},
-		{Op: "notify", Deadline: dl, Nonce: nonce},
-		{Op: "config", Deadline: dl, Nonce: nonce},
-		{Op: "templates", Deadline: dl, Nonce: nonce},
-		{Op: "version", Deadline: dl, Nonce: nonce},
+		{Op: "exec", VMID: 990001, Argv: []string{"sh", "-c", "echo 'a b'\nx"}, Timeout: dl, Nonce: nonce},
+		{Op: "exec", VMID: 1, Argv: []string{`a"b`, `c\d`, "<>&", "héllo 世界 \U0001F600", "a\tb", "del\x7fx", "\u2028"}, Timeout: dl, Nonce: nonce},
+		{Op: "exec", VMID: 999999999, Argv: []string{"x"}, Timeout: MaxTimeout, Nonce: nonce},
+		{Op: "bridge", Timeout: dl, Nonce: nonce},
+		{Op: "notify", Timeout: dl, Nonce: nonce},
+		{Op: "config", Timeout: dl, Nonce: nonce},
+		{Op: "templates", Timeout: dl, Nonce: nonce},
+		{Op: "version", Timeout: dl, Nonce: nonce},
 	}
 	for _, r := range reqs {
 		s := mustEncode(t, r)
@@ -60,17 +63,17 @@ func TestRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %q: %v", r.Op, s, err)
 		}
-		if got.Op != r.Op || got.VMID != r.VMID || got.Nonce != r.Nonce || !got.Deadline.Equal(r.Deadline) || !reflect.DeepEqual(got.Argv, r.Argv) {
+		if got.Op != r.Op || got.VMID != r.VMID || got.Nonce != r.Nonce || got.Timeout != r.Timeout || !reflect.DeepEqual(got.Argv, r.Argv) {
 			t.Fatalf("%s: got %+v want %+v", r.Op, got, r)
 		}
 	}
 }
 
 func TestParseRejects(t *testing.T) {
-	const h = "--deadline 1 --nonce " + nonce
+	const h = "--timeout-ms 1 --nonce " + nonce
 	bad := []string{
 		"exec 990001;id",
-		"exec --deadline x --nonce " + nonce + ` 1 -- []`,
+		"exec --timeout-ms x --nonce " + nonce + ` 1 -- []`,
 		"exec " + h + ` 01 -- ["a"]`,
 		"exec " + h + ` 9900010000 -- ["a"]`,
 		"exec " + h + ` 990001 -- "sh"`,
@@ -92,14 +95,17 @@ func TestParseRejects(t *testing.T) {
 		"exec " + h + " 990001 -- [\"a\xff\"]",
 		"exec " + h + ` 990001 -- ["a\u0000b"]`,
 		"exec " + h + `  990001 -- ["a"]`,
-		"exec --deadline -5 --nonce " + nonce + ` 990001 -- ["a"]`,
-		"exec --deadline 1234567890123456 --nonce " + nonce + ` 990001 -- ["a"]`,
-		"exec --deadline 1 990001 -- [\"a\"]",
-		"exec --deadline 1 --nonce ABCDEF0123456789 990001 -- [\"a\"]",
-		"exec --deadline 1 --nonce 0123 990001 -- [\"a\"]",
+		"exec --timeout-ms -5 --nonce " + nonce + ` 990001 -- ["a"]`,
+		"exec --timeout-ms 0 --nonce " + nonce + ` 990001 -- ["a"]`,
+		"exec --timeout-ms 01 --nonce " + nonce + ` 990001 -- ["a"]`,
+		"exec --timeout-ms 12345678901 --nonce " + nonce + ` 990001 -- ["a"]`,
+		"exec --timeout-ms 1 990001 -- [\"a\"]",
+		"exec --timeout-ms 1 --nonce ABCDEF0123456789 990001 -- [\"a\"]",
+		"exec --timeout-ms 1 --nonce 0123 990001 -- [\"a\"]",
+		"exec --deadline 1760900000000 --nonce " + nonce + ` 990001 -- ["a"]`,
 		"bridge " + h + " ",
 		"bridge " + h + " x",
-		"bridge --deadline 1",
+		"bridge --timeout-ms 1",
 		"version",
 	}
 	for _, s := range bad {
@@ -113,12 +119,31 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
-func TestDeadlineBoundary(t *testing.T) {
-	if _, err := Parse("bridge --deadline 999999999999999 --nonce " + nonce); err != nil {
-		t.Errorf("15-digit deadline rejected: %v", err)
+func TestTimeoutBoundary(t *testing.T) {
+	r, err := Parse("bridge --timeout-ms 9999999999 --nonce " + nonce)
+	if err != nil || r.Timeout != MaxTimeout {
+		t.Errorf("10-digit timeout: %v, %v", r.Timeout, err)
 	}
-	if _, err := Parse("bridge --deadline 1000000000000000 --nonce " + nonce); err == nil {
-		t.Error("16-digit deadline accepted")
+	if _, err := Parse("bridge --timeout-ms 10000000000 --nonce " + nonce); err == nil {
+		t.Error("11-digit timeout accepted")
+	}
+	if r, err := Parse("bridge --timeout-ms 1 --nonce " + nonce); err != nil || r.Timeout != time.Millisecond {
+		t.Errorf("1ms timeout: %v, %v", r.Timeout, err)
+	}
+}
+
+// A timeout that is not a whole number of milliseconds is rounded up, so a
+// tiny remaining time still encodes as a valid (1ms) request.
+func TestEncodeRoundsTimeoutUp(t *testing.T) {
+	for in, want := range map[time.Duration]string{
+		time.Nanosecond:               "bridge --timeout-ms 1 --nonce " + nonce,
+		1500 * time.Microsecond:       "bridge --timeout-ms 2 --nonce " + nonce,
+		time.Second:                   "bridge --timeout-ms 1000 --nonce " + nonce,
+		MaxTimeout - time.Microsecond: "bridge --timeout-ms 9999999999 --nonce " + nonce,
+	} {
+		if got := mustEncode(t, Request{Op: "bridge", Timeout: in, Nonce: nonce}); got != want {
+			t.Errorf("%v: got %q want %q", in, got, want)
+		}
 	}
 }
 
@@ -130,7 +155,7 @@ func TestNewNonce(t *testing.T) {
 }
 
 func TestParseKeepsArgvElementIntact(t *testing.T) {
-	r, err := Parse(`exec --deadline 1 --nonce 0123456789abcdef 990001 -- ["sh -c 'id'; reboot"]`)
+	r, err := Parse(`exec --timeout-ms 1 --nonce 0123456789abcdef 990001 -- ["sh -c 'id'; reboot"]`)
 	if err != nil {
 		t.Fatal(err)
 	}

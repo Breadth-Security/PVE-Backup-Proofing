@@ -224,7 +224,7 @@ func TestRunSendsCommandVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	const cmd = `exec --deadline 1 --nonce 0123456789abcdef 990001 -- ["sh","-c","echo 'x'"]`
+	const cmd = `exec --timeout-ms 1 --nonce 0123456789abcdef 990001 -- ["sh","-c","echo 'x'"]`
 	if res, err := c.Run(context.Background(), cmd, nil); err != nil || res.Stdout != "ok:"+cmd {
 		t.Errorf("no deadline: %+v, %v", res, err)
 	}

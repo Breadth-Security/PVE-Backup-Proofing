@@ -42,8 +42,20 @@ func (e *RefusedError) Error() string {
 
 func (e *RefusedError) Is(target error) bool { return target == ErrRefused }
 
-// noDeadline is the request deadline used when ctx has none.
+// noDeadline is the request timeout used when ctx has no deadline.
 const noDeadline = 24 * time.Hour
+
+// remaining is the time ctx still allows, sent as the request's timeout:
+// noDeadline when ctx has no deadline, and at least 1ms (the helper then
+// reports a timeout) so an expiring ctx still makes a valid request. The
+// helper caps it at its own request_timeout.
+func remaining(ctx context.Context) time.Duration {
+	d := noDeadline
+	if dl, ok := ctx.Deadline(); ok {
+		d = time.Until(dl)
+	}
+	return min(max(d, time.Millisecond), nodeproto.MaxTimeout)
+}
 
 // Helper is the daemon's typed client for the `pbp node` helper on the node.
 type Helper struct {
@@ -55,11 +67,7 @@ type Helper struct {
 // guest's own outcome).
 func (h Helper) call(ctx context.Context, req nodeproto.Request, stdin []byte) (Result, error) {
 	req.Nonce = nodeproto.NewNonce()
-	if dl, ok := ctx.Deadline(); ok {
-		req.Deadline = dl
-	} else {
-		req.Deadline = time.Now().Add(noDeadline)
-	}
+	req.Timeout = remaining(ctx)
 	cmd, err := nodeproto.Encode(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: encode %s request: %v", ErrHelper, req.Op, err)

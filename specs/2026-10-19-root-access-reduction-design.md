@@ -78,11 +78,13 @@ a reserved exit code (e.g. 250) **plus** a fixed stderr marker line (`pbp-node: 
 to `ErrOutOfRange`/`ErrNotOwned`/transport ERROR as appropriate). `pbp check`'s refusal probe
 asserts that combination.
 
-**Timeouts** *(my call)*: every request carries the client's remaining deadline (e.g.
-`--deadline <unix-ms>`). The helper applies the **shorter** of that and `request_timeout`
-(a ceiling, default 15m) and kills the child's whole process group on expiry, then reports a
-timeout distinctly (marker `pbp-node: timeout`). So nothing PBP starts on the node outlives PBP's
-own deadline, and PBP's verdicts for timeouts stay as today. Note: `request_timeout` must be at
+**Timeouts** *(my call)*: every request carries the time the client still allows, as a
+duration (`--timeout-ms <n>`, 1 to 10 digits, rounded up; 24h when the daemon's context has no
+deadline), not as an absolute time, so clock skew between daemon and node cannot stretch or
+shrink it. The helper starts the clock when it receives the request, applies the **shorter** of
+that and `request_timeout` (a ceiling, default 15m), and kills the child's whole process group
+on expiry, then reports a timeout distinctly (marker `pbp-node: timeout`). So nothing PBP starts
+on the node outlives PBP's own deadline (give or take the request's transit time), and PBP's verdicts for timeouts stay as today. Note: `request_timeout` must be at
 least `restore.probe_timeout`; `pbp check` warns if it is lower.
 *(Background: a client-side cancel cannot reach a root process started through sudo under a
 no-pty SSH session, so the deadline must travel with the request.)*

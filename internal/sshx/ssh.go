@@ -248,7 +248,7 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 // Run sends cmd verbatim in a new session. Cancelling ctx closes the
 // session and returns ctx.Err(); OpenSSH does not pass that on to the remote
 // process, so a command must bound itself on the node (Helper requests
-// carry their deadline for the helper to enforce).
+// carry their remaining time for the helper to enforce).
 func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err

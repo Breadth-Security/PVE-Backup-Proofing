@@ -368,10 +368,10 @@ func (r *deadlineRunner) Run(ctx context.Context, cmd string, stdin []byte) (ssh
 	return r.Fake.Run(ctx, cmd, stdin)
 }
 
-// The exec request gets the caller's context, and its deadline travels in
+// The exec request gets the caller's context, and its remaining time travels in
 // the request: the helper bounds the command on the node by it, since
 // OpenSSH does not pass a cancelled context on to the remote command.
-// Without a deadline the request carries the client's default.
+// Without a deadline the request carries the client's default (24h).
 func TestLXCExecutorPassesDeadline(t *testing.T) {
 	f := healthyFake()
 	ssh := &deadlineRunner{}
@@ -396,11 +396,11 @@ func TestLXCExecutorPassesDeadline(t *testing.T) {
 	if !ssh.deadlines[0].Equal(want) || !ssh.deadlines[1].IsZero() {
 		t.Errorf("ctx deadlines = %v, want %v then none", ssh.deadlines, want)
 	}
-	if !reqs[0].Deadline.Equal(want.Truncate(time.Millisecond)) {
-		t.Errorf("request deadline = %v, want %v", reqs[0].Deadline, want)
+	if d := reqs[0].Timeout; d > 90*time.Second || d < 80*time.Second {
+		t.Errorf("request timeout = %v, want the ~90s ctx still allowed", d)
 	}
-	if d := time.Until(reqs[1].Deadline); d < time.Hour {
-		t.Errorf("request without a ctx deadline has deadline in %v", d)
+	if d := reqs[1].Timeout; d < time.Hour {
+		t.Errorf("request without a ctx deadline has timeout %v", d)
 	}
 }
 

@@ -104,8 +104,8 @@ func req(t *testing.T, r nodeproto.Request) string {
 	if r.Nonce == "" {
 		r.Nonce = testNonce
 	}
-	if r.Deadline.IsZero() {
-		r.Deadline = time.Now().Add(time.Minute)
+	if r.Timeout == 0 {
+		r.Timeout = time.Minute
 	}
 	s, err := nodeproto.Encode(r)
 	if err != nil {
@@ -114,7 +114,7 @@ func req(t *testing.T, r nodeproto.Request) string {
 	return s
 }
 
-func future() string { return fmt.Sprint(time.Now().Add(time.Minute).UnixMilli()) }
+func future() string { return fmt.Sprint(time.Minute.Milliseconds()) }
 
 func lastLine(s string) string {
 	s = strings.TrimRight(s, "\n")
@@ -142,17 +142,19 @@ func assertHelperFailure(t *testing.T, r result, kind string) {
 func TestServeRefusesMalformedRequests(t *testing.T) {
 	dl := future()
 	for _, tc := range []struct{ name, request string }{
-		{"shell in vmid", "exec --deadline " + dl + " --nonce " + testNonce + " 990001;id -- [\"id\"]"},
-		{"vmid too long", "exec --deadline " + dl + " --nonce " + testNonce + " 9900010000 -- [\"id\"]"},
-		{"negative vmid", "exec --deadline " + dl + " --nonce " + testNonce + " -1 -- [\"id\"]"},
-		{"unquoted argv", "exec --deadline " + dl + " --nonce " + testNonce + " 990001 -- sh -c 'id'; reboot"},
-		{"newline in argv", "exec --deadline " + dl + " --nonce " + testNonce + " 990001 -- [\"id\n\"]"},
-		{"extra args on version", "version --deadline " + dl + " --nonce " + testNonce + " extra"},
-		{"unknown op", "install-templates --deadline " + dl + " --nonce " + testNonce},
-		{"shell op", "sh --deadline " + dl + " --nonce " + testNonce},
-		{"no deadline", "version --nonce " + testNonce},
-		{"empty argv", "exec --deadline " + dl + " --nonce " + testNonce + " 990001 -- []"},
-		{"non-string argv", "exec --deadline " + dl + " --nonce " + testNonce + " 990001 -- [1]"},
+		{"shell in vmid", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 990001;id -- [\"id\"]"},
+		{"vmid too long", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 9900010000 -- [\"id\"]"},
+		{"negative vmid", "exec --timeout-ms " + dl + " --nonce " + testNonce + " -1 -- [\"id\"]"},
+		{"unquoted argv", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 990001 -- sh -c 'id'; reboot"},
+		{"newline in argv", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 990001 -- [\"id\n\"]"},
+		{"extra args on version", "version --timeout-ms " + dl + " --nonce " + testNonce + " extra"},
+		{"unknown op", "install-templates --timeout-ms " + dl + " --nonce " + testNonce},
+		{"shell op", "sh --timeout-ms " + dl + " --nonce " + testNonce},
+		{"no timeout", "version --nonce " + testNonce},
+		{"absolute deadline", "version --deadline " + dl + " --nonce " + testNonce},
+		{"zero timeout", "version --timeout-ms 0 --nonce " + testNonce},
+		{"empty argv", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 990001 -- []"},
+		{"non-string argv", "exec --timeout-ms " + dl + " --nonce " + testNonce + " 990001 -- [1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
@@ -166,7 +168,7 @@ func TestServeRefusesMalformedRequests(t *testing.T) {
 }
 
 func TestServeRefusesUnparseableWithoutNonce(t *testing.T) {
-	for _, request := range []string{"", "garbage", "exec --deadline 1 --nonce XYZ", "exec 990001 -- [\"id\"]\nreboot", `{"op":"exec","vmid":990001,"argv":["id"],"extra":1}`} {
+	for _, request := range []string{"", "garbage", "exec --timeout-ms 1 --nonce XYZ", "exec 990001 -- [\"id\"]\nreboot", `{"op":"exec","vmid":990001,"argv":["id"],"extra":1}`} {
 		f := newFake()
 		r := serve(t, f, request, "")
 		if r.exit != nodeproto.ExitRefused {
@@ -187,7 +189,7 @@ func TestServeRefusesUnparseableWithoutNonce(t *testing.T) {
 // A request rejected by Parse whose nonce is still syntactically present
 // gets a nonce-carrying marker, so the daemon sees a proper refusal.
 func TestServeRefusalUsesSyntacticNonce(t *testing.T) {
-	r := serve(t, newFake(), "exec --deadline "+future()+" --nonce "+testNonce+" 990001;id -- [\"id\"]", "")
+	r := serve(t, newFake(), "exec --timeout-ms "+future()+" --nonce "+testNonce+" 990001;id -- [\"id\"]", "")
 	assertHelperFailure(t, r, nodeproto.KindRefused)
 }
 
@@ -266,14 +268,19 @@ func TestServeGuestExit250IsNotAHelperMarker(t *testing.T) {
 	}
 }
 
-func TestServeDeadlineInThePast(t *testing.T) {
+// A request whose context has already ended does no work at all.
+func TestServeExpiredContextDoesNoWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	for _, op := range []string{"exec", "bridge", "version", "config", "templates", "notify"} {
 		f := newFake()
-		rq := nodeproto.Request{Op: op, Deadline: time.Now().Add(-time.Second)}
+		rq := nodeproto.Request{Op: op}
 		if op == "exec" {
 			rq.VMID, rq.Argv = 990001, []string{"id"}
 		}
-		r := serve(t, f, req(t, rq), "")
+		var out, errb bytes.Buffer
+		exit := Serve(ctx, testCfg, f, "0.2.0", req(t, rq), strings.NewReader(""), &out, &errb)
+		r := result{exit, out.String(), errb.String()}
 		assertHelperFailure(t, r, nodeproto.KindTimeout)
 		if r.stdout != "" || len(f.execCalls) != 0 || len(f.bridgeCalls) != 0 || len(f.notified) != 0 {
 			t.Errorf("%s: did work past the deadline: %+v", op, r)
@@ -291,7 +298,7 @@ func TestServeDeadlineMidCommand(t *testing.T) {
 	}
 	start := time.Now()
 	r := serve(t, f, req(t, nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"sleep", "999"},
-		Deadline: time.Now().Add(200 * time.Millisecond)}), "")
+		Timeout: 200 * time.Millisecond}), "")
 	if el := time.Since(start); el > time.Second {
 		t.Errorf("took %v", el)
 	}
@@ -301,7 +308,24 @@ func TestServeDeadlineMidCommand(t *testing.T) {
 	}
 }
 
-// The node's request_timeout caps a far-future client deadline.
+// The client's timeout counts from when the helper receives the request, on
+// the node's own clock.
+func TestServeTimeoutIsRelativeToNodeClock(t *testing.T) {
+	f := newFake()
+	var got time.Time
+	f.ExecFn = func(ctx context.Context, stdout, stderr io.Writer) (int, error) {
+		got, _ = ctx.Deadline()
+		return 0, nil
+	}
+	start := time.Now()
+	rq := req(t, nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}, Timeout: 5 * time.Second})
+	Serve(context.Background(), testCfg, f, "0.2.0", rq, strings.NewReader(""), io.Discard, io.Discard)
+	if d := got.Sub(start); d < 5*time.Second || d > 6*time.Second {
+		t.Errorf("effective deadline %v after the request, want about 5s", d)
+	}
+}
+
+// The node's request_timeout caps a longer client timeout.
 func TestServeRequestTimeoutCapsDeadline(t *testing.T) {
 	f := newFake()
 	var got time.Time
@@ -311,7 +335,7 @@ func TestServeRequestTimeoutCapsDeadline(t *testing.T) {
 	}
 	cfg := testCfg
 	cfg.RequestTimeout = time.Minute
-	rq := req(t, nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}, Deadline: time.Now().Add(time.Hour)})
+	rq := req(t, nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}, Timeout: time.Hour})
 	Serve(context.Background(), cfg, f, "0.2.0", rq, strings.NewReader(""), io.Discard, io.Discard)
 	if d := time.Until(got); d > time.Minute || d < 50*time.Second {
 		t.Errorf("effective deadline in %v, want about 1m", d)
@@ -433,7 +457,7 @@ func TestServeNotifyStdinBlocksPastDeadline(t *testing.T) {
 	var out, errb bytes.Buffer
 	start := time.Now()
 	exit := Serve(context.Background(), testCfg, f, "0.2.0",
-		req(t, nodeproto.Request{Op: "notify", Deadline: time.Now().Add(200 * time.Millisecond)}), pr, &out, &errb)
+		req(t, nodeproto.Request{Op: "notify", Timeout: 200 * time.Millisecond}), pr, &out, &errb)
 	if el := time.Since(start); el > time.Second {
 		t.Errorf("took %v", el)
 	}

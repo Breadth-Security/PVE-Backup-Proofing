@@ -34,9 +34,8 @@ func failure(kind, reason string) func(nodeproto.Request, []byte) sshx.Result {
 	}
 }
 
-func TestExecSendsEncodedRequestWithCtxDeadline(t *testing.T) {
-	dl := time.Now().Add(time.Hour).Truncate(time.Millisecond)
-	ctx, cancel := context.WithDeadline(context.Background(), dl)
+func TestExecSendsEncodedRequestWithCtxRemainingTime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	f := reply(t, func(nodeproto.Request, []byte) sshx.Result { return sshx.Result{Stdout: "ok\n", ExitCode: 3} })
 	res, err := sshx.Helper{R: f}.Exec(ctx, 990001, []string{"sh", "-c", "echo 'x'; id"})
@@ -48,7 +47,11 @@ func TestExecSendsEncodedRequestWithCtxDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"sh", "-c", "echo 'x'; id"}, Deadline: dl, Nonce: req.Nonce}
+	// The timeout is the time ctx still allowed when the request was sent.
+	if req.Timeout > time.Hour || req.Timeout < time.Hour-time.Minute {
+		t.Fatalf("timeout = %v, want just under 1h", req.Timeout)
+	}
+	want := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"sh", "-c", "echo 'x'; id"}, Timeout: req.Timeout, Nonce: req.Nonce}
 	if !reflect.DeepEqual(req, want) {
 		t.Fatalf("request = %+v, want %+v", req, want)
 	}
@@ -57,10 +60,9 @@ func TestExecSendsEncodedRequestWithCtxDeadline(t *testing.T) {
 	}
 }
 
-func TestNoncesAreFreshAndDeadlineDefaults(t *testing.T) {
+func TestNoncesAreFreshAndTimeoutDefaults(t *testing.T) {
 	f := reply(t, func(nodeproto.Request, []byte) sshx.Result { return sshx.Result{} })
 	h := sshx.Helper{R: f}
-	before := time.Now()
 	for range 2 {
 		if _, err := h.Exec(context.Background(), 990001, []string{"id"}); err != nil {
 			t.Fatal(err)
@@ -71,8 +73,25 @@ func TestNoncesAreFreshAndDeadlineDefaults(t *testing.T) {
 	if a.Nonce == b.Nonce {
 		t.Fatalf("nonce reused: %s", a.Nonce)
 	}
-	if d := a.Deadline.Sub(before); d < 23*time.Hour || d > 25*time.Hour {
-		t.Fatalf("default deadline is %v from now, want ~24h", d)
+	if a.Timeout != 24*time.Hour {
+		t.Fatalf("default timeout is %v, want 24h", a.Timeout)
+	}
+}
+
+// A ctx that has (almost) run out still sends a valid request, with the
+// smallest timeout, rather than failing to encode one.
+func TestExpiredCtxSendsMinimalTimeout(t *testing.T) {
+	f := reply(t, func(nodeproto.Request, []byte) sshx.Result { return sshx.Result{} })
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	_, _ = sshx.Helper{R: f}.Exec(ctx, 990001, []string{"id"})
+	calls := f.CallLog()
+	if len(calls) != 1 {
+		t.Fatalf("runner calls %q, want one", calls)
+	}
+	r, err := nodeproto.Parse(calls[0])
+	if err != nil || r.Timeout != time.Millisecond {
+		t.Fatalf("request %q: timeout %v, %v; want 1ms", calls[0], r.Timeout, err)
 	}
 }
 

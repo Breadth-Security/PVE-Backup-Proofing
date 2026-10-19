@@ -582,10 +582,10 @@ func nodeEnv(t *testing.T) (*env, *captureAudit) {
 	return e, au
 }
 
-func nodeRequest(t *testing.T, op string, deadline time.Time) (string, string) {
+func nodeRequest(t *testing.T, op string, timeout time.Duration) (string, string) {
 	t.Helper()
 	nonce := nodeproto.NewNonce()
-	s, err := nodeproto.Encode(nodeproto.Request{Op: op, Deadline: deadline, Nonce: nonce})
+	s, err := nodeproto.Encode(nodeproto.Request{Op: op, Timeout: timeout, Nonce: nonce})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +659,7 @@ func TestNodeErrorReasonsNotAudited(t *testing.T) {
 			e, au := nodeEnv(t)
 			e.a.nodeSys = stubSys{secret: secret}
 			e.a.stdin = strings.NewReader(c.stdin)
-			c.req.Deadline, c.req.Nonce = time.Now().Add(time.Minute), nodeproto.NewNonce()
+			c.req.Timeout, c.req.Nonce = time.Minute, nodeproto.NewNonce()
 			enc, err := nodeproto.Encode(c.req)
 			if err != nil {
 				t.Fatal(err)
@@ -697,7 +697,7 @@ func TestNodeRefusalAuditCodesOmitPayloadText(t *testing.T) {
 			e, au := nodeEnv(t)
 			e.a.nodeSys = c.sys
 			e.a.stdin = strings.NewReader(c.stdin)
-			c.req.Deadline, c.req.Nonce = time.Now().Add(time.Minute), nodeproto.NewNonce()
+			c.req.Timeout, c.req.Nonce = time.Minute, nodeproto.NewNonce()
 			enc, err := nodeproto.Encode(c.req)
 			if err != nil {
 				t.Fatal(err)
@@ -722,7 +722,7 @@ func TestNodeExit250WithoutMarkerIsError(t *testing.T) {
 	e, au := nodeEnv(t)
 	e.a.nodeSys = execSys{stubSys{}, 250}
 	req := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"x"},
-		Deadline: time.Now().Add(time.Minute), Nonce: nodeproto.NewNonce()}
+		Timeout: time.Minute, Nonce: nodeproto.NewNonce()}
 	enc, _ := nodeproto.Encode(req)
 	t.Setenv("SSH_ORIGINAL_COMMAND", enc)
 	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
@@ -748,7 +748,7 @@ func TestNodeConfigOverrideIgnoredAsRoot(t *testing.T) {
 		if root {
 			e.a.euid = func() int { return 0 }
 		}
-		req, _ := nodeRequest(t, "version", time.Now().Add(time.Minute))
+		req, _ := nodeRequest(t, "version", time.Minute)
 		t.Setenv("SSH_ORIGINAL_COMMAND", req)
 		code := e.a.main(context.Background(), []string{"node"})
 		if root {
@@ -785,7 +785,7 @@ func TestNodeVersionRequest(t *testing.T) {
 	t.Cleanup(func() { version = old })
 	version = "v0.2.1"
 	e, au := nodeEnv(t)
-	req, _ := nodeRequest(t, "version", time.Now().Add(time.Minute))
+	req, _ := nodeRequest(t, "version", time.Minute)
 	t.Setenv("SSH_ORIGINAL_COMMAND", req)
 	if code := e.a.main(context.Background(), []string{"node"}); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, e.errOut)
@@ -818,7 +818,7 @@ func TestNodeRefusalsAreAudited(t *testing.T) {
 	au.got = nil
 	nonce := nodeproto.NewNonce()
 	req, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: 101, Argv: []string{"echo", secret},
-		Deadline: time.Now().Add(time.Minute), Nonce: nonce})
+		Timeout: time.Minute, Nonce: nonce})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +847,7 @@ func TestNodeRefusalsAreAudited(t *testing.T) {
 func TestNodeMissingConfigRefuses(t *testing.T) {
 	e, au := nodeEnv(t)
 	t.Setenv("PBP_NODE_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
-	req, nonce := nodeRequest(t, "version", time.Now().Add(time.Minute))
+	req, nonce := nodeRequest(t, "version", time.Minute)
 	t.Setenv("SSH_ORIGINAL_COMMAND", req)
 	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
 		t.Fatalf("exit %d", code)

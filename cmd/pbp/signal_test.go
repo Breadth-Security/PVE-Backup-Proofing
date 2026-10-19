@@ -56,7 +56,7 @@ func exitedNormally(t *testing.T, err error) int {
 // helper's stdout and stderr fail with EPIPE. The helper must not die from
 // SIGPIPE before it has cleaned up (killed the guest command's group).
 func TestNodeSurvivesClosedOutput(t *testing.T) {
-	req, _ := nodeRequest(t, "version", time.Now().Add(time.Minute))
+	req, _ := nodeRequest(t, "version", time.Minute)
 	cmd := pbpProcess(t, req)
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -108,7 +108,7 @@ func TestNodeSurvivesHangup(t *testing.T) {
 		t.Skip("needs /proc")
 	}
 	// notify reads its payload from stdin, so the helper waits there.
-	req, _ := nodeRequest(t, "notify", time.Now().Add(time.Minute))
+	req, _ := nodeRequest(t, "notify", time.Minute)
 	cmd := pbpProcess(t, req)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

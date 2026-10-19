@@ -63,13 +63,25 @@ func Marker(kind, nonce, reason string) string {
 // MaxRequestLen bounds the size of a request the helper will parse.
 const MaxRequestLen = 64 * 1024
 
+// maxTimeoutDigits bounds the --timeout-ms field; MaxTimeout is the largest
+// timeout it can carry (about 115 days). The helper caps it at its own
+// request_timeout anyway.
+const (
+	maxTimeoutDigits = 10
+	MaxTimeout       = 9999999999 * time.Millisecond
+)
+
 // Request is a single helper invocation.
 type Request struct {
-	Op       string
-	VMID     int // exec only
-	Argv     []string
-	Deadline time.Time
-	Nonce    string // 16 lowercase hex chars, see NewNonce
+	Op   string
+	VMID int // exec only
+	Argv []string
+	// Timeout is the time the client still allows the request, measured
+	// from when the helper receives it (not a wall-clock instant, so clock
+	// skew between daemon and node does not matter). It travels in whole
+	// milliseconds, rounded up; Encode needs 0 < Timeout <= MaxTimeout.
+	Timeout time.Duration
+	Nonce   string // 16 lowercase hex chars, see NewNonce
 }
 
 var validOps = map[string]bool{
@@ -78,9 +90,9 @@ var validOps = map[string]bool{
 }
 
 // Encode renders r as the SSH command string:
-// `<op> --deadline <unix-ms> --nonce <hex>` plus, for exec,
+// `<op> --timeout-ms <n> --nonce <hex>` plus, for exec,
 // ` <vmid> -- <argv JSON array>`. It fails if r could not be parsed back
-// byte-exactly (bad op or nonce, invalid UTF-8 or NUL in argv).
+// (bad op, nonce or timeout, invalid UTF-8 or NUL in argv).
 func Encode(r Request) (string, error) {
 	if !validOps[r.Op] {
 		return "", fmt.Errorf("unknown op %q", r.Op)
@@ -88,7 +100,11 @@ func Encode(r Request) (string, error) {
 	if !validNonce(r.Nonce) {
 		return "", errors.New("invalid nonce")
 	}
-	s := fmt.Sprintf("%s --deadline %d --nonce %s", r.Op, r.Deadline.UnixMilli(), r.Nonce)
+	if r.Timeout <= 0 || r.Timeout > MaxTimeout {
+		return "", fmt.Errorf("timeout %v is outside (0, %v]", r.Timeout, MaxTimeout)
+	}
+	ms := (r.Timeout + time.Millisecond - 1) / time.Millisecond
+	s := fmt.Sprintf("%s --timeout-ms %d --nonce %s", r.Op, ms, r.Nonce)
 	if r.Op == "exec" {
 		argv := r.Argv
 		if argv == nil {
@@ -137,21 +153,21 @@ func Parse(s string) (Request, error) {
 			return r, errors.New("control character in request")
 		}
 	}
-	op, rest, found := strings.Cut(s, " --deadline ")
+	op, rest, found := strings.Cut(s, " --timeout-ms ")
 	if !found || !validOps[op] {
 		return r, errors.New("unknown or malformed request")
 	}
 	r.Op = op
 
-	dl, rest, found := strings.Cut(rest, " --nonce ")
-	if !found || !plainDecimal(dl, 15) {
-		return r, errors.New("invalid deadline")
+	tm, rest, found := strings.Cut(rest, " --nonce ")
+	if !found || !plainDecimal(tm, maxTimeoutDigits) {
+		return r, errors.New("invalid timeout")
 	}
-	ms, err := strconv.ParseInt(dl, 10, 64)
+	ms, err := strconv.ParseInt(tm, 10, 64)
 	if err != nil {
-		return r, errors.New("invalid deadline")
+		return r, errors.New("invalid timeout")
 	}
-	r.Deadline = time.UnixMilli(ms)
+	r.Timeout = time.Duration(ms) * time.Millisecond
 
 	nonce, rest, hasRest := strings.Cut(rest, " ")
 	if !validNonce(nonce) {
