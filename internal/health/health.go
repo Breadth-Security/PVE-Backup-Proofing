@@ -29,8 +29,8 @@ const (
 // Evaluate reports whether PBP is healthy at now. It is unhealthy when the
 // last finished run ended in a run-level error, when the newest run is still
 // running after maxRun (24h if 0), or when the scheduled time following the
-// newest run's start (startedAt, the daemon's start, if there are no runs)
-// passed more than 30 minutes ago. A zero startedAt with no runs is healthy.
+// newest run's end (its start if no end was recorded; startedAt, the
+// daemon's start, if there are no runs) passed more than 30 minutes ago. A zero startedAt with no runs is healthy.
 func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Duration, startedAt time.Time) (ok bool, reason string) {
 	if maxRun <= 0 {
 		maxRun = defaultMaxRun
@@ -57,12 +57,19 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, maxRun time.Du
 			}
 			return true, ""
 		}
-		base = last.Started
+		// Ticks during a run are skipped on purpose, so the next one due
+		// is the first after the run ended.
+		base = last.Ended
+		if base.IsZero() {
+			base = last.Started
+		}
 	}
 	if base.IsZero() {
 		return true, ""
 	}
-	if due := sched.Next(base); !due.IsZero() && now.After(due.Add(missGrace)) {
+	// Stored times keep the offset they were written with; the schedule is
+	// in the container's zone.
+	if due := sched.Next(base.In(time.Local)); !due.IsZero() && now.After(due.Add(missGrace)) {
 		return false, ReasonMissed
 	}
 	return true, ""

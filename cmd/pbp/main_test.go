@@ -291,16 +291,18 @@ func TestHealth(t *testing.T) {
 		t.Errorf("no state: %d %q", code, e.out)
 	}
 
-	// Daemon started yesterday noon and never ran: the 02:00 run was missed.
+	// Daemon started yesterday noon and never ran: the 02:00 run (container
+	// time zone) was missed.
 	os.MkdirAll(daemon.StateDir(), 0o700)
-	os.WriteFile(startedPath(), []byte(fixedNow.Add(-14*time.Hour).Format(time.RFC3339)+"\n"), 0o600)
-	e.a.now = func() time.Time { return fixedNow.Add(time.Hour) }
+	now := time.Date(2026, 10, 19, 3, 0, 0, 0, time.Local)
+	os.WriteFile(startedPath(), []byte(now.Add(-15*time.Hour).Format(time.RFC3339)+"\n"), 0o600)
+	e.a.now = func() time.Time { return now }
 	if code := e.run("health"); code != exitFail || e.out.String() != "scheduled run missed\n" {
 		t.Errorf("missed: %d %q", code, e.out)
 	}
 
 	// Freshly started daemon.
-	os.WriteFile(startedPath(), []byte(fixedNow.Add(50*time.Minute).Format(time.RFC3339)+"\n"), 0o600)
+	os.WriteFile(startedPath(), []byte(now.Add(-10*time.Minute).Format(time.RFC3339)+"\n"), 0o600)
 	if code := e.run("health"); code != exitOK {
 		t.Errorf("fresh: %d %q", code, e.out)
 	}

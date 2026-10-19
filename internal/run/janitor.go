@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -68,7 +69,7 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 		off := false
 		log.Info("janitor: restoring backup protected flag")
 		if err := d.API.SetVolumeAttrs(ctx, d.Cfg.Target.Node, j.Storage, j.VolID, nil, &off); err != nil {
-			if volumeGone(err) {
+			if volumeGone(err, j.VolID) {
 				log.Warn("janitor: backup no longer exists; nothing to unprotect", "err", err)
 			} else {
 				errs = append(errs, fmt.Errorf("unprotect %s: %w", j.VolID, err))
@@ -84,16 +85,25 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 	})
 }
 
-// volumeGone reports whether err says the backup volume no longer exists
+// volumeGone reports whether err says this backup volume no longer exists
 // (pruned or deleted since the crash), so there is no flag left to restore.
-// Transport errors ("no such host") never count: the volume may be there.
-func volumeGone(err error) bool {
+// The message must name the volume (its volid, or "volume ... does not
+// exist", "no such volume", "backup ... not found"): a bare 404, a missing
+// storage or a transport error ("no such host") never counts, since the
+// volume may still be there and protected.
+func volumeGone(err error, volid string) bool {
 	var ne net.Error
 	if errors.As(err, &ne) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "no such host") {
+	if strings.Contains(msg, "no such host") || storageMissing.MatchString(msg) {
+		return false
+	}
+	if volumeMissing.MatchString(msg) {
+		return true
+	}
+	if !strings.Contains(msg, strings.ToLower(volid)) {
 		return false
 	}
 	for _, s := range []string{"does not exist", "not found", "no such"} {
@@ -103,3 +113,8 @@ func volumeGone(err error) bool {
 	}
 	return false
 }
+
+var (
+	storageMissing = regexp.MustCompile(`storage '[^']*' does not exist`)
+	volumeMissing  = regexp.MustCompile(`volume .* does not exist|no such volume|backup .* not found`)
+)

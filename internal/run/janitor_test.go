@@ -224,8 +224,9 @@ func TestJanitorEmpty(t *testing.T) {
 func TestJanitorVanishedBackupCountsAsUnprotected(t *testing.T) {
 	for _, msg := range []string{
 		"volume 'pbs:v0' does not exist",
-		"backup Not Found",
-		"No such file or directory",
+		"Backup pbs:v0 Not Found",
+		"unable to stat pbs:v0 - No such file or directory",
+		"no such volume 'pbs:v0'",
 	} {
 		t.Run(msg, func(t *testing.T) {
 			f := newJanitorFixture(t)
@@ -261,5 +262,28 @@ func TestJanitorNetworkErrorKeepsEntry(t *testing.T) {
 		if _, ok := f.store.Snapshot().InFlight[990000]; !ok {
 			t.Errorf("%v: entry removed on a network error", err)
 		}
+	}
+}
+
+func TestJanitorUnrelatedNotFoundKeepsEntry(t *testing.T) {
+	for _, msg := range []string{
+		"Not Found",
+		"404 Not Found",
+		"storage 'pbs' does not exist",
+		"pbs:v0: storage 'pbs' does not exist",
+		"No such file or directory",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			f := newJanitorFixture(t)
+			f.backup("pbs:v0", true)
+			f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: stageDestroyed})
+			f.api.Fail["SetVolumeAttrs"] = errors.New(msg)
+			if Janitor(context.Background(), f.d) == nil {
+				t.Error("want error")
+			}
+			if _, ok := f.store.Snapshot().InFlight[990000]; !ok {
+				t.Error("entry removed although the volume was not said to be gone")
+			}
+		})
 	}
 }

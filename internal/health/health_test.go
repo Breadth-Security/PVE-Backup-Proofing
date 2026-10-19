@@ -69,3 +69,41 @@ func TestEvaluate(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateRunSpanningTick(t *testing.T) {
+	sched, err := cron.ParseStandard("0 */6 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 19, h, m, 0, 0, time.Local) }
+	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: "ok", Started: at(0, 0), Ended: at(7, 0)}}}
+	if ok, reason := Evaluate(st, at(7, 30), sched, 0, at(0, 0).Add(-time.Hour)); !ok {
+		t.Errorf("07:30 after a run that skipped the 06:00 tick: %q", reason)
+	}
+	if ok, reason := Evaluate(st, at(12, 31), sched, 0, time.Time{}); ok || reason != ReasonMissed {
+		t.Errorf("12:31 = %v %q, want missed", ok, reason)
+	}
+}
+
+func TestEvaluateStoredOffsetUsesLocalSchedule(t *testing.T) {
+	old := time.Local
+	time.Local = time.FixedZone("UTC-5", -5*60*60)
+	t.Cleanup(func() { time.Local = old })
+	sched, err := cron.ParseStandard("0 2 * * *") // 07:00 UTC
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Last run ended 02:30 local, stored (as after a JSON round trip) in UTC.
+	ended := time.Date(2026, 10, 18, 7, 30, 0, 0, time.UTC)
+	st := state.State{Runs: []state.RunRecord{{ID: "r", Outcome: "ok", Started: ended.Add(-30 * time.Minute), Ended: ended}}}
+	// 03:00 UTC is 22:00 local: the next local 02:00 is still ahead.
+	if ok, reason := Evaluate(st, time.Date(2026, 10, 19, 3, 0, 0, 0, time.UTC), sched, 0, time.Time{}); !ok {
+		t.Errorf("unhealthy: %q", reason)
+	}
+	if ok, _ := Evaluate(st, time.Date(2026, 10, 19, 7, 29, 0, 0, time.UTC), sched, 0, time.Time{}); !ok {
+		t.Error("unhealthy within grace of the local 02:00 run")
+	}
+	if ok, reason := Evaluate(st, time.Date(2026, 10, 19, 7, 31, 0, 0, time.UTC), sched, 0, time.Time{}); ok || reason != ReasonMissed {
+		t.Errorf("after grace = %v %q, want missed", ok, reason)
+	}
+}
