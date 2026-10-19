@@ -359,7 +359,8 @@ func splitList(s string) []string {
 var reHTTPCode = regexp.MustCompile(`\b(401|403|500)\b`)
 
 var errorMarkers = []string{"decrypt", "encryption key", "permission", "no space", "timeout", "timed out", "connection",
-	"already exists", "can't lock", "is locked"}
+	"already exists", "can't lock", "is locked", "error trying to connect", "no route to host", "unreachable",
+	"reset by peer", "broken pipe", "not online"}
 
 // ClassifyRestoreError maps a restore failure to a verdict: ERROR when the
 // node or PBP is at fault (key, permissions, space, timeouts, connectivity),

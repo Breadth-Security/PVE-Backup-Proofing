@@ -600,6 +600,12 @@ func TestClassifyRestoreError(t *testing.T) {
 		{errors.New("can't lock file '/var/lock/qemu-server/lock-990000.conf' - got timeout"), model.Error},
 		{errors.New("CAN'T LOCK storage"), model.Error},
 		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"VM 990000 Is Locked (create)"}}, model.Error},
+		{errors.New("pbs: error trying to connect: tcp connect error"), model.Error},
+		{errors.New("dial tcp 10.0.0.5:8007: No route to host"), model.Error},
+		{errors.New("network is unreachable"), model.Error},
+		{errors.New("read: connection Reset by peer"), model.Error},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"write: Broken pipe"}}, model.Error},
+		{errors.New("storage 'pbs-main' is not online"), model.Error},
 	}
 	for _, tc := range tests {
 		if got := ClassifyRestoreError(tc.err); got != tc.want {
