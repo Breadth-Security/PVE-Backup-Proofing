@@ -109,16 +109,22 @@ func TestFingerprintPin(t *testing.T) {
 
 	// lower-case, no-colon variants are accepted too
 	lower := strings.ToLower(fingerprint(srv))
-	c, _ := New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: lower})
+	c, err := New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: lower})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.Version(context.Background()); err != nil {
 		t.Errorf("matching fingerprint rejected: %v", err)
 	}
 
 	wrong := strings.Repeat("AA:", 31) + "AA"
-	c, _ = New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: wrong})
+	c, err = New(config.API{URL: srv.URL, TokenID: testToken, TokenSecretFile: secret, TLSFingerprint: wrong})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.Version(context.Background()); err == nil {
 		t.Error("wrong fingerprint accepted")
-	} else if !strings.Contains(err.Error(), "pinned fingerprint") {
+	} else if !strings.Contains(err.Error(), "does not match pinned fingerprint") {
 		t.Errorf("error does not mention the pin mismatch: %v", err)
 	}
 }

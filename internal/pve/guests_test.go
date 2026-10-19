@@ -119,6 +119,14 @@ func TestGuestConfigLXCRawLines(t *testing.T) {
 	}
 }
 
+// A malformed raw lxc entry is an error, not silently dropped.
+func TestGuestConfigLXCMalformedPair(t *testing.T) {
+	c, _ := capture(t, `{"data":{"lxc":[["lxc.cgroup2.devices.allow"]]}}`)
+	if _, err := c.GuestConfig(context.Background(), "pve1", model.KindLXC, 101); err == nil {
+		t.Fatal("malformed lxc pair accepted")
+	}
+}
+
 // Both kinds use the synchronous PUT. For qemu, POST is asynchronous: it
 // returns a task whose failure (on pve1: a 403 for removing a registered tag)
 // went unnoticed and left the change half applied as pending.
