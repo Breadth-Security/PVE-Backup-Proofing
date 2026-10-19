@@ -23,6 +23,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
@@ -31,7 +32,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n"
+const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp node [install-templates]\n"
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
@@ -65,10 +66,20 @@ type app struct {
 	now            func() time.Time
 	// connect builds the node-facing dependencies for one run or check.
 	connect func(cfg config.Config) wiring
+
+	// pbp node: stdin, the real System, the audit log, the effective-UID
+	// source and the template directory are seams for tests.
+	stdin       io.Reader
+	nodeSys     node.System
+	audit       auditLog
+	euid        func() int
+	templateDir string
 }
 
 func newApp(stdout, stderr io.Writer) *app {
-	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal}
+	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
+		stdin: os.Stdin, nodeSys: node.NewSystem(), audit: newSyslogAudit(),
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;
@@ -144,6 +155,9 @@ func (a *app) main(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 	cmd := args[0]
+	if cmd == "node" {
+		return a.nodeMain(ctx, args[1:])
+	}
 	fs := flag.NewFlagSet("pbp "+cmd, flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 	cfgFlag := fs.String("config", "", "config file (default $PBP_CONFIG or /etc/pbp/config.yaml)")
