@@ -5,23 +5,60 @@
 package nodeproto
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ExitRefused is the reserved exit code the helper uses for its own failures.
 const ExitRefused = 250
 
-// Marker prefixes written by the helper as its final stderr line.
+// Failure kinds carried by a helper marker line.
 const (
-	MarkRefused = "pbp-node: refused: "
-	MarkError   = "pbp-node: error: "
-	MarkTimeout = "pbp-node: timeout"
+	KindRefused = "refused"
+	KindError   = "error"
+	KindTimeout = "timeout"
 )
+
+// NewNonce returns a fresh per-request nonce (16 lowercase hex chars). The
+// helper echoes it in its marker line so a guest command cannot forge one.
+func NewNonce() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("nodeproto: crypto/rand: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func validNonce(n string) bool {
+	if len(n) != 16 {
+		return false
+	}
+	for i := 0; i < len(n); i++ {
+		c := n[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func markerPrefix(nonce string) string { return "pbp-node[" + nonce + "]: " }
+
+// Marker renders the helper's final stderr line (without newline) for a
+// failure of the given kind. reason is ignored for KindTimeout.
+func Marker(kind, nonce, reason string) string {
+	if kind == KindTimeout {
+		return markerPrefix(nonce) + "timeout"
+	}
+	return markerPrefix(nonce) + kind + ": " + reason
+}
 
 // MaxRequestLen bounds the size of a request the helper will parse.
 const MaxRequestLen = 64 * 1024
@@ -32,6 +69,7 @@ type Request struct {
 	VMID     int // exec only
 	Argv     []string
 	Deadline time.Time
+	Nonce    string // 16 lowercase hex chars, see NewNonce
 }
 
 var validOps = map[string]bool{
@@ -40,18 +78,39 @@ var validOps = map[string]bool{
 }
 
 // Encode renders r as the SSH command string:
-// `<op> --deadline <unix-ms>` plus, for exec, ` <vmid> -- <argv JSON array>`.
-func Encode(r Request) string {
-	s := fmt.Sprintf("%s --deadline %d", r.Op, r.Deadline.UnixMilli())
+// `<op> --deadline <unix-ms> --nonce <hex>` plus, for exec,
+// ` <vmid> -- <argv JSON array>`. It fails if r could not be parsed back
+// byte-exactly (bad op or nonce, invalid UTF-8 or NUL in argv).
+func Encode(r Request) (string, error) {
+	if !validOps[r.Op] {
+		return "", fmt.Errorf("unknown op %q", r.Op)
+	}
+	if !validNonce(r.Nonce) {
+		return "", errors.New("invalid nonce")
+	}
+	s := fmt.Sprintf("%s --deadline %d --nonce %s", r.Op, r.Deadline.UnixMilli(), r.Nonce)
 	if r.Op == "exec" {
 		argv := r.Argv
 		if argv == nil {
 			argv = []string{}
 		}
-		b, _ := json.Marshal(argv) // []string cannot fail to marshal
-		s += fmt.Sprintf(" %d -- %s", r.VMID, b)
+		for _, a := range argv {
+			if !utf8.ValidString(a) {
+				return "", errors.New("argv is not valid UTF-8")
+			}
+			if strings.ContainsRune(a, 0) {
+				return "", errors.New("argv contains NUL")
+			}
+		}
+		b, err := json.Marshal(argv)
+		if err != nil {
+			return "", err
+		}
+		// json escapes < 0x20 but not DEL; Parse rejects raw DEL.
+		js := strings.ReplaceAll(string(b), "\x7f", `\u007f`)
+		s += fmt.Sprintf(" %d -- %s", r.VMID, js)
 	}
-	return s
+	return s, nil
 }
 
 // plainDecimal reports whether s is 1..maxDigits ASCII digits with no leading zero.
@@ -84,8 +143,8 @@ func Parse(s string) (Request, error) {
 	}
 	r.Op = op
 
-	dl, rest, hasRest := strings.Cut(rest, " ")
-	if !plainDecimal(dl, 15) {
+	dl, rest, found := strings.Cut(rest, " --nonce ")
+	if !found || !plainDecimal(dl, 15) {
 		return r, errors.New("invalid deadline")
 	}
 	ms, err := strconv.ParseInt(dl, 10, 64)
@@ -93,6 +152,12 @@ func Parse(s string) (Request, error) {
 		return r, errors.New("invalid deadline")
 	}
 	r.Deadline = time.UnixMilli(ms)
+
+	nonce, rest, hasRest := strings.Cut(rest, " ")
+	if !validNonce(nonce) {
+		return Request{}, errors.New("invalid nonce")
+	}
+	r.Nonce = nonce
 
 	if op != "exec" {
 		if hasRest {
@@ -109,8 +174,18 @@ func Parse(s string) (Request, error) {
 	}
 	r.VMID, _ = strconv.Atoi(vmid)
 
-	if !strings.HasPrefix(argv, "[") || json.Unmarshal([]byte(argv), &r.Argv) != nil || r.Argv == nil {
+	if !strings.HasPrefix(argv, "[") || !strings.HasSuffix(argv, "]") || !utf8.ValidString(argv) {
+		return Request{}, errors.New("argv is not a canonical JSON string array")
+	}
+	var raw []json.RawMessage
+	if json.Unmarshal([]byte(argv), &raw) != nil || raw == nil {
 		return Request{}, errors.New("argv is not a JSON string array")
+	}
+	r.Argv = make([]string, len(raw))
+	for i, e := range raw {
+		if len(e) == 0 || e[0] != '"' || json.Unmarshal(e, &r.Argv[i]) != nil {
+			return Request{}, errors.New("argv element is not a string")
+		}
 	}
 	if len(r.Argv) == 0 {
 		return Request{}, errors.New("argv is empty")
@@ -125,10 +200,10 @@ func Parse(s string) (Request, error) {
 
 // HelperFailure reports whether a finished SSH command was a failure of the
 // helper itself rather than a guest result. That is so only when the exit code
-// is ExitRefused and the last non-empty stderr line starts with a helper marker.
-// kind is "refused", "error" or "timeout".
-func HelperFailure(exit int, stderr string) (kind string, reason string, ok bool) {
-	if exit != ExitRefused {
+// is ExitRefused and the last non-empty stderr line is a helper marker carrying
+// this request's nonce. kind is "refused", "error" or "timeout".
+func HelperFailure(exit int, stderr, nonce string) (kind string, reason string, ok bool) {
+	if exit != ExitRefused || !validNonce(nonce) {
 		return "", "", false
 	}
 	s := strings.TrimRight(stderr, " \t\r\n")
@@ -136,13 +211,14 @@ func HelperFailure(exit int, stderr string) (kind string, reason string, ok bool
 		s = s[i+1:]
 	}
 	s = strings.TrimRight(s, "\r")
+	p := markerPrefix(nonce)
 	switch {
-	case strings.HasPrefix(s, MarkRefused):
-		return "refused", strings.TrimSpace(strings.TrimPrefix(s, MarkRefused)), true
-	case strings.HasPrefix(s, MarkError):
-		return "error", strings.TrimSpace(strings.TrimPrefix(s, MarkError)), true
-	case strings.HasPrefix(s, MarkTimeout):
-		return "timeout", strings.TrimSpace(strings.TrimPrefix(s, MarkTimeout)), true
+	case s == p+"timeout":
+		return KindTimeout, "", true
+	case strings.HasPrefix(s, p+"refused: "):
+		return KindRefused, strings.TrimSpace(strings.TrimPrefix(s, p+"refused: ")), true
+	case strings.HasPrefix(s, p+"error: "):
+		return KindError, strings.TrimSpace(strings.TrimPrefix(s, p+"error: ")), true
 	}
 	return "", "", false
 }
@@ -192,10 +268,37 @@ type BridgeState struct {
 	Members     []string        `json:"members"`
 }
 
-// NodeConfig is the helper's reply to the config op.
+// NodeConfig is the helper's reply to the config op. RequestTimeout travels
+// as a duration string (e.g. "15m0s").
 type NodeConfig struct {
 	VMIDRange      [2]int        `json:"vmid_range"`
 	Bridge         string        `json:"bridge"`
 	RequestTimeout time.Duration `json:"request_timeout"`
 	Version        string        `json:"version"`
+}
+
+type nodeConfigWire struct {
+	VMIDRange      [2]int `json:"vmid_range"`
+	Bridge         string `json:"bridge"`
+	RequestTimeout string `json:"request_timeout"`
+	Version        string `json:"version"`
+}
+
+// MarshalJSON encodes RequestTimeout as a duration string.
+func (c NodeConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(nodeConfigWire{c.VMIDRange, c.Bridge, c.RequestTimeout.String(), c.Version})
+}
+
+// UnmarshalJSON decodes RequestTimeout from a duration string.
+func (c *NodeConfig) UnmarshalJSON(b []byte) error {
+	var w nodeConfigWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	d, err := time.ParseDuration(w.RequestTimeout)
+	if err != nil {
+		return fmt.Errorf("request_timeout: %w", err)
+	}
+	*c = NodeConfig{w.VMIDRange, w.Bridge, d, w.Version}
+	return nil
 }
