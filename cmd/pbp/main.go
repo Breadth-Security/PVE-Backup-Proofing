@@ -54,6 +54,14 @@ func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, forma
 func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "node" {
+		// The helper outlives a vanished SSH client on purpose: it must reach
+		// its own deadline handling (kill the guest command's process group,
+		// audit the outcome). A hangup, or a write to the closed session's
+		// stdout or stderr, must not kill it first; such writes now fail
+		// with EPIPE instead.
+		signal.Ignore(syscall.SIGPIPE, syscall.SIGHUP)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
 	stop()
