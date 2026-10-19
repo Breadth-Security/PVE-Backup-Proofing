@@ -361,16 +361,21 @@ func (a *app) health(cfg config.Config) int {
 }
 
 // writeStarted records the daemon start time atomically (temp file, then
-// rename), so health never reads a half-written file.
+// rename), so health never reads a half-written file. A failed write or
+// rename leaves no temp file behind.
 func writeStarted(path string, t time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(t.Format(time.RFC3339)+"\n"), 0o600); err != nil {
-		return err
+	err := os.WriteFile(tmp, []byte(t.Format(time.RFC3339)+"\n"), 0o600)
+	if err == nil {
+		err = os.Rename(tmp, path)
 	}
-	return os.Rename(tmp, path)
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // readStarted reads the daemon start time; a missing file is the zero time,

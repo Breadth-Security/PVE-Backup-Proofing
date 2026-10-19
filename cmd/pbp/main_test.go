@@ -430,6 +430,21 @@ func TestWriteStartedIsAtomic(t *testing.T) {
 	}
 }
 
+// A failed rename (the target is a non-empty directory) returns the error and
+// removes the temp file.
+func TestWriteStartedFailureRemovesTemp(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "daemon.started")
+	if err := os.MkdirAll(filepath.Join(p, "occupied"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStarted(p, fixedNow); err == nil {
+		t.Fatal("want rename error")
+	}
+	if _, err := os.Stat(p + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp file left behind: %v", err)
+	}
+}
+
 // A corrupt daemon.started is unhealthy and names the file, not zero time.
 func TestHealthCorruptStartTime(t *testing.T) {
 	e := newEnv(t)
