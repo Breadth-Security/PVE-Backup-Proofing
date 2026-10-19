@@ -178,7 +178,7 @@ docker compose exec pbp pbp check
 
 `pbp check` validates the config and your access and runs the full preflight, without restoring anything. Fix everything it reports before you rely on the schedule.
 
-Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroless `nonroot`). The secret files and `config.yaml` must be readable by that user (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is. A bind mount hides that ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first.
+Secrets and volumes: the image runs as the non-root uid/gid **65532** (distroless `nonroot`). The secret files and `config.yaml` must be readable by that user (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is. A bind mount hides that ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first. Run logs are created readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root or as that uid, for example `sudo less logs/run-*.log`.
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
@@ -290,7 +290,8 @@ go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
 go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 -tags integration ./...
 
 # gosec
-go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
+# gosec v2.29.0 needs a Go 1.26 toolchain to analyse the code
+GOTOOLCHAIN=go1.26.9 go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
 
 # golangci-lint (config: .golangci.yml)
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...

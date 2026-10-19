@@ -8,7 +8,7 @@ RUN go mod download
 COPY . .
 # Refuse to build an image from code that fails vet or the race-enabled
 # tests (the race detector needs cgo, which the golang image provides).
-RUN go vet ./... && CGO_ENABLED=1 go test -race -count=1 ./...
+RUN go vet ./... && go vet -tags integration ./... && CGO_ENABLED=1 go test -race -count=1 ./...
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/pbp ./cmd/pbp
 # Empty state and log directories, copied below with uid 65532 ownership so
 # named volumes mounted there inherit it.
