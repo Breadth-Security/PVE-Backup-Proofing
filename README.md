@@ -213,7 +213,7 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
    sudo chmod 0640 /etc/pbp/config.yaml /etc/pbp/known_hosts
    ```
 
-   In `config.yaml` point `token_secret_file` and `key_file` at `/etc/pbp/secrets/...`. The service can read `/etc/pbp` but not write to it.
+   In `config.yaml` set `token_secret_file` and `key_file` to `/etc/pbp/secrets/...` and `known_hosts_file: /etc/pbp/known_hosts`. The service can read `/etc/pbp` but not write to it.
 
 3. Check, then start:
 
@@ -222,9 +222,11 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
    sudo systemctl start pbp
    ```
 
-   The unit is enabled on install but only starts once `/etc/pbp/config.yaml` exists.
+   `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished. The unit is enabled on install but only starts once `/etc/pbp/config.yaml` exists.
 
 Logs: `journalctl -u pbp -f`, and the per-run files in `/var/log/pbp` (read them as root or `pbp`). State is in `/var/lib/pbp`.
+
+Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.2.0-rc1` produces `1.2.0~rc1`, which sorts before `1.2.0`. File names carry that Debian version (`pbp_1.2.0~rc1_amd64.deb`).
 
 **Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched and the running service is restarted. **Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user.
 
