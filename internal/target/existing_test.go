@@ -708,6 +708,21 @@ func TestSanitizeVerifiesBridge(t *testing.T) {
 	}
 }
 
+// A NIC still carrying an MTU fails verification even on the right bridge.
+func TestSanitizeVerifiesMTUCleared(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = strings.Replace(vmConf, "bridge=vmbr0,tag=2", "bridge="+bridge+",mtu=1500", 1)
+	n := newTarget(t, bridgeIgnoringAPI{f}, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, orig(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, orig(f, vmVol))
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "net0") {
+		t.Fatalf("err = %v, want net0 verification failure", err)
+	}
+}
+
 func TestStartAfterSanitize(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()

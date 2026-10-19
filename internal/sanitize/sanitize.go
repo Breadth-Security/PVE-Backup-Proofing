@@ -55,7 +55,7 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		case kind == model.KindQEMU && k == "args":
 			p.Unsafe = append(p.Unsafe, "args")
 		case kind == model.KindQEMU && rePCIEtc.MatchString(k):
-			if strings.TrimSpace(v) != "socket" {
+			if !isVirtualDevice(v) {
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
 		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
@@ -101,6 +101,17 @@ func (p *Plan) remove(key string, piece model.MissingPiece) {
 	p.Removed = append(p.Removed, piece)
 }
 
+// isVirtualDevice reports whether a serial/usb/parallel value attaches no
+// host hardware: a socket serial port or a SPICE-redirected USB device.
+func isVirtualDevice(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "socket" || firstField(v) == "spice" {
+		return true
+	}
+	host, _ := optValue(v, "host")
+	return host == "spice"
+}
+
 func firstField(s string) string {
 	f, _, _ := strings.Cut(s, ",")
 	return f
@@ -113,6 +124,9 @@ func sanitizeNet(v, bridge string) string {
 	var out []string
 	seenBridge := false
 	for _, f := range strings.Split(v, ",") {
+		if f == "" {
+			continue
+		}
 		k, _, _ := strings.Cut(f, "=")
 		// A qemu first field is "<model>=MAC", never one of these keys.
 		switch k {

@@ -299,3 +299,25 @@ func TestSplitList(t *testing.T) {
 		}
 	}
 }
+
+// A SPICE-redirected USB device attaches no host hardware.
+func TestSanitizeUSBSpiceKept(t *testing.T) {
+	p := Sanitize(model.KindQEMU, map[string]string{
+		"usb0": "spice", "usb1": "host=spice,usb3=1", "usb2": "host=1234:5678",
+	}, br)
+	if want := []string{"usb2"}; !reflect.DeepEqual(p.Delete, want) {
+		t.Errorf("Delete = %v, want %v", p.Delete, want)
+	}
+	if len(p.Removed) != 1 || p.Removed[0].Key != "usb2" {
+		t.Errorf("Removed = %v", p.Removed)
+	}
+}
+
+func TestSanitizeNetEmpty(t *testing.T) {
+	if got := sanitizeNet("", br); got != "bridge="+br {
+		t.Errorf("got %q", got)
+	}
+	if got := sanitizeNet("virtio=AA,,tag=2", br); got != "virtio=AA,bridge="+br {
+		t.Errorf("got %q", got)
+	}
+}

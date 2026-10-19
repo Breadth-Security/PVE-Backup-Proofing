@@ -28,14 +28,14 @@ func MissingFromOriginal(kind model.GuestKind, original map[string]string) []mod
 			if m, _ := optValue(v, "media"); m == "cdrom" {
 				continue
 			}
-			if b, ok := optValue(v, "backup"); ok && b == "0" {
+			if b, ok := optBool(v, "backup"); ok && !b {
 				out = append(out, model.MissingPiece{Kind: "excluded-disk", Key: k, Detail: "backup=0"})
 			}
 		case kind == model.KindLXC && reMP.MatchString(k):
 			if strings.HasPrefix(firstField(v), "/") {
 				continue
 			}
-			if b, _ := optValue(v, "backup"); b != "1" {
+			if b, _ := optBool(v, "backup"); !b {
 				path, _ := optValue(v, "mp")
 				out = append(out, model.MissingPiece{Kind: "excluded-mountpoint", Key: k, Path: path, Detail: "backup not enabled"})
 			}

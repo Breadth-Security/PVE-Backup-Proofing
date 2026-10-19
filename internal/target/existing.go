@@ -253,8 +253,8 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 var reNet = regexp.MustCompile(`^net\d+$`)
 
 // verifySanitized re-reads the live config and checks it is safe to start:
-// tagged "pbp", onboot and protection off, every NIC on the isolated bridge with no VLAN or
-// rate options, and nothing left that Sanitize would remove or refuse.
+// tagged "pbp", onboot and protection off, every NIC on the isolated bridge with no VLAN, rate
+// or MTU options, and nothing left that Sanitize would remove or refuse.
 func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind, vmid int) error {
 	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
 	if err != nil {
@@ -292,7 +292,7 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 }
 
 // onlyBridge reports whether a NIC value has exactly one bridge option equal
-// to bridge and no tag/trunks/rate options.
+// to bridge and no tag/trunks/rate/mtu options.
 func onlyBridge(v, bridge string) bool {
 	bridges := 0
 	for _, f := range strings.Split(v, ",") {
@@ -303,7 +303,7 @@ func onlyBridge(v, bridge string) bool {
 				return false
 			}
 			bridges++
-		case "tag", "trunks", "rate":
+		case "tag", "trunks", "rate", "mtu":
 			return false
 		}
 	}

@@ -47,3 +47,20 @@ func optValue(opts, key string) (string, bool) {
 	}
 	return "", false
 }
+
+// optBool returns the boolean value of option key in a comma-separated
+// option string, using PVE's spellings (yes|on|true|1, no|off|false|0, any
+// case). ok is false when the option is absent or not a boolean.
+func optBool(opts, key string) (val, ok bool) {
+	v, found := optValue(opts, key)
+	if !found {
+		return false, false
+	}
+	switch strings.ToLower(v) {
+	case "1", "yes", "on", "true":
+		return true, true
+	case "0", "no", "off", "false":
+		return false, true
+	}
+	return false, false
+}
