@@ -178,8 +178,10 @@ func (c Config) validate() error {
 	if t.Bridge == "" {
 		bad("target.bridge", "required")
 	}
-	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi > maxVMID {
-		bad("target.vmid_range", "need 100 <= lo <= hi <= %d, got [%d, %d]", maxVMID, lo, hi)
+	// hi stays below maxVMID so hi+1 (the out-of-range refusal probe) is
+	// still a valid VMID.
+	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi >= maxVMID {
+		bad("target.vmid_range", "need 100 <= lo <= hi < %d, got [%d, %d]", maxVMID, lo, hi)
 	}
 	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported)")

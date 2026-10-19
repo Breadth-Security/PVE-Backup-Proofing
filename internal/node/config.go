@@ -68,8 +68,10 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("node config %s: vmid_range: need [lo, hi]", path)
 	}
 	c.VMIDRange = [2]int{fc.VMIDRange[0], fc.VMIDRange[1]}
-	if lo, hi := c.VMIDRange[0], c.VMIDRange[1]; lo < 100 || hi < lo || hi > maxVMID {
-		return Config{}, fmt.Errorf("node config %s: vmid_range: need 100 <= lo <= hi <= %d, got [%d, %d]", path, maxVMID, lo, hi)
+	// hi stays below maxVMID so the daemon's refusal probe (hi+1) is still a
+	// valid VMID; same rule as the daemon's target.vmid_range.
+	if lo, hi := c.VMIDRange[0], c.VMIDRange[1]; lo < 100 || hi < lo || hi >= maxVMID {
+		return Config{}, fmt.Errorf("node config %s: vmid_range: need 100 <= lo <= hi < %d, got [%d, %d]", path, maxVMID, lo, hi)
 	}
 
 	if fc.Bridge == "" {

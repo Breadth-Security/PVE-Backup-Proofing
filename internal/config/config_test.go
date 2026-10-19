@@ -112,6 +112,7 @@ func TestValidateErrors(t *testing.T) {
 		{"command timeout short", "sources:", "checks: {command_timeout: 500ms}\nsources:", "checks.command_timeout"},
 		{"command timeout unitless", "sources:", "checks: {command_timeout: 60}\nsources:", "checks.command_timeout"},
 		{"range too high", "[990000, 990049]", "[990000, 1000000000]", "target.vmid_range"},
+		{"range hi at max", "[990000, 990049]", "[990000, 999999999]", "target.vmid_range"},
 		{"profile no name", "sources:", "checks: {profiles: [{unit: x.service}]}\nsources:", "checks.profiles[0].name"},
 		{"profile no unit", "sources:", "checks: {profiles: [{name: x}]}\nsources:", "checks.profiles[0].unit"},
 		{"profile duplicate", "sources:", "checks: {profiles: [{name: x, unit: a}, {name: x, unit: b}]}\nsources:", "checks.profiles[1].name"},
@@ -271,5 +272,17 @@ func TestResolvePath(t *testing.T) {
 	t.Setenv("PBP_CONFIG", "/env.yaml")
 	if ResolvePath("") != "/env.yaml" || ResolvePath("/flag.yaml") != "/flag.yaml" {
 		t.Fatal("precedence")
+	}
+}
+
+// The refusal probe uses vmid_range[1]+1, so hi stops one short of the
+// largest VMID Proxmox accepts.
+func TestVMIDRangeTop(t *testing.T) {
+	c, err := loadStr(t, strings.Replace(minimal, "[990000, 990049]", "[990000, 999999998]", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Target.VMIDRange[1] != 999999998 {
+		t.Errorf("hi = %d, want 999999998", c.Target.VMIDRange[1])
 	}
 }

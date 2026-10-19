@@ -50,6 +50,7 @@ func TestLoadConfigInvalid(t *testing.T) {
 		{"range lo", "vmid_range: [99, 990009]\nbridge: vmbr99\n", "vmid_range"},
 		{"range reversed", "vmid_range: [990009, 990000]\nbridge: vmbr99\n", "vmid_range"},
 		{"range too high", "vmid_range: [990000, 1000000000]\nbridge: vmbr99\n", "vmid_range"},
+		{"range hi at max", "vmid_range: [990000, 999999999]\nbridge: vmbr99\n", "vmid_range"},
 		{"range one element", "vmid_range: [990000]\nbridge: vmbr99\n", "vmid_range"},
 		{"range three elements", "vmid_range: [990000, 990001, 990002]\nbridge: vmbr99\n", "vmid_range"},
 		{"range missing", "bridge: vmbr99\n", "vmid_range"},
@@ -72,5 +73,17 @@ func TestLoadConfigInvalid(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// The daemon probes hi+1 as an out-of-range VMID, so hi stops one short of
+// the largest VMID Proxmox accepts.
+func TestLoadConfigRangeTop(t *testing.T) {
+	c, err := LoadConfig(writeConfig(t, "vmid_range: [990000, 999999998]\nbridge: vmbr99\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.VMIDRange[1] != 999999998 {
+		t.Errorf("hi = %d, want 999999998", c.VMIDRange[1])
 	}
 }
