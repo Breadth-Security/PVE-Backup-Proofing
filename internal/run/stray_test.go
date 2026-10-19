@@ -113,7 +113,7 @@ func TestRunNeverTouchesStrayGuestsOnRealTarget(t *testing.T) {
 	if s.Severity() != "warning" {
 		t.Errorf("severity = %s", s.Severity())
 	}
-	assertNoStrayMutation(t, f.api.CallLog())
+	assertNoStrayMutation(t, f.api.CallLog(), f.d.Cfg.Target.VMIDRange)
 	if !f.exists(105) || !f.exists(210) {
 		t.Error("stray guest removed")
 	}
@@ -135,23 +135,25 @@ func TestJanitorLeavesStrayTaggedGuestsAlone(t *testing.T) {
 	if !f.exists(105) || !f.exists(210) || f.destroyed(105) || f.destroyed(210) {
 		t.Error("stray guest destroyed")
 	}
-	assertNoStrayMutation(t, f.api.CallLog())
+	assertNoStrayMutation(t, f.api.CallLog(), f.d.Cfg.Target.VMIDRange)
 }
 
-// assertNoStrayMutation fails if any mutating API call (logged as
-// "Method node kind vmid ...") names a VMID outside the PBP range.
-func assertNoStrayMutation(t *testing.T, calls []string) {
+// assertNoStrayMutation fails if any call that mutates a guest, as pvefake logs
+// it ("Method node kind vmid ..."), names a VMID outside vmidRange.
+func assertNoStrayMutation(t *testing.T, calls []string, vmidRange [2]int) {
 	t.Helper()
-	mutating := []string{"Restore", "SetGuestConfig", "Start", "Stop", "Shutdown", "Destroy", "SetVolumeAttrs"}
+	guestMutations := []string{"Restore", "SetGuestConfig", "Start", "Stop", "Shutdown", "Destroy"}
 	for _, c := range calls {
 		fs := strings.Fields(c)
-		if !slices.Contains(mutating, fs[0]) {
+		if !slices.Contains(guestMutations, fs[0]) {
 			continue
 		}
-		for _, a := range fs[1:] {
-			if v, err := strconv.Atoi(a); err == nil && (v == 105 || v == 210) {
-				t.Errorf("SAFETY: mutating call names a stray guest: %q", c)
-			}
+		if len(fs) < 4 {
+			t.Errorf("unparseable mutating call %q", c)
+			continue
+		}
+		if v, err := strconv.Atoi(fs[3]); err != nil || v < vmidRange[0] || v > vmidRange[1] {
+			t.Errorf("SAFETY: mutating call names a guest outside the range: %q", c)
 		}
 	}
 }
