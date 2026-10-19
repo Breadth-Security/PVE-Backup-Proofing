@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,15 +154,16 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		}
 		_ = r.Reply(true, nil)
 		cmd := string(r.Payload[4:])
+		inner := unwrapBounded(cmd)
 		code := byte(0)
 		switch {
-		case strings.HasPrefix(cmd, "exit3"):
+		case strings.HasPrefix(inner, "exit3"):
 			code = 3
 			_, _ = io.WriteString(ch, "out")
 			_, _ = io.WriteString(ch.Stderr(), "err")
-		case strings.HasPrefix(cmd, "cat"):
+		case strings.HasPrefix(inner, "cat"):
 			_, _ = io.Copy(ch, ch)
-		case strings.HasPrefix(cmd, "sleep"):
+		case strings.HasPrefix(inner, "sleep"):
 			for range reqs { // block until the client closes the session
 			}
 			return
@@ -211,6 +213,16 @@ func TestDialUnknownHost(t *testing.T) {
 	if !strings.Contains(err.Error(), "knownhosts") {
 		t.Fatalf("error should mention knownhosts: %v", err)
 	}
+}
+
+var reBounded = regexp.MustCompile(`^timeout --kill-after=5s \d+s sh -c '(.*)'$`)
+
+// unwrapBounded returns the command a bounded() wrapper runs, or cmd itself.
+func unwrapBounded(cmd string) string {
+	if m := reBounded.FindStringSubmatch(cmd); m != nil {
+		return strings.ReplaceAll(m[1], `'\''`, "'")
+	}
+	return cmd
 }
 
 func TestRunCancel(t *testing.T) {

@@ -247,7 +247,7 @@ func TestWaitBootedLXC(t *testing.T) {
 		if got.OS != probe.Linux || got.AgentMissing || got.ExecBlocked {
 			t.Errorf("got %+v", got)
 		}
-		if ssh.CallLog()[0] != "timeout --kill-after=5s 1s pct exec 990001 -- 'true'" {
+		if ssh.CallLog()[0] != "pct exec 990001 -- 'true'" {
 			t.Errorf("ssh calls = %q", ssh.CallLog())
 		}
 		for _, c := range ssh.CallLog() {
@@ -350,36 +350,42 @@ func TestLXCExecutor(t *testing.T) {
 	}
 }
 
-// OpenSSH does not pass a cancelled context on to the remote command, so
-// pct exec is bounded on the node by coreutils timeout: the context's
-// remaining time rounded up to whole seconds (at least 1s). Without a
-// deadline there is no wrapper.
-func TestLXCExecutorBoundsRemoteCommand(t *testing.T) {
+// deadlineRunner records each command with its context's deadline.
+type deadlineRunner struct {
+	cmds      []string
+	deadlines []time.Time
+}
+
+func (r *deadlineRunner) Run(ctx context.Context, cmd string, _ []byte) (sshx.Result, error) {
+	dl, _ := ctx.Deadline()
+	r.cmds = append(r.cmds, cmd)
+	r.deadlines = append(r.deadlines, dl)
+	return sshx.Result{}, nil
+}
+
+// pct exec gets the caller's context, deadline included: the SSH runner
+// bounds the command on the node by it (sshx.TestBounded), since OpenSSH
+// does not pass a cancelled context on to the remote command.
+func TestLXCExecutorPassesDeadline(t *testing.T) {
 	f := healthyFake()
-	ssh := &sshx.Fake{}
+	ssh := &deadlineRunner{}
 	n := newTarget(t, f, f, ssh)
 	ex := n.Executor(model.KindLXC, 990002)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second+500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	want, _ := ctx.Deadline()
 	if _, err := ex.Exec(ctx, []string{"true"}); err != nil {
-		t.Fatal(err)
-	}
-	short, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel2()
-	if _, err := ex.Exec(short, []string{"true"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ex.Exec(context.Background(), []string{"true"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"timeout --kill-after=5s 91s pct exec 990002 -- 'true'",
-		"timeout --kill-after=5s 1s pct exec 990002 -- 'true'",
-		"pct exec 990002 -- 'true'",
+	if !slices.Equal(ssh.cmds, []string{"pct exec 990002 -- 'true'", "pct exec 990002 -- 'true'"}) {
+		t.Errorf("cmds = %q", ssh.cmds)
 	}
-	if !slices.Equal(ssh.CallLog(), want) {
-		t.Errorf("cmds = %q, want %q", ssh.CallLog(), want)
+	if !ssh.deadlines[0].Equal(want) || !ssh.deadlines[1].IsZero() {
+		t.Errorf("deadlines = %v, want %v then none", ssh.deadlines, want)
 	}
 }
 

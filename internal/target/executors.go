@@ -3,9 +3,7 @@ package target
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
-	"time"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/probe"
@@ -38,26 +36,13 @@ type lxcExec struct {
 }
 
 func (e lxcExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
-	cmd := boundRemote(ctx, fmt.Sprintf("pct exec %d -- %s", e.vmid, sshx.Quote(argv...)))
+	// ctx's deadline bounds the command on the node too (sshx.Runner).
+	cmd := fmt.Sprintf("pct exec %d -- %s", e.vmid, sshx.Quote(argv...))
 	res, err := e.n.ssh.Run(ctx, cmd, nil)
 	if err != nil {
 		return probe.ExecResult{}, fmt.Errorf("pct exec %d: %w", e.vmid, err)
 	}
 	return probe.ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}, nil
-}
-
-// boundRemote wraps cmd in the node's coreutils timeout when ctx has a
-// deadline: OpenSSH does not pass a cancelled context on to the remote
-// process, so without it a hung command would outlive the probe. The limit is
-// the remaining time rounded up to whole seconds (at least 1s); the command
-// is killed 5s after it is signalled.
-func boundRemote(ctx context.Context, cmd string) string {
-	dl, ok := ctx.Deadline()
-	if !ok {
-		return cmd
-	}
-	secs := max(int64(math.Ceil(time.Until(dl).Seconds())), 1)
-	return fmt.Sprintf("timeout --kill-after=5s %ds %s", secs, cmd)
 }
 
 // vmExec runs commands through the QEMU guest agent.
