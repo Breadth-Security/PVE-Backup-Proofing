@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
@@ -147,8 +148,9 @@ func TestSend(t *testing.T) {
 	if err := n.Send(context.Background(), failedSummary()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(gotCmd, "perl -e 'use PVE::Notify;") {
-		t.Fatal(gotCmd)
+	const wantCmd = `perl -e 'use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, '\''pbp'\'', $in->{data}, $in->{fields});'`
+	if gotCmd != wantCmd {
+		t.Fatalf("command = %s\nwant      %s", gotCmd, wantCmd)
 	}
 	var in struct {
 		Severity string
@@ -187,7 +189,7 @@ func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
 			return sshx.Result{}, nil
 		}
 		if strings.HasPrefix(cmd, "cat ") {
-			return sshx.Result{ExitCode: 1}, nil
+			return sshx.Result{ExitCode: 1, Stderr: "cat: x: No such file or directory\n"}, nil
 		}
 		return sshx.Result{}, nil
 	}}
@@ -234,6 +236,33 @@ func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
 	}
 }
 
+// A template that cannot be read for a reason other than being absent is an
+// error, not a cue to overwrite it.
+func TestEnsureTemplatesReadFailure(t *testing.T) {
+	f := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
+		if strings.Contains(cmd, "cat >") {
+			t.Errorf("rewrote a template that could not be read: %s", cmd)
+		}
+		return sshx.Result{ExitCode: 1, Stderr: "cat: x: Permission denied\n"}, nil
+	}}
+	err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Permission denied") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTrimStderrCutsOnRuneBoundary(t *testing.T) {
+	// "é" is 2 bytes: a cut at maxStderr would land inside the last one.
+	in := "x" + strings.Repeat("é", maxStderr)
+	got := trimStderr(in)
+	if !utf8.ValidString(got) || len(got) > maxStderr || len(got) < maxStderr-1 {
+		t.Fatalf("len %d, valid %v", len(got), utf8.ValidString(got))
+	}
+	if short := "  short é \n"; trimStderr(short) != "short é" {
+		t.Errorf("short input changed: %q", trimStderr(short))
+	}
+}
+
 // notifyHelpers are the helpers PVE's proxmox-notify registers (plus the
 // handlebars built-ins). A data key with one of these names is parsed as a
 // helper call: on PVE 9.2, {{duration}} failed to render with "Helper/Decorator
@@ -266,10 +295,56 @@ func TestTemplateDataKeysAreNotNotifyHelpers(t *testing.T) {
 	}
 }
 
-var reMustache = regexp.MustCompile(`{{\s*([#/]?)([\w-]+)(?:\s+([\w-]+))?\s*}}`)
+// reTag matches one template tag, including the {{{triple}}} form.
+var reTag = regexp.MustCompile(`{{{?[^{}]*}?}}`)
 
-// Every variable a template uses must be provided by TemplateData (top level,
-// or per guest inside #each guests/booted), so nothing renders empty.
+// templateProblems lists what is wrong with a template: a triple-stash tag, a
+// tag with more than one argument (it would be parsed as a multi-argument
+// helper call), or a variable TemplateData does not provide (top level, or
+// per guest inside #each guests/booted), which would render empty.
+func templateProblems(body string, d, guest map[string]any) []string {
+	var problems []string
+	for _, tag := range reTag.FindAllString(body, -1) {
+		if strings.HasPrefix(tag, "{{{") {
+			problems = append(problems, tag+": triple-stash tag")
+			continue
+		}
+		f := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(tag, "{{"), "}}"))
+		if len(f) == 0 {
+			problems = append(problems, tag+": empty tag")
+			continue
+		}
+		if len(f) > 2 {
+			problems = append(problems, tag+": more than one argument")
+			continue
+		}
+		sigil, word := "", f[0]
+		if c := word[0]; c == '#' || c == '/' {
+			sigil, word = word[:1], word[1:]
+		}
+		switch {
+		case sigil == "/", word == "this":
+		case sigil == "#":
+			if len(f) != 2 {
+				problems = append(problems, tag+": block without argument")
+			} else if _, ok := d[f[1]]; !ok {
+				problems = append(problems, tag+": no such key "+f[1])
+			}
+		case len(f) != 1:
+			problems = append(problems, tag+": helper call with argument")
+		default:
+			_, top := d[word]
+			_, inGuest := guest[word]
+			if !top && !inGuest {
+				problems = append(problems, tag+": no such key")
+			}
+		}
+	}
+	return problems
+}
+
+// Every template tag must be a plain provided variable or a block over a
+// provided list.
 func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 	d := TemplateData(failedSummary(), "pve1")
 	guest := d["guests"].([]map[string]any)[0]
@@ -278,23 +353,31 @@ func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, m := range reMustache.FindAllStringSubmatch(string(b), -1) {
-			sigil, word, arg := m[1], m[2], m[3]
-			switch {
-			case sigil == "/":
-			case sigil == "#":
-				if _, ok := d[arg]; !ok {
-					t.Errorf("%s: block %s %s: no such key", name, word, arg)
-				}
-			case word == "this":
-			default:
-				_, top := d[word]
-				_, inGuest := guest[word]
-				if !top && !inGuest {
-					t.Errorf("%s: {{%s}}: no such key", name, word)
-				}
-			}
+		for _, p := range templateProblems(string(b), d, guest) {
+			t.Errorf("%s: %s", name, p)
 		}
+	}
+}
+
+func TestTemplateGuardCatchesBadTags(t *testing.T) {
+	d := TemplateData(failedSummary(), "pve1")
+	guest := d["guests"].([]map[string]any)[0]
+	for body, want := range map[string]string{
+		"{{{reason}}}":          "triple-stash",
+		"{{table guests name}}": "more than one argument",
+		"{{#each guests name}}": "more than one argument",
+		"{{duration started}}":  "helper call with argument",
+		"{{nope}}":              "no such key",
+		"{{#each nope}}":        "no such key nope",
+		"{{{ reason }}}":        "triple-stash",
+	} {
+		got := templateProblems(body, d, guest)
+		if len(got) != 1 || !strings.Contains(got[0], want) {
+			t.Errorf("%q: problems %q, want one containing %q", body, got, want)
+		}
+	}
+	if got := templateProblems("{{#each guests}}\n {{guest}} {{this}}\n{{/each}} {{summary}}", d, guest); len(got) != 0 {
+		t.Errorf("valid template flagged: %q", got)
 	}
 }
 

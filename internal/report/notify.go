@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/pbv/internal/model"
 	"git.breadthanalytics.com/tdiana/pbv/internal/sshx"
@@ -44,8 +45,13 @@ func (p *PVENotifier) EnsureTemplates(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("report: read %s: %w", path, err)
 		}
-		if res.ExitCode == 0 && res.Stdout == string(want) {
+		switch {
+		case res.ExitCode == 0 && res.Stdout == string(want):
 			continue
+		case res.ExitCode != 0 && !strings.Contains(res.Stderr, "No such file"):
+			// Not merely missing: overwriting what cannot be read could
+			// clobber a template this process cannot see.
+			return fmt.Errorf("report: read %s: exit %d: %s", path, res.ExitCode, trimStderr(res.Stderr))
 		}
 		cmd := "mkdir -p " + sshx.Quote(templateDir) + " && cat > " + sshx.Quote(path)
 		res, err = p.SSH.Run(ctx, cmd, want)
@@ -90,10 +96,16 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 	return nil
 }
 
+// trimStderr trims s and cuts it to at most maxStderr bytes, never inside a
+// multi-byte character.
 func trimStderr(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > maxStderr {
-		s = s[:maxStderr]
+		n := maxStderr
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		s = s[:n]
 	}
 	return s
 }
