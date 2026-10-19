@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -59,17 +60,27 @@ func TestOrder(t *testing.T) {
 	cp := append([]model.Backup(nil), in...)
 	last := map[model.GuestKey]time.Time{q100: ref.Add(-24 * time.Hour), l101: ref.Add(-72 * time.Hour)}
 	got := Order(in, last)
-	want := []model.GuestKey{l109, l101, q100}
-	for i, w := range want {
-		if got[i].Key != w {
-			t.Fatalf("pos %d: got %v want %v", i, got[i].Key, w)
-		}
-	}
+	assertOrder(t, got, []model.GuestKey{l109, l101, q100})
 	if !reflect.DeepEqual(in, cp) {
 		t.Fatal("input mutated")
 	}
 }
 
+// assertOrder fails unless got holds exactly the guests in want, in that order.
+func assertOrder(t *testing.T, got []model.Backup, want []model.GuestKey) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d backups, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Key != w {
+			t.Fatalf("pos %d: got %v want %v", i, got[i].Key, w)
+		}
+	}
+}
+
+// Equal lastProven times fall back to VMID then kind, whichever way round the
+// input arrives.
 func TestOrderTiesDeterministic(t *testing.T) {
 	in := []model.Backup{
 		bk("s", model.KindQEMU, 7, ref), bk("s", model.KindLXC, 7, ref),
@@ -78,13 +89,24 @@ func TestOrderTiesDeterministic(t *testing.T) {
 	last := map[model.GuestKey]time.Time{
 		{Kind: model.KindQEMU, VMID: 7}: ref, {Kind: model.KindLXC, VMID: 7}: ref, {Kind: model.KindQEMU, VMID: 5}: ref,
 	}
-	got := Order(in, last)
 	want := []model.GuestKey{{Kind: model.KindQEMU, VMID: 3}, {Kind: model.KindQEMU, VMID: 5}, {Kind: model.KindLXC, VMID: 7}, {Kind: model.KindQEMU, VMID: 7}}
-	for i, w := range want {
-		if got[i].Key != w {
-			t.Fatalf("pos %d: got %v want %v", i, got[i].Key, w)
-		}
+	assertOrder(t, Order(in, last), want)
+	slices.Reverse(in)
+	assertOrder(t, Order(in, last), want)
+}
+
+// Several never-proven guests come first, ordered by VMID then kind, whichever
+// way round the input arrives.
+func TestOrderSeveralNeverProven(t *testing.T) {
+	proven := model.GuestKey{Kind: model.KindQEMU, VMID: 1}
+	in := []model.Backup{
+		bk("s", model.KindQEMU, 1, ref), bk("s", model.KindQEMU, 20, ref), bk("s", model.KindLXC, 20, ref), bk("s", model.KindQEMU, 10, ref),
 	}
+	last := map[model.GuestKey]time.Time{proven: ref}
+	want := []model.GuestKey{{Kind: model.KindQEMU, VMID: 10}, {Kind: model.KindLXC, VMID: 20}, {Kind: model.KindQEMU, VMID: 20}, proven}
+	assertOrder(t, Order(in, last), want)
+	slices.Reverse(in)
+	assertOrder(t, Order(in, last), want)
 }
 
 func TestAlreadyProven(t *testing.T) {

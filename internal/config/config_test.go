@@ -32,6 +32,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) || !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore()) {
 		t.Fatal("example lists drift from defaults")
 	}
+	if len(c.Checks.Guests) == 0 || len(c.Checks.Profiles) == 0 || len(c.Checks.Profiles[0].Ports) == 0 {
+		t.Fatalf("example config lacks guests/profiles/ports: %+v", c.Checks)
+	}
 	if c.Target.VMIDRange != [2]int{990000, 990049} || c.Checks.Guests[0].Match.VMID != 105 || c.Checks.Profiles[0].Ports[0] != 8080 {
 		t.Fatalf("nested decode wrong: %+v", c)
 	}
