@@ -201,7 +201,7 @@ func TestExecErrors(t *testing.T) {
 
 func TestDispatch(t *testing.T) {
 	o := probe.Run(context.Background(), probetest.Scripted{}, probe.Input{OS: probe.Windows})
-	if o.Verdict != model.Booted || o.Reason != "windows probe not implemented" {
+	if o.Verdict != model.Booted || o.Reason != "agent cannot run commands" {
 		t.Fatalf("got %+v", o)
 	}
 	o = probe.Run(context.Background(), probetest.Scripted{}, probe.Input{OS: probe.Unknown})
