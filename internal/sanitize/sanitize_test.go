@@ -32,7 +32,7 @@ func TestSanitizeQEMUReferenceVM(t *testing.T) {
 	if got := p.Set["net0"]; got != "virtio=BC:24:11:ED:57:35,bridge=vmbr-pbp,firewall=1" {
 		t.Errorf("net0 = %q", got)
 	}
-	if p.Set["onboot"] != "0" || p.Set["tags"] != "pbp" {
+	if p.Set["onboot"] != "0" || p.Set["tags"] != "prod;db;pbp" {
 		t.Errorf("onboot/tags not forced: %v", p.Set)
 	}
 	if !reflect.DeepEqual(p.Delete, []string{"startup"}) {
@@ -256,5 +256,15 @@ func TestSanitizeNetDropsMTU(t *testing.T) {
 	vm := Sanitize(model.KindQEMU, map[string]string{"net0": "virtio=BC:24:11:27:C5:0A,bridge=vmbr0,firewall=1,mtu=1,tag=1"}, "vmbr99")
 	if got, want := vm.Set["net0"], "virtio=BC:24:11:27:C5:0A,bridge=vmbr99,firewall=1"; got != want {
 		t.Errorf("qemu net0 = %q, want %q", got, want)
+	}
+}
+
+func TestAddTag(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "pbp", "pbp": "pbp", "prod;db": "prod;db;pbp", "a,pbp b": "a;pbp;b", " x ; y ": "x;y;pbp",
+	} {
+		if got := AddTag(in, "pbp"); got != want {
+			t.Errorf("AddTag(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -31,7 +32,9 @@ var (
 // and the restore uses a fresh VMID, so none can exist for the restored copy
 // (design section 6 step 7 is satisfied by construction).
 func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) Plan {
-	p := Plan{Set: map[string]string{"onboot": "0", "tags": "pbp"}}
+	// Tags are added to, never replaced: removing a registered tag needs
+	// Sys.Modify on "/".
+	p := Plan{Set: map[string]string{"onboot": "0", "tags": AddTag(restored["tags"], "pbp")}}
 	keys := make([]string, 0, len(restored))
 	for k := range restored {
 		keys = append(keys, k)
@@ -71,6 +74,16 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 	}
 	sort.Strings(p.Delete)
 	return p
+}
+
+// AddTag returns the PVE tag list tags (separated by ';', ',' or spaces)
+// with tag appended unless present, joined with ';'.
+func AddTag(tags, tag string) string {
+	list := strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' || r == '\t' })
+	if !slices.Contains(list, tag) {
+		list = append(list, tag)
+	}
+	return strings.Join(list, ";")
 }
 
 func (p *Plan) remove(key string, piece model.MissingPiece) {

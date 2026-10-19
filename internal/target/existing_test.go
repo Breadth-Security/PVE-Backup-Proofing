@@ -265,6 +265,7 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	want := []string{
 		"Restore pve1 qemu 990000 " + vmVol + " " + store,
 		"WaitTask pve1 UPID:pve1:fake:restore:990000:",
+		"GuestConfig pve1 qemu 990000",
 		"SetGuestConfig pve1 qemu 990000",
 	}
 	if !slices.Equal(calls, want) {
@@ -315,6 +316,28 @@ func TestRestoreFailures(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The owner tag is added to the restored guest's tags, never replacing them:
+// removing a registered tag needs Sys.Modify on "/" (pve1: a 403 for
+// "development"), which the token must not have.
+func TestRestoreKeepsOriginalTags(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = vmConf + "tags: development;web\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
+		t.Errorf("tags after restore = %q", got)
+	}
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, vmVol); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
+		t.Errorf("tags after sanitize = %q", got)
+	}
 }
 
 func TestSanitize(t *testing.T) {

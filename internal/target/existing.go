@@ -171,7 +171,13 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int) er
 	if err := n.api.WaitTask(ctx, n.node, upid); err != nil {
 		return fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
 	}
-	set := map[string]string{"tags": OwnerTag}
+	// Add the owner tag to the restored tags: replacing them would remove
+	// any registered tag, which needs Sys.Modify on "/".
+	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
+	if err != nil {
+		return fmt.Errorf("read restored config %d: %w", vmid, err)
+	}
+	set := map[string]string{"tags": sanitize.AddTag(cfg["tags"], OwnerTag)}
 	// LXC has no "name"; renaming its hostname would change the guest itself.
 	if kind == model.KindQEMU {
 		set["name"] = fmt.Sprintf("pbp-%d-%s", b.Key.VMID, b.Time.UTC().Format("200601021504"))
