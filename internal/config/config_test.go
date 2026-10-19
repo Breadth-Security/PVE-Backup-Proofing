@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -100,8 +101,23 @@ func TestValidateErrors(t *testing.T) {
 				t.Fatalf("bad case: %q not in minimal", tc.from)
 			}
 			_, err := loadStr(t, strings.Replace(minimal, tc.from, tc.to, 1))
-			if err == nil || !strings.Contains(err.Error(), tc.key) {
-				t.Fatalf("want error naming %q, got %v", tc.key, err)
+			if err == nil {
+				t.Fatalf("want error naming %q, got nil", tc.key)
+			}
+			// Inspect only the validation output: Load's wrapper includes the
+			// file path, which contains the test name.
+			inner := errors.Unwrap(err)
+			if inner == nil {
+				t.Fatalf("error not from validation: %v", err)
+			}
+			found := false
+			for _, line := range strings.Split(inner.Error(), "\n") {
+				if strings.HasPrefix(line, tc.key+": ") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("want validation line starting %q, got %v", tc.key+": ", inner)
 			}
 		})
 	}
