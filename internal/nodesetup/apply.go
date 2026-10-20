@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
@@ -81,6 +83,24 @@ func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName
 	// and adding it again does not restore them, so after the token is added
 	// every ACL item is applied, whatever its planned status.
 	readded := false
+	// sshDir is pbp's .ssh, opened and made root's once (see sshdir.go);
+	// the .ssh items act only through it.
+	sshDir := -1
+	defer func() {
+		if sshDir >= 0 {
+			_ = unix.Close(sshDir)
+		}
+	}()
+	ssh := func() (int, error) {
+		if sshDir < 0 {
+			fd, err := secureSSHDir(env, ids)
+			if err != nil {
+				return -1, err
+			}
+			sshDir = fd
+		}
+		return sshDir, nil
+	}
 	for _, it := range p.Items {
 		if it.Status == Correct && (it.Kind != KindACL || !readded) {
 			continue
@@ -88,11 +108,21 @@ func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName
 		var err error
 		switch it.Kind {
 		case KindDir:
-			err = applyDir(env, ids, it)
-		case KindFile:
-			if it.Path == SudoersPath {
-				err = applySudoers(ctx, env, ids, it)
+			if it.Path == SSHDir {
+				_, err = ssh()
 			} else {
+				err = applyDir(env, ids, it)
+			}
+		case KindFile:
+			switch it.Path {
+			case SudoersPath:
+				err = applySudoers(ctx, env, ids, it)
+			case AuthorizedKeys:
+				var dir int
+				if dir, err = ssh(); err == nil {
+					err = applyAuthorizedKeys(env, ids, dir, it)
+				}
+			default:
 				err = applyFile(env, ids, it)
 			}
 		case KindShell:
@@ -193,7 +223,8 @@ func tokenExists(ctx context.Context, env Env) (bool, error) {
 }
 
 // applyDir creates a directory, or fixes the mode and owner of an existing
-// one in place (no backup for directories).
+// one in place (no backup for directories). Only for directories whose
+// parent is root's (/etc/pbp); pbp's .ssh goes through secureSSHDir.
 func applyDir(env Env, ids ids, it Item) error {
 	p := env.path(it.Path)
 	if it.Status == Create {
@@ -216,7 +247,8 @@ func applyDir(env Env, ids ids, it Item) error {
 }
 
 // applyFile writes a file through a temp file in the same directory, after
-// a backup when it replaces one.
+// a backup when it replaces one. Only for files in directories pbp cannot
+// write to; authorized_keys goes through applyAuthorizedKeys.
 func applyFile(env Env, ids ids, it Item) error {
 	p := env.path(it.Path)
 	if it.Status == Differs {

@@ -119,6 +119,9 @@ func testEnv(t *testing.T, pve *fakePVE, shell string) Env {
 		Chown: func(string, int, int) error {
 			return errors.New("chown not expected in planning")
 		},
+		Fchown: func(int, int, int) error {
+			return errors.New("fchown not expected in planning")
+		},
 		Lookup: func(user string) (int, int, string, string, error) {
 			switch user {
 			case "root":

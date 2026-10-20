@@ -315,7 +315,11 @@ func Uninstall(ctx context.Context, env Env, p Plan, removeToken bool) error {
 				continue
 			}
 		case KindDir:
-			err = removeEmptyDir(env, it.Path)
+			if it.Path != SSHDir {
+				err = fmt.Errorf("%s is not a directory uninstall removes", it.Path)
+			} else {
+				err = removeSSHDir(env)
+			}
 		case KindShell:
 			err = runCmd(ctx, env, usermod, "-s", NoLogin, PbpUser)
 		case KindToken, KindACL, KindUser, KindRole:
@@ -335,11 +339,6 @@ func Uninstall(ctx context.Context, env Env, p Plan, removeToken bool) error {
 // removeFile removes a setup file, after a backup unless it is exactly what
 // setup writes. Already absent is fine.
 func removeFile(env Env, it Item) error {
-	if it.Path == AuthorizedKeys {
-		if ok, err := lstatSSHDir(env); err != nil || !ok {
-			return err
-		}
-	}
 	var setups setupsFunc
 	for _, f := range uninstallFiles {
 		if f.path == it.Path {
@@ -348,6 +347,11 @@ func removeFile(env Env, it Item) error {
 	}
 	if setups == nil {
 		return fmt.Errorf("%s is not a file uninstall removes", it.Path)
+	}
+	// pbp owns its home and could swap .ssh for a symlink after planning:
+	// authorized_keys is reached only through a dir fd (see sshdir.go).
+	if it.Path == AuthorizedKeys {
+		return removeAuthorizedKeys(env, it, setups)
 	}
 	b, err := readRegular(env, it.Path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -363,24 +367,6 @@ func removeFile(env Env, it Item) error {
 		}
 	}
 	return os.Remove(p)
-}
-
-// removeEmptyDir removes a directory if it is empty, and leaves it if not.
-func removeEmptyDir(env Env, path string) error {
-	fi, err := os.Lstat(env.path(path))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return err
-	case !fi.IsDir():
-		return fmt.Errorf("%s is not a directory (%s); uninstall does not touch it, move it away by hand", path, fi.Mode().Type())
-	}
-	err = os.Remove(env.path(path))
-	if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
-		return nil
-	}
-	return err
 }
 
 // removePVE removes one PVE item if it is still present. The ACL delete

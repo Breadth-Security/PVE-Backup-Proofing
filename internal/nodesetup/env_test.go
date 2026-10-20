@@ -42,7 +42,7 @@ func TestPasswdLookup(t *testing.T) {
 
 func TestNewEnv(t *testing.T) {
 	e := NewEnv()
-	if e.Root != "/" || e.Run == nil || e.Chown == nil || e.Lookup == nil || e.Now == nil {
+	if e.Root != "/" || e.Run == nil || e.Chown == nil || e.Fchown == nil || e.Lookup == nil || e.Now == nil {
 		t.Fatalf("NewEnv = %+v", e)
 	}
 	if _, err := os.Stat("/bin/sh"); err != nil {

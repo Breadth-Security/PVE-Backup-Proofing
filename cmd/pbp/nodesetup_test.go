@@ -102,9 +102,10 @@ func (f *fakeNode) write(p, data string, mode os.FileMode) {
 func (f *fakeNode) env() nodesetup.Env {
 	uid, gid := os.Getuid(), os.Getgid()
 	return nodesetup.Env{
-		Root:  f.root,
-		Run:   f.run,
-		Chown: func(string, int, int) error { return nil },
+		Root:   f.root,
+		Run:    f.run,
+		Chown:  func(string, int, int) error { return nil },
+		Fchown: func(int, int, int) error { return nil },
 		Lookup: func(user string) (int, int, string, string, error) {
 			switch user {
 			case "root":

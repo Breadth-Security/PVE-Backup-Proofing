@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,6 +56,14 @@ func newApplyFake(t *testing.T, shell string) (*applyFake, Env) {
 		}
 		f.events = append(f.events, "chown /"+rel)
 		return nil
+	}
+	// Tests run unprivileged: record the fd's path instead of chowning.
+	env.Fchown = func(fd, uid, gid int) error {
+		p, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+		if err != nil {
+			t.Errorf("fchown: %v", err)
+		}
+		return env.Chown(p, uid, gid)
 	}
 	return f, env
 }

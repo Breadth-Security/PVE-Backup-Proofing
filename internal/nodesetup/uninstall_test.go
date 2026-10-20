@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -37,6 +38,13 @@ func newUninstallFake(t *testing.T) (*uninstallFake, Env) {
 		err := chown(path, uid, gid)
 		f.events[len(f.events)-1] += " " + f.files()
 		return err
+	}
+	env.Fchown = func(fd, uid, gid int) error {
+		p, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+		if err != nil {
+			t.Errorf("fchown: %v", err)
+		}
+		return env.Chown(p, uid, gid)
 	}
 	return f, env
 }

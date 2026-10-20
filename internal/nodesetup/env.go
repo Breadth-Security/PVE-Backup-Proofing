@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 )
 
@@ -23,6 +25,9 @@ type Env struct {
 	// and exit code; err is for failures to start it.
 	Run   func(ctx context.Context, name string, args []string, stdin []byte) (stdout, stderr string, exit int, err error)
 	Chown func(path string, uid, gid int) error
+	// Fchown chowns an open file by fd. pbp's .ssh and what setup writes in
+	// it are reached only through fds (see sshdir.go).
+	Fchown func(fd int, uid, gid int) error
 	// Lookup resolves a user name (also "root") to its uid, primary gid, home
 	// and login shell. Owner checks compare stat uid/gid with it, so a test
 	// can map both root and pbp to its own uid/gid. An unknown user is an
@@ -37,12 +42,14 @@ var ErrNoSuchUser = errors.New("no such user")
 // NewEnv is the production Env: the real root, commands run by absolute
 // path with the helper's minimal environment and their stdout and stderr
 // captured (stdout is never put into an error: `pveum user token add`
-// prints the secret there), os.Lchown, /etc/passwd lookups and time.Now.
+// prints the secret there), os.Lchown, unix.Fchown, /etc/passwd lookups
+// and time.Now.
 func NewEnv() Env {
 	return Env{
 		Root:   "/",
 		Run:    node.Capture,
 		Chown:  os.Lchown,
+		Fchown: unix.Fchown,
 		Lookup: passwdLookup("/etc/passwd"),
 		Now:    time.Now,
 	}
