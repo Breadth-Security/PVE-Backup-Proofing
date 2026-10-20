@@ -2,11 +2,11 @@
 
 Two guided commands do the setup: `pbp setup` on the host that runs PBP, and `pbp node setup` on the Proxmox node, which `pbp setup` prints for you. They hand each other what the other side needs (the SSH key, the node's host key and certificate fingerprint, the API token secret) by copy and paste, so nothing is typed twice and no secret ends up in a command line or your shell history.
 
-Before you run them, pick a VMID range and create the isolated bridge (steps 1 and 2). Setup checks both, but creates neither.
+Before you run them, choose a VMID range, which `pbp setup` asks for, and create the isolated bridge (steps 1 and 2). Setup checks both, but never creates the bridge.
 
 If you would rather do everything by hand, or want to see exactly what the two commands change, see [Manual setup](manual-setup.md). The guided commands produce that same end state.
 
-## 1. Reserve a VMID range
+## 1. Choose a VMID range
 
 Pick a range of free VMIDs, for example `990000`-`990049`, which `pbp setup` asks for and writes to `target.vmid_range`. The range size is the most guests PBP can have in flight at once.
 

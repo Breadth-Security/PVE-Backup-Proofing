@@ -11,7 +11,7 @@
 >
 >That's where PBP steps in. We are going to <i>trust</i> the backup existing verification, but we are going to <b><i>prove</i></b> that our backups will support our disaster recovery plans.
 
-PBP (Proxmox Backup Proofing) is a small daemon that runs in a container. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy inside, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification.
+PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy inside, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification.
 
 ## How it works
 
@@ -43,7 +43,7 @@ For each run, PBP:
 - A PBS storage configured on the PVE node that will run the proofs (storage config is cluster-wide, so any cluster node's PBS storage works).
 - A restore storage on that node with room for your largest guest, for VM images and container root filesystems.
 - A dedicated, isolated bridge on that node (see below) and a reserved VMID range.
-- Docker with Compose on any host that can reach the node's API (8006) and SSH (22).
+- Docker with Compose on any host that can reach the node's API (8006) and SSH (22). <b>Note</b> that `pbp` is also released as a `.deb` package for installation with apt on any Debian host.
 - **SSH access to the PVE node as the unprivileged `pbp` user, restricted to one forced command.** PBP does not use root SSH. The key can run only the `pbp node` helper, which PBP's own binary provides on the node (see [Setup](docs/setup.md)). Some things have no API equivalent: `pct exec` (checking inside containers), the bridge's live state (IPv6, addresses, members), and arbitrary notifications (`PVE::Notify`; the notifications REST API can only send a fixed test message). The helper does these, and only these, and only for guests it is allowed to touch:
   - it runs `pct exec` only in a container whose VMID is inside the helper's `vmid_range` and which carries the `pbp` tag, and passes the command as an argument list, never through a shell,
   - it reports the one configured bridge's state, read-only,
@@ -54,7 +54,7 @@ For each run, PBP:
 
 ## Getting started
 
-1. Pick a free VMID range for proof guests and create an isolated bridge on the node ([Setup](docs/setup.md) steps 1 and 2). PBP checks both but creates neither.
+1. Choose a free VMID range for proof guests (`pbp setup` asks for it) and create an isolated bridge on the node ([Setup](docs/setup.md) steps 1 and 2). Setup checks that no other guest is in the range and that the bridge is isolated, but never creates the bridge.
 2. On the PBP host, run `pbp setup` (Docker: the one-shot command in [Setup step 3](docs/setup.md#3-run-pbp-setup-on-the-pbp-host); a `.deb` host: `sudo pbp setup --deb`). It asks a few questions, writes `config.yaml` and the SSH key, and prints two lines to run on the node.
 3. On the node, as root, run those two lines: the first installs the matching `pbp` package, the second (`pbp node setup`) sets up the restricted helper and the API token, and prints a reply block.
 4. Paste the reply back into `pbp setup`. It writes the node's host key, certificate fingerprint and token secret, and checks everything.
@@ -64,9 +64,9 @@ For each run, PBP:
 
 | Document | What it covers |
 |----------|----------------|
-| [Setup](docs/setup.md) | The guided setup step by step, what the API token can do, removing PBP from a node |
-| [Manual setup](docs/manual-setup.md) | What `pbp setup` and `pbp node setup` do, as commands you can run by hand |
+| [Setup (Docker or .deb)](docs/setup.md) | The guided setup step by step, what the API token can do, removing PBP from a node |
 | [Install from the .deb](docs/install-deb.md) | Running PBP from the Debian package instead of Docker |
+| [Manual setup](docs/manual-setup.md) | What `pbp setup` and `pbp node setup` do, as commands you can run by hand |
 | [Operating](docs/operating.md) | Commands, exit codes, the health check, notifications, backup notes |
 | [Checks inside the guest](docs/checks.md) | The ignore list, service profiles and per-guest checks, "not covered by backup" |
 | [Troubleshooting](docs/troubleshooting.md) | What `pbp check` failures mean and how to fix them |
