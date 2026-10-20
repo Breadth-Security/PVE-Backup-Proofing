@@ -33,7 +33,7 @@ const (
 	PbpUser         = "pbp"
 	PbpShell        = "/bin/sh"
 	PbpHome         = "/var/lib/pbp"
-	PbpHomeMode     = os.FileMode(0o700)
+	PbpHomeMode     = os.FileMode(0o755)
 	EtcDir          = "/etc/pbp"
 	NodeYAMLPath    = node.DefaultConfigPath
 	SSHDir          = PbpHome + "/.ssh"

@@ -125,7 +125,7 @@ func testEnv(t *testing.T, pve *fakePVE, shell string) Env {
 	t.Helper()
 	root := t.TempDir()
 	uid, gid := os.Getuid(), os.Getgid()
-	mustMkdir(t, filepath.Join(root, "var/lib/pbp"), 0o700)
+	mustMkdir(t, filepath.Join(root, "var/lib/pbp"), 0o755)
 	mustMkdir(t, filepath.Join(root, "etc/sudoers.d"), 0o750)
 	return Env{
 		Root: root,
@@ -436,7 +436,7 @@ func TestPlanDiffersMore(t *testing.T) {
 	pve.acls = pve.acls[:len(pve.acls)-1]      // token entry missing on the last path
 	env := testEnv(t, pve, "/bin/bash")        // a real shell that is not /bin/sh
 	layoutComplete(t, env.Root)
-	mustMkdir(t, filepath.Join(env.Root, "var/lib/pbp"), 0o755)
+	mustMkdir(t, filepath.Join(env.Root, "var/lib/pbp"), 0o700) // as an older package made it
 	mustWrite(t, filepath.Join(env.Root, "etc/pbp/node.yaml"), "vmid_range: [990000, 990099]\nbridge: vmbr98\n", 0o640)
 	tmplDir := filepath.Join(env.Root, node.DefaultTemplateDir)
 	for n := range report.Templates() {
@@ -454,7 +454,7 @@ func TestPlanDiffersMore(t *testing.T) {
 		{KindRole, RoleName, Differs, "+VM.Allocate"},
 		{KindACL, "/sdn/zones/localnetwork", Create, TokenID},
 		{KindShell, "pbp", Differs, "/bin/bash"},
-		{KindHome, "/var/lib/pbp", Differs, "0755"},
+		{KindHome, "/var/lib/pbp", Differs, "want 0755"},
 		{KindFile, "/etc/pbp/node.yaml", Differs, "vmbr98"},
 		{KindTemplates, node.DefaultTemplateDir, Differs, "differs"},
 	} {
@@ -498,8 +498,10 @@ func TestPlanOwnerDiffers(t *testing.T) {
 	if it.Status != Differs || !strings.Contains(it.Diff, "owner") {
 		t.Errorf("sudoers owned by pbp: status %v diff %q", it.Status, it.Diff)
 	}
-	if it := item(t, p, KindHome, "/var/lib/pbp"); it.Status != Correct {
-		t.Errorf("home owned by pbp: status %v diff %q", it.Status, it.Diff)
+	// A home owned by pbp (as older packages made it) is refused: pbp could
+	// rename .ssh in it.
+	if it := item(t, p, KindHome, "/var/lib/pbp"); it.Status != Differs || !strings.Contains(it.Diff, "want root:root") || !strings.Contains(it.Diff, "--reinstall pbp") {
+		t.Errorf("home owned by pbp: status %v diff %q, want Differs naming root:root and the package", it.Status, it.Diff)
 	}
 }
 

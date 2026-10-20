@@ -45,7 +45,7 @@ func captureLog(t *testing.T) *syncBuf {
 
 func TestStateDir(t *testing.T) {
 	t.Setenv("PBP_STATE_DIR", "")
-	if got := StateDir(); got != "/var/lib/pbp" {
+	if got := StateDir(); got != "/var/lib/pbp/state" {
 		t.Errorf("StateDir = %q", got)
 	}
 	t.Setenv("PBP_STATE_DIR", "/tmp/x")

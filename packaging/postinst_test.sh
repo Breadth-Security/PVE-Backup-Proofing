@@ -56,6 +56,11 @@ check "upgrade, enabled, inactive, config" 0.2.0 1 0 1 0 "daemon-reload;try-rest
 check "upgrade, running" 0.2.0 1 0 1 1 "daemon-reload;try-restart pbp.service;"
 check "upgrade, no config" 0.2.0 0 0 1 0 "daemon-reload;try-restart pbp.service;"
 check "reinstall after remove, config" 0.2.0 1 1 0 0 "daemon-reload;enable pbp.service;try-restart pbp.service;"
+# pbp's home must be root's (pbp cannot replace .ssh), the state dir pbp's.
+grep -q 'install -d -m 0755 -o root -g root /var/lib/pbp$' scripts/postinst ||
+    { echo "FAIL: postinst does not make /var/lib/pbp root:root 0755"; fail=1; }
+grep -q 'install -d -m 0700 -o pbp -g pbp /var/lib/pbp/state$' scripts/postinst ||
+    { echo "FAIL: postinst does not make /var/lib/pbp/state pbp's"; fail=1; }
 if grep -Eq 'systemctl (start|restart) ' scripts/postinst; then
     echo "FAIL: postinst starts or restarts pbp.service unconditionally"
     fail=1

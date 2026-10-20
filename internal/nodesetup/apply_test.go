@@ -270,7 +270,7 @@ func TestApplyRefusesDiffers(t *testing.T) {
 	})
 	t.Run("check-only home even with replace", func(t *testing.T) {
 		f, env := newApplyFake(t, "/usr/sbin/nologin")
-		mustMkdir(t, env.path(PbpHome), 0o755)
+		mustMkdir(t, env.path(PbpHome), 0o700) // as an older package made it
 		p := buildPlan(t, env, applyArgs())
 		f.events = nil
 		_, err := Apply(context.Background(), env, p, applyArgs(), "pve1", ApplyOpts{Replace: true})

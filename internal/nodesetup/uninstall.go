@@ -351,7 +351,7 @@ func removeFile(env Env, it Item) error {
 	if setups == nil {
 		return fmt.Errorf("%s is not a file uninstall removes", it.Path)
 	}
-	// pbp owns its home and could swap .ssh for a symlink after planning:
+	// Were pbp's home pbp's, it could swap .ssh for a symlink after planning:
 	// authorized_keys is reached only through a dir fd (see sshdir.go).
 	if it.Path == AuthorizedKeys {
 		return removeAuthorizedKeys(env, it, setups)

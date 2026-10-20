@@ -68,7 +68,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Chmod(filepath.Join(f.root, "var/lib/pbp"), 0o700); err != nil {
+	if err := os.Chmod(filepath.Join(f.root, "var/lib/pbp"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	f.write("/usr/bin/sudo", "", 0o755)
@@ -727,7 +727,7 @@ func TestNodeSetupWarnsAboutLocalDaemon(t *testing.T) {
 			if warned != (tc.reason != "") || !strings.Contains(r.errOut.String(), tc.reason) {
 				t.Errorf("stderr %q, want warning %v (%s)", r.errOut, tc.reason != "", tc.reason)
 			}
-			if warned && !strings.Contains(r.errOut.String(), "owns /var/lib/pbp") {
+			if warned && !strings.Contains(r.errOut.String(), "the account the PBP host logs in as") {
 				t.Errorf("warning does not say why: %q", r.errOut)
 			}
 		})

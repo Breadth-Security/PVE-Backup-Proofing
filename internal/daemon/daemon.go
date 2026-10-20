@@ -18,7 +18,7 @@ import (
 
 // DefaultStateDir holds the state store, the run lock and the daemon start
 // time. PBP_STATE_DIR overrides it.
-const DefaultStateDir = "/var/lib/pbp"
+const DefaultStateDir = "/var/lib/pbp/state"
 
 // shutdownGrace is how long an in-flight run may keep going after shutdown
 // is requested before its context is cancelled.

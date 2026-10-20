@@ -15,9 +15,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// pbp owns its home, /var/lib/pbp, so a process running as pbp can replace
-// /var/lib/pbp/.ssh (with a symlink to /etc/pve/priv or /root/.ssh, say)
-// at any moment, including between the plan and the y/N prompt's answer.
+// The package makes pbp's home, /var/lib/pbp, root's (and setup refuses a
+// home that is not), so pbp cannot replace /var/lib/pbp/.ssh. As a second
+// line, should the home ever be pbp's again, a process running as pbp could
+// replace .ssh (with a symlink to /etc/pve/priv or /root/.ssh, say) at any
+// moment, including between the plan and the y/N prompt's answer.
 // Nothing in .ssh is therefore ever reached by path: the home is opened
 // with O_NOFOLLOW (its parent /var/lib is root's), .ssh is opened relative
 // to it with O_NOFOLLOW and, for setup, made root's before anything is
@@ -335,8 +337,8 @@ func writeFileAt(env Env, dir int, name string, content []byte, mode os.FileMode
 }
 
 // applyAuthorizedKeys writes authorized_keys into the secured .ssh dir fd.
-// The plan was made by path before the y/N prompt, and pbp owns its home:
-// it can hide .ssh while planning and put it back before this runs. So the
+// The plan was made by path before the y/N prompt; were pbp's home ever
+// pbp's, it could hide .ssh while planning and put it back before this runs. So the
 // file is read again through the fd, and whatever is there now decides:
 // setup's own line needs no write, a file the plan did not expect (a
 // planned Create that finds one) is refused, and a planned Differs (only

@@ -13,7 +13,12 @@ if [ "$1" = "configure" ]; then
     fi
 
     install -d -m 0750 -o root -g pbp /etc/pbp
-    install -d -m 0700 -o pbp -g pbp /var/lib/pbp
+    # pbp's home belongs to root, so pbp cannot rename or replace .ssh (the
+    # forced-command key's directory) on a node. This also fixes the owner
+    # of a home an older package made pbp's. The daemon's state lives in a
+    # subdirectory that pbp owns.
+    install -d -m 0755 -o root -g root /var/lib/pbp
+    install -d -m 0700 -o pbp -g pbp /var/lib/pbp/state
     install -d -m 0750 -o pbp -g pbp /var/log/pbp
 
     if [ -d /run/systemd/system ]; then

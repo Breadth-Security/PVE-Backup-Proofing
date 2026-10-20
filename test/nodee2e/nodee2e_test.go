@@ -766,11 +766,11 @@ func TestSudoOnlyHelper(t *testing.T) {
 // (docs/manual-setup.md "Node setup" step 4), so the pbp user cannot rewrite its own forced
 // command, and sshd still accepts the key (every other test logs in with it).
 func TestAuthorizedKeysRootOwned(t *testing.T) {
-	out, err := dockerOut("stat", "-c", "%U:%G %a %n", "/var/lib/pbp/.ssh", "/var/lib/pbp/.ssh/authorized_keys")
+	out, err := dockerOut("stat", "-c", "%U:%G %a %n", "/var/lib/pbp", "/var/lib/pbp/state", "/var/lib/pbp/.ssh", "/var/lib/pbp/.ssh/authorized_keys")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "root:root 755 /var/lib/pbp/.ssh\nroot:root 644 /var/lib/pbp/.ssh/authorized_keys"
+	want := "root:root 755 /var/lib/pbp\npbp:pbp 700 /var/lib/pbp/state\nroot:root 755 /var/lib/pbp/.ssh\nroot:root 644 /var/lib/pbp/.ssh/authorized_keys"
 	if got := strings.TrimSpace(out); got != want {
 		t.Errorf("ownership:\n%s\nwant:\n%s", got, want)
 	}
@@ -784,6 +784,11 @@ func TestAuthorizedKeysRootOwned(t *testing.T) {
 	for _, argv := range [][]string{
 		{"sh", "-c", "echo x >> /var/lib/pbp/.ssh/authorized_keys"},
 		{"touch", "/var/lib/pbp/.ssh/new"},
+		// The home is root's, so pbp cannot move .ssh away or put its own
+		// (or a symlink to root's keys) in its place.
+		{"mv", "/var/lib/pbp/.ssh", "/var/lib/pbp/state/ssh-moved"},
+		{"ln", "-s", "/root/.ssh", "/var/lib/pbp/.ssh2"},
+		{"touch", "/var/lib/pbp/.ssh/authorized_keys2"},
 	} {
 		if out, err := dockerAs("pbp", argv...); err == nil {
 			t.Errorf("%q as pbp succeeded (%q); want permission denied", argv, out)
@@ -1031,7 +1036,7 @@ func TestSetupReplyAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantModes := "750 root:pbp /etc/pbp\n640 root:pbp /etc/pbp/node.yaml\n700 pbp:pbp /var/lib/pbp\n440 root:root /etc/sudoers.d/pbp\n"
+	wantModes := "750 root:pbp /etc/pbp\n640 root:pbp /etc/pbp/node.yaml\n755 root:root /var/lib/pbp\n440 root:root /etc/sudoers.d/pbp\n"
 	if modes != wantModes {
 		t.Errorf("modes:\n%s\nwant:\n%s", modes, wantModes)
 	}

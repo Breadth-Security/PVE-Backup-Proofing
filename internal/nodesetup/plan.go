@@ -376,10 +376,11 @@ func planShell(ids ids) Item {
 	return it
 }
 
-// planHome checks pbp's home: /var/lib/pbp, a directory, 0700, owned by pbp.
-// Setup never changes it; the item is check-only.
+// planHome checks pbp's home: /var/lib/pbp, a directory, 0755, owned by
+// root, so pbp cannot rename or replace .ssh in it. The package makes it so
+// (postinst); setup never changes it, and the item is check-only.
 func planHome(env Env, ids ids) Item {
-	it := Item{Kind: KindHome, Name: "pbp home", Path: PbpHome, Mode: PbpHomeMode, Owner: PbpUser, CheckOnly: true}
+	it := Item{Kind: KindHome, Name: "pbp home", Path: PbpHome, Mode: PbpHomeMode, Owner: "root", Group: "root", CheckOnly: true}
 	var bad []string
 	if ids.home != PbpHome {
 		bad = append(bad, "pbp's home is "+ids.home+", want "+PbpHome)
@@ -391,15 +392,20 @@ func planHome(env Env, ids ids) Item {
 	case !fi.IsDir():
 		bad = append(bad, PbpHome+" is not a directory")
 	default:
-		if m := fi.Mode().Perm(); m != PbpHomeMode {
+		if m := fi.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky); m != PbpHomeMode {
 			bad = append(bad, fmt.Sprintf("mode %04o, want %04o", uint32(m), uint32(PbpHomeMode)))
 		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != ids.uid[PbpUser] {
-			bad = append(bad, fmt.Sprintf("owner uid %d, want pbp (%d)", st.Uid, ids.uid[PbpUser]))
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		switch {
+		case !ok:
+			bad = append(bad, "cannot read the owner of "+PbpHome)
+		case int(st.Uid) != ids.uid["root"] || int(st.Gid) != ids.gid["root"]:
+			bad = append(bad, fmt.Sprintf("owner %d:%d, want root:root (%d:%d)", st.Uid, st.Gid, ids.uid["root"], ids.gid["root"]))
 		}
 	}
 	if len(bad) > 0 {
-		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+		it.Status, it.Diff = Differs, strings.Join(bad, "\n")+
+			"\nthe pbp package makes "+PbpHome+" root:root 0755: install it again (apt install --reinstall pbp), or fix it by hand"
 	}
 	return it
 }

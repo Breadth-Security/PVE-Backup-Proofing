@@ -18,7 +18,7 @@ RUN v="${VERSION:-$(packaging/versionfile.sh)}" \
     && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$v" -o /out/pbp ./cmd/pbp
 # Empty state and log directories, copied below with uid 65532 ownership so
 # named volumes mounted there inherit it.
-RUN mkdir -p /out/var/lib/pbp /out/var/log/pbp
+RUN mkdir -p /out/var/lib/pbp/state /out/var/log/pbp
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/pbp /pbp

@@ -36,7 +36,7 @@ Done once, as root on the PVE node. Step 1 is the install line `pbp setup` print
    apt install ./pbp_<version>_<arch>.deb
    ```
 
-   The `.deb` creates the `pbp` user with home `/var/lib/pbp` (mode `0700`, owned by `pbp`) and shell `nologin`.
+   The `.deb` creates the `pbp` user with shell `nologin` and home `/var/lib/pbp`, which belongs to root (`0755 root:root`) so that `pbp` cannot move or replace `.ssh` in it; the daemon's state, on a host that runs it, is in `/var/lib/pbp/state` (`0700`, owned by `pbp`). Without the package, create these yourself: `install -d -m 0755 -o root -g root /var/lib/pbp` and `install -d -m 0700 -o pbp -g pbp /var/lib/pbp/state`.
 
    > **Warning:** `apt purge pbp` on the node deletes the `pbp` user, and with it PBP's access. `apt remove` keeps it. A daemon and its helper must share the same major.minor version (`0.3.x` talks to `0.3.y`), so upgrade the package on the node whenever you upgrade the daemon.
 
@@ -54,11 +54,11 @@ Done once, as root on the PVE node. Step 1 is the install line `pbp setup` print
 
    `request_timeout` (default 15m, minimum 30s) caps how long the helper lets one request run. Keep it at or above `restore.probe_timeout`, or `pbp check` warns that long probe commands are cut short. A missing or invalid `node.yaml` makes the helper refuse everything.
 
-3. **Give `pbp` a shell**, so sshd can run the forced command. The home directory stays `0700` and owned by `pbp`. Only nodes get this; daemon-only hosts keep `nologin`:
+3. **Give `pbp` a shell**, so sshd can run the forced command. The home directory stays `0755` and owned by root. Only nodes get this; daemon-only hosts keep `nologin`:
 
    ```
    usermod -s /bin/sh pbp
-   test "$(stat -c '%a %U' /var/lib/pbp)" = "700 pbp"
+   test "$(stat -c '%a %U:%G' /var/lib/pbp)" = "755 root:root"
    ```
 
 4. **Authorize the key, forced to the helper**, in `/var/lib/pbp/.ssh/authorized_keys`, as one line:
