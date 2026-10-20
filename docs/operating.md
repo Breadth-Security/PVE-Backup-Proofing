@@ -10,6 +10,22 @@ docker compose exec pbp pbp version               # build version and Go runtime
 docker compose logs -f pbp                        # logs; per-run files are in ./logs
 ```
 
+On a `.deb` host (see [Install from the .deb](install-deb.md)):
+
+```
+sudo systemctl start pbp                                          # start the daemon (scheduled runs)
+sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check             # preflight only; nothing is restored
+sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp run               # one run now, all guests
+sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp run --guest 105   # one run now, only guest 105's newest backup
+sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp health            # the same health check as the Docker image's
+pbp version                                                       # build version and Go runtime
+journalctl -u pbp -f                                              # logs; per-run files are in /var/log/pbp
+```
+
+Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. Run as root, they would leave root-owned state files the daemon cannot write. The per-run files in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/run-*.log`).
+
+`run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`.
+
 | Exit code | Meaning |
 |-----------|---------|
 | 0 | Success (`check` passed, or the run finished without error) |
