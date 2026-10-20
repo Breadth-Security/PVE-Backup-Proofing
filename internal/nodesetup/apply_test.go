@@ -582,3 +582,21 @@ func TestApplyRefusesNonRegular(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanRefusal(t *testing.T) {
+	differs := Plan{Items: []Item{{Name: "sudoers rule", Path: SudoersPath, Status: Differs}}}
+	home := Plan{Items: []Item{{Name: "pbp home", Path: PbpHome, Status: Differs, CheckOnly: true}}}
+	ok := Plan{Items: []Item{{Name: "x", Path: "/x", Status: Create}, {Name: "pbp home", Path: PbpHome, Status: Correct, CheckOnly: true}}}
+	if err := differs.Refusal(ApplyOpts{}); err == nil || !strings.Contains(err.Error(), "--replace") {
+		t.Errorf("differs: %v", err)
+	}
+	if err := differs.Refusal(ApplyOpts{Replace: true}); err != nil {
+		t.Errorf("differs with replace: %v", err)
+	}
+	if err := home.Refusal(ApplyOpts{Replace: true}); err == nil || !strings.Contains(err.Error(), "fix it by hand") {
+		t.Errorf("home: %v", err)
+	}
+	if err := ok.Refusal(ApplyOpts{}); err != nil {
+		t.Errorf("ok: %v", err)
+	}
+}

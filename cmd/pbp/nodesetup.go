@@ -156,24 +156,36 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.stepFailed(sub, "plan", err)
 	}
+	// The reply needs the node's ed25519 host key and API certificate, which
+	// setup does not create: prove they are readable before changing
+	// anything, so a token secret is never minted with no reply to carry it.
+	preflight, err := nodesetup.BuildReply(env, sa, nodeName, version, "")
+	if err != nil {
+		fprintf(a.stderr, "pbp node setup: FAILED at reply: %v\n%s\n", err, msgNothingChanged)
+		return exitFail
+	}
 	if plan.Complete() && !sa.RotateToken {
 		fprintln(a.stdout, msgAlreadyComplete)
-		return a.printReply(sub, env, sa, nodeName, "")
+		return a.printBlock(sub, preflight, "")
 	}
 
+	opts := nodesetup.ApplyOpts{Replace: *replace}
 	fprintf(a.stdout, "pbp node setup on %s:\n", nodeName)
 	printPlan(a.stdout, plan)
 	if *dryRun {
 		fprintln(a.stdout, "dry run: nothing changed")
 		return exitOK
 	}
-	// Apply refuses up front, before any change, when an item differs and
-	// --replace is missing or pbp's home is wrong; there is nothing to ask.
-	if !blocked(plan, *replace) && !a.confirm(*yes) {
+	// Apply would refuse this plan before any change: say so, do not ask.
+	if err := plan.Refusal(opts); err != nil {
+		fprintf(a.stderr, "pbp node setup: %v\n%s\n", err, msgNothingChanged)
+		return exitFail
+	}
+	if !a.confirm(*yes) {
 		return exitFail
 	}
 
-	secret, applyErr := nodesetup.Apply(ctx, env, plan, sa, nodeName, nodesetup.ApplyOpts{Replace: *replace})
+	secret, applyErr := nodesetup.Apply(ctx, env, plan, sa, nodeName, opts)
 	var selfErr error
 	if applyErr == nil {
 		selfErr = nodesetup.SelfTest(ctx, env, sa, nodeName)
@@ -195,33 +207,27 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	return code
 }
 
-// blocked reports whether Apply would refuse the plan before changing anything.
-func blocked(p nodesetup.Plan, replace bool) bool {
-	for _, it := range p.Items {
-		if it.CheckOnly && it.Status != nodesetup.Correct {
-			return true
+// printReply builds and prints the reply block for the PBP host. If the
+// reply cannot be built (the host key or certificate vanished after the
+// preflight) while a secret is in hand, the secret is printed on its own,
+// clearly labelled and outside any reply markers, so it is never lost and
+// no partial reply can be pasted; the failure is reported.
+func (a *app) printReply(sub string, env nodesetup.Env, sa nodeproto.SetupArgs, nodeName, secret string) int {
+	rep, err := nodesetup.BuildReply(env, sa, nodeName, version, secret)
+	if err != nil {
+		if secret != "" {
+			fprintf(a.stdout, "\nThe API token %s was created but the reply could not be built: %v.\n"+
+				"Its secret, shown once; put it in the PBP host's token file by hand:\n%s\n",
+				nodesetup.TokenID, err, secret)
 		}
-		if it.Status == nodesetup.Differs && !replace {
-			return true
-		}
+		return a.stepFailed(sub, "reply", err)
 	}
-	return false
+	return a.printBlock(sub, rep, secret)
 }
 
-// printReply prints the reply block for the PBP host. With a secret, it is
-// preceded by the copy warning; if the full reply cannot be built, a reply
-// with what is known (the secret included) is still printed so the secret
-// is never lost, and the failure is reported.
-func (a *app) printReply(sub string, env nodesetup.Env, sa nodeproto.SetupArgs, nodeName, secret string) int {
-	rep, buildErr := nodesetup.BuildReply(env, sa, nodeName, version, secret)
-	if buildErr != nil {
-		if secret == "" {
-			return a.stepFailed(sub, "reply", buildErr)
-		}
-		pub, _ := nodeproto.ParsePubKey(sa.PubKey)
-		rep = nodeproto.SetupReply{Format: nodesetup.ReplyFormat, Node: nodeName, HelperVersion: version,
-			VMIDRange: sa.VMIDRange, Bridge: sa.Bridge, PubKey: pub, TokenID: nodesetup.TokenID, TokenSecret: secret}
-	}
+// printBlock prints rep as a reply block, after the copy warning when it
+// carries a secret.
+func (a *app) printBlock(sub string, rep nodeproto.SetupReply, secret string) int {
 	block, err := nodeproto.EncodeReply(rep)
 	if err != nil {
 		// Never quote rep: it may hold the secret.
@@ -232,9 +238,6 @@ func (a *app) printReply(sub string, env nodesetup.Env, sa nodeproto.SetupArgs, 
 		fprintln(a.stdout, msgCopyReply)
 	}
 	fprint(a.stdout, block)
-	if buildErr != nil {
-		return a.stepFailed(sub, "reply (the block above is incomplete; keep it for the token secret)", buildErr)
-	}
 	return exitOK
 }
 

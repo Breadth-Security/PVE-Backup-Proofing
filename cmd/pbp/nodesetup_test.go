@@ -44,6 +44,7 @@ type fakeNode struct {
 	acls    []fakeACL
 	events  []string // every non-query command, in order
 	failACL string   // `acl modify` on this path fails
+	onProbe func()   // runs on each self-test probe (after Apply)
 }
 
 type fakeBridgeSys struct{ node.System }
@@ -154,6 +155,9 @@ func (f *fakeNode) run(_ context.Context, name string, args []string, _ []byte) 
 }
 
 func (f *fakeNode) probe(args []string) (string, string, int, error) {
+	if f.onProbe != nil {
+		f.onProbe()
+	}
 	req, err := nodeproto.Parse(strings.TrimPrefix(args[3], "SSH_ORIGINAL_COMMAND="))
 	if err != nil {
 		return "", "bad request", 2, nil
@@ -612,5 +616,67 @@ func TestNodeUsageListsSetup(t *testing.T) {
 	}
 	if !strings.Contains(usage, "setup") {
 		t.Errorf("usage omits setup: %q", usage)
+	}
+}
+
+func TestNodeSetupNoHostKeyChangesNothing(t *testing.T) {
+	for name, mod := range map[string]func(f *fakeNode){
+		"missing": func(f *fakeNode) {
+			if err := os.Remove(filepath.Join(f.root, nodesetup.HostKeyPath)); err != nil {
+				f.t.Fatal(err)
+			}
+		},
+		"not ed25519": func(f *fakeNode) {
+			f.write(nodesetup.HostKeyPath, "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC root@node\n", 0o644)
+		},
+		"no api cert": func(f *fakeNode) {
+			if err := os.Remove(filepath.Join(f.root, nodesetup.PveCertPath)); err != nil {
+				f.t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newSetupRig(t)
+			mod(r.f)
+			before := r.f.snapshot()
+			code := r.main("y\n", r.setupArgs("--yes")...)
+			if code == exitOK {
+				t.Fatal("exit 0")
+			}
+			if !strings.Contains(r.errOut.String(), "FAILED at reply") || !strings.Contains(r.out.String()+r.errOut.String(), "nothing changed") {
+				t.Errorf("stdout %q stderr %q", r.out, r.errOut)
+			}
+			if strings.Contains(r.out.String(), nodeproto.ReplyBegin) || strings.Contains(r.out.String(), "[y/N]") {
+				t.Errorf("replied or prompted: %q", r.out)
+			}
+			if len(r.f.events) != 0 || r.f.snapshot() != before {
+				t.Errorf("changed something: %v", r.f.events)
+			}
+		})
+	}
+}
+
+func TestNodeSetupReplyRacePrintsSecretOutsideBlock(t *testing.T) {
+	r := newSetupRig(t)
+	r.f.onProbe = func() { _ = os.Remove(filepath.Join(r.f.root, nodesetup.HostKeyPath)) }
+	code := r.main("", r.setupArgs("--yes")...)
+	if code == exitOK {
+		t.Fatal("exit 0")
+	}
+	out := r.out.String()
+	if strings.Count(out, fakeSecret) != 1 {
+		t.Errorf("secret appears %d times on stdout, want once:\n%s", strings.Count(out, fakeSecret), out)
+	}
+	if strings.Contains(out, nodeproto.ReplyBegin) || strings.Contains(out, nodeproto.ReplyEnd) {
+		t.Errorf("printed a reply block:\n%s", out)
+	}
+	if !strings.Contains(out, nodesetup.TokenID) || !strings.Contains(out, "by hand") {
+		t.Errorf("secret not labelled:\n%s", out)
+	}
+	if strings.Contains(r.errOut.String(), fakeSecret) {
+		t.Error("secret on stderr")
+	}
+	if !strings.Contains(r.errOut.String(), "FAILED at reply") {
+		t.Errorf("stderr %q", r.errOut)
 	}
 }

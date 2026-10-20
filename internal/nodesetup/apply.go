@@ -37,6 +37,28 @@ type ApplyOpts struct {
 	Replace bool
 }
 
+// Refusal is why Apply would refuse p with o before changing anything: a
+// check-only item is not correct, or an item differs and o.Replace is
+// false. It is nil when Apply would go ahead.
+func (p Plan) Refusal(o ApplyOpts) error {
+	var checkOnly, differs []string
+	for _, it := range p.Items {
+		switch {
+		case it.CheckOnly && it.Status != Correct:
+			checkOnly = append(checkOnly, it.Name+" ("+it.Path+")")
+		case it.Status == Differs && !o.Replace:
+			differs = append(differs, it.Name+" ("+it.Path+")")
+		}
+	}
+	if len(checkOnly) > 0 {
+		return fmt.Errorf("setup does not change %s; fix it by hand and run setup again", strings.Join(checkOnly, ", "))
+	}
+	if len(differs) > 0 {
+		return fmt.Errorf("these differ from what setup writes: %s; rerun with --replace to back them up and replace them", strings.Join(differs, ", "))
+	}
+	return nil
+}
+
 // Apply brings the node to the state p describes, item by item in plan
 // order (authorized_keys last, so the host cannot log in before the rest is
 // in place). Correct items are skipped. It refuses, changing nothing, when a
@@ -48,20 +70,8 @@ type ApplyOpts struct {
 // a.RotateToken removes an existing token before adding it again. ACL paths
 // come from p; nodeName is unused.
 func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName string, o ApplyOpts) (tokenSecret string, err error) {
-	var checkOnly, differs []string
-	for _, it := range p.Items {
-		switch {
-		case it.CheckOnly && it.Status != Correct:
-			checkOnly = append(checkOnly, it.Name+" ("+it.Path+")")
-		case it.Status == Differs && !o.Replace:
-			differs = append(differs, it.Name+" ("+it.Path+")")
-		}
-	}
-	if len(checkOnly) > 0 {
-		return "", fmt.Errorf("setup does not change %s; fix it by hand and run setup again", strings.Join(checkOnly, ", "))
-	}
-	if len(differs) > 0 {
-		return "", fmt.Errorf("these differ from what setup writes: %s; rerun with --replace to back them up and replace them", strings.Join(differs, ", "))
+	if err := p.Refusal(o); err != nil {
+		return "", err
 	}
 	ids, err := lookupIDs(env)
 	if err != nil {
