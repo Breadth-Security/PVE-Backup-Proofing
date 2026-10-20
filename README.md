@@ -135,8 +135,8 @@ This builds the image and runs setup once, in a throwaway container with the che
 - `--user 0` lets setup give the files it writes to uid 65532, the user the daemon runs as.
 - `-it` is needed for the questions, and for reading the node's reply without echoing it.
 - `-e TZ=...` passes in the host's time zone, which setup offers as the default for the schedule. On a host without systemd use `-e TZ="$(cat /etc/timezone)"`, or name the zone yourself (`-e TZ=Europe/London`).
-- On a host with SELinux enforcing, add `:Z` to the volume: `-v "$PWD:/setup:Z"`.
-- With rootless Docker or userns-remap, root in the container cannot hand files to uid 65532, and setup stops with a `chown` error. Use the [manual setup](#manual-setup-what-pbp-setup-does) there.
+- On a host with SELinux enforcing, add `:z` (lower case, a label shared between containers) to the volume: `-v "$PWD:/setup:z"`. The bind mounts in `docker-compose.yml` then need `:z` too (`./config.yaml:/etc/pbp/config.yaml:ro,z` and so on), or the daemon's container is denied the files. SELinux hosts are untested.
+- Rootless Docker and userns-remap are untested. If setup stops there with a `chown` error, use the [manual setup](#manual-setup-what-pbp-setup-does).
 
 Do not start PBP with `docker compose run` or `docker compose up` before setup has written `config.yaml`. Compose creates an empty directory in place of each missing bind-mounted file, and setup then stops until you remove it.
 
@@ -158,7 +158,7 @@ sudo pbp setup --deb
 | Schedule (cron) | `0 2 * * *` | `schedule` |
 | Time zone for the schedule (Docker only) | the `TZ` passed in | `.env`, which `docker-compose.yml` reads |
 
-Everything else comes from [`config.example.yaml`](config.example.yaml), with its comments, so `config.yaml` reads like the example. Edit it afterwards for the rest (checks, notifications, timeouts). Once `config.yaml` exists, setup never asks again: it reads the file and uses its values.
+Everything else comes from [`config.example.yaml`](config.example.yaml), with its comments, so `config.yaml` reads like the example. Edit it afterwards for the rest (checks, notifications, timeouts) with `sudoedit config.yaml`: setup leaves it read-only and owned by uid 65532. Once `config.yaml` exists, setup never asks again: it reads the file and uses its values.
 
 Setup then creates the SSH key pair (ed25519; an existing key is reused, never replaced), prints what to run on the node, and waits:
 
@@ -212,7 +212,7 @@ In a root shell on the node (the console, or SSH as root), run the two lines `pb
 
    It carries the node's name, the helper's version, the range, bridge and key it set up, the node's ed25519 SSH host key, the SHA-256 fingerprint of the API certificate, and, when the token was just created, the token secret. The secret appears only in this block, and only this once.
 
-`pbp node setup` runs only as root, in an interactive terminal. It refuses to run over SSH (a forced command), through the `pbp` account's sudo rule, or with stdin not a terminal. It never touches root's `authorized_keys`, `/etc/ssh/sshd_config`, the network configuration or any guest.
+`pbp node setup` runs only as root, in an interactive terminal. It refuses to run from an SSH forced command (`SSH_ORIGINAL_COMMAND` set), through the `pbp` account's sudo rule, or with stdin not a terminal. It never touches root's `authorized_keys`, `/etc/ssh/sshd_config`, the network configuration or any guest.
 
 Its options:
 
@@ -221,7 +221,7 @@ Its options:
 | `--dry-run` | Show the checks and the plan, then stop. Nothing is changed. |
 | `--yes` | Skip the `Apply these changes?` prompt. It never lifts the root and terminal requirement. |
 | `--replace` | A file that exists but differs from what setup writes (a sudo rule or `authorized_keys` you edited, for example) stops setup, with the difference shown, and nothing is changed. With `--replace`, the old file is first copied to `<file>.pbp-backup-<YYYYMMDDTHHMMSS>` (for example `/etc/sudoers.d/pbp.pbp-backup-20261020T143005`), then replaced. |
-| `--create-token` | Create the role, user and token. `pbp setup` adds it when the host has no token secret yet. If the token already exists, no new secret is made (PVE cannot show an existing one), and the reply carries none. The role, user and ACLs are brought to the desired state on every run, with or without this flag. |
+| `--create-token` | Create the role, user and token. `pbp setup` adds it when the host has no token secret yet. If the token already exists, no new secret is made (PVE cannot show an existing one), and the reply carries none. The role, user and ACLs are brought to the desired state whenever `--create-token` or `--rotate-token` is set or `--storages` is given, which the line `pbp setup` prints always does. |
 | `--rotate-token` | Delete the token and create it again with a new secret. Any daemon still using the old secret loses access until it gets the new one. `pbp setup` prints a line with this option when it needs it (see below). |
 
 On a node where everything is already in place, `pbp node setup` changes nothing and prints:
@@ -269,7 +269,7 @@ On a `.deb` host: `sudo systemctl start pbp`, and `sudo -u pbp PBP_CONFIG=/etc/p
 
 The image runs as the non-root uid/gid **65532** (distroless `nonroot`), which is why setup gives that uid the files it writes. `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is; the bind-mounted `logs/` is created by setup with that owner. Run logs are created readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root or as that uid, for example `sudo less logs/run-*.log`.
 
-The time zone of the schedule is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Change it there, not in the compose file, and run `docker compose up -d` again.
+The time zone of the schedule is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Change it there (`sudoedit .env`: setup leaves it read-only and owned by uid 65532), not in the compose file, and run `docker compose up -d` again.
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
@@ -440,7 +440,6 @@ echo 'pbp hard maxlogins 8' > /etc/security/limits.d/pbp.conf
 
 `pam_limits` applies it, so it needs `UsePAM yes` (Debian's default) and the `session required pam_limits.so` line Debian ships in `/etc/pam.d/sshd`. On a node with systemd-logind the count includes the session of `pbp`'s own systemd user manager, so `8` allows 7 concurrent requests. Keep it well above `workers` plus two (a `pbp check` or `pbp run` next to the daemon). A login over the limit is cut off by sshd with `There were too many logins for 'pbp'` and exit code 254 before the helper runs, so PBP cannot tell it from a guest command that failed: a cap that is too low shows up as wrongly failed checks.
 
-
 ### Configure and start
 
 Create these next to `docker-compose.yml` before the first `docker compose up`:
@@ -456,7 +455,6 @@ Create these next to `docker-compose.yml` before the first `docker compose up`:
 The secret files and `config.yaml` must be readable by uid 65532 (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). A bind mount hides the image's ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first.
 
 Then start PBP and check it as in [Setup step 6](#6-start).
-
 
 ## Install from the .deb
 
@@ -596,7 +594,7 @@ When a failed unit can be traced to one of these (for example a `.mount` unit fo
 |---------|---------------|
 | `target.ssh.user: root is no longer supported` | PBP refuses root. Set up the helper (Node setup) and use `user: pbp`. |
 | `the pbp node helper is not reachable`, or `Permission denied (publickey)` | Run `pbp node setup` on the node again (the line `pbp setup` prints): it shows what differs. Otherwise: the key is not in `/var/lib/pbp/.ssh/authorized_keys` of the `pbp` user (Node setup step 4), or the file or `.ssh` directory has the wrong owner or mode (both owned by root, `.ssh` `0755`, the file `0644`). The log of sshd on the node says which. With the optional `maxlogins` cap, `There were too many logins for 'pbp'` means the cap is too low. |
-| Login works but nothing runs, or `This account is currently not available` | The `pbp` user still has the `nologin` shell. Run `usermod -s /bin/sh pbp` (step 3). Also check that `UsePAM yes` is set in `sshd_config` (Debian's default); with `UsePAM no`, sshd refuses key logins for a locked account such as this one. |
+| Login works but nothing runs, or `This account is currently not available` | The `pbp` user still has the `nologin` shell. Run `usermod -s /bin/sh pbp` (Node setup step 3). Also check that `UsePAM yes` is set in `sshd_config` (Debian's default); with `UsePAM no`, sshd refuses key logins for a locked account such as this one. |
 | `sudo: a password is required`, or `sudo: no tty present` | The sudoers rule is missing or does not match `/usr/bin/pbp node` exactly (Node setup step 5). Check `/etc/sudoers.d/pbp` with `visudo -cf`, and that `/usr/bin/pbp` is the binary installed by the package. |
 | `pbp-node: refused: bad-request` / `no request` | The helper ran without a valid request. Something other than PBP used the key, or the `env_keep` of `SSH_ORIGINAL_COMMAND` is missing from the sudoers rule. |
 | `pbp-node: refused: out-of-range`, `untagged` or `not-container` | The guest is outside the helper's `vmid_range`, has no `pbp` tag, or is not an LXC container. By design. If the range itself is wrong, fix `node.yaml` and `target.vmid_range` together. |
@@ -611,10 +609,11 @@ When a failed unit can be traced to one of these (for example a `.mount` unit fo
 
 Version 0.3.0 adds the guided setup (`pbp setup`, `pbp node setup`, `pbp node uninstall`). Nothing about a working 0.2 setup changes, but the daemon and the node helper must share major.minor, so upgrade both to 0.3.x together:
 
-1. Upgrade the daemon: `git pull && docker compose build && docker compose up -d` (or install the 0.3 `.deb` on a `.deb` host).
-2. In the checkout, run the Docker one-shot from [Setup step 3](#3-run-pbp-setup-on-the-pbp-host) (or `sudo pbp setup --deb`). It finds your `config.yaml`, key and token, asks nothing, and, because the 0.2 helper on the node is not compatible with a 0.3 daemon, prints the node lines.
-3. On the node, as root, run both lines: the install line upgrades the helper to 0.3, and `pbp node setup` checks the node. On a node set up by hand as the 0.2 README described, it prints `setup has already been completed` and the reply block, and changes nothing. If it shows a plan instead, the node is not quite what the 0.2 steps produce (for example a token named other than `pbp@pve!proof`, or a sudo rule you edited): read the plan before you answer, and see `--replace` in [Setup step 4](#4-run-pbp-node-setup-on-the-node).
-4. Paste the reply into `pbp setup`. It refreshes `known_hosts`, `target.node` and the fingerprint from the node (and says which values it changed), then runs the check.
+1. If you changed `TZ` in `docker-compose.yml`, put `TZ=<your zone>` in a `.env` file next to it and run `git checkout docker-compose.yml` before pulling. 0.3's compose file reads the zone from `.env`, and `pbp setup` writes `.env` only when it creates `config.yaml`, so without this the schedule falls back to `Europe/London` (and `git pull` refuses to overwrite your edited file).
+2. Upgrade the daemon: `git pull && docker compose build && docker compose up -d` (or install the 0.3 `.deb` on a `.deb` host).
+3. In the checkout, run the Docker one-shot from [Setup step 3](#3-run-pbp-setup-on-the-pbp-host) (or `sudo pbp setup --deb`). It finds your `config.yaml`, key and token, asks nothing, and, because the 0.2 helper on the node is not compatible with a 0.3 daemon, prints the node lines.
+4. On the node, as root, run both lines: the install line upgrades the helper to 0.3, and `pbp node setup` checks the node. On a node set up by hand as the 0.2 README described, it prints `setup has already been completed` and the reply block, and changes nothing. If it shows a plan instead, the node is not quite what the 0.2 steps produce (for example a token named other than `pbp@pve!proof`, or a sudo rule you edited): read the plan before you answer, and see `--replace` in [Setup step 4](#4-run-pbp-node-setup-on-the-node).
+5. Paste the reply into `pbp setup`. It refreshes `known_hosts`, `target.node` and the fingerprint from the node (and says which values it changed), then runs the check.
 
 Until both sides are on 0.3, `pbp check` and every run fail with `helper 0.2.x is not compatible with daemon 0.3.y`.
 
@@ -686,7 +685,7 @@ docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redac
 go vet ./... && go vet -tags integration ./... && go test -race ./...
 ```
 
-An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site. An accepted gitleaks finding (a fake secret in a test) is listed by fingerprint in `.gitleaksignore`, and an accepted Trivy finding in `.trivyignore.yaml`.
+An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site. An accepted gitleaks finding (a fake secret in a test) is allowlisted by value in `.gitleaks.toml`, and an accepted Trivy finding in `.trivyignore.yaml`.
 
 *Note that this repo is synced from a local Gitea repo, upon commits. This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
 

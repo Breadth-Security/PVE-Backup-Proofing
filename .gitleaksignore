@@ -1,7 +1,0 @@
-# gitleaks findings accepted on purpose: each is a made-up, UUID-shaped token
-# secret used as a test fixture (never a real credential). Fingerprints are
-# <commit>:<file>:<rule>:<line>; a rebase that rewrites these commits changes
-# them, so update this file with the new fingerprints after one.
-3d2ca4f2e4656159efc1f29c8f22991af3ba9bdf:cmd/pbp/setup_test.go:generic-api-key:27
-babe7964c25c525ba83e374ef2f6d469213d3cb3:cmd/pbp/nodesetup_test.go:generic-api-key:24
-29ce931223468083f51880ef108f0f73319b5900:internal/nodesetup/apply_test.go:generic-api-key:18
