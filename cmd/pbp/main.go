@@ -44,6 +44,10 @@ const (
 	exitFail  = 1
 	exitUsage = 2
 	exitBusy  = 3
+	// exitConfig is the daemon's exit for a config it cannot use (sysexits
+	// EX_CONFIG). pbp.service does not restart on it: restarting cannot fix
+	// a config, and pbp setup is what finishes one.
+	exitConfig = 78
 )
 
 const msgBusy = "a run is already in progress"
@@ -249,6 +253,9 @@ func (a *app) main(ctx context.Context, args []string) int {
 		} else {
 			fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
 		}
+		if cmd == "daemon" {
+			return exitConfig
+		}
 		return exitFail
 	}
 	switch cmd {
@@ -409,7 +416,15 @@ const (
 func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.Store, c *checkOut) int {
 	w := a.connect(cfg)
 	defer w.close()
-	c.line("pve api "+cfg.Target.API.URL, w.apiErr)
+	// A real request: building the client alone proves nothing about the
+	// address, the TLS pin or the token.
+	apiErr := w.apiErr
+	if apiErr == nil {
+		if _, err := w.api.Version(ctx); err != nil {
+			apiErr = err
+		}
+	}
+	c.line("pve api "+cfg.Target.API.URL, apiErr)
 	c.line("ssh "+cfg.Target.SSH.Host, w.sshErr)
 	if !c.ok {
 		return exitFail

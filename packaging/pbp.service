@@ -12,6 +12,9 @@ Group=pbp
 Environment=PBP_CONFIG=/etc/pbp/config.yaml PBP_STATE_DIR=/var/lib/pbp/state
 ExecStart=/usr/bin/pbp daemon
 Restart=on-failure
+# 78: the config is missing pieces or invalid (run pbp setup); restarting
+# every 30s cannot fix it.
+RestartPreventExitStatus=78
 RestartSec=30s
 # On SIGTERM the daemon waits up to 10 minutes for an in-flight guest to be
 # torn down; do not shorten this.
