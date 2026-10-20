@@ -32,22 +32,28 @@ const (
 // another user, and not with stdin redirected. An admin's own sudo (any
 // other SUDO_USER) is allowed. --yes never lifts it.
 func (a *app) setupGate(sub string) bool {
-	var why string
-	_, sshSet := os.LookupEnv("SSH_ORIGINAL_COMMAND")
-	switch {
-	case sshSet:
-		why = "SSH_ORIGINAL_COMMAND is set"
-	case os.Getenv("SUDO_USER") == "pbp":
-		why = "started through the pbp account's sudo rule"
-	case a.euid() != 0:
-		why = "not root"
-	case !a.isTerminal():
-		why = "stdin is not a terminal"
-	default:
+	why := a.nodeGateReason()
+	if why == "" {
 		return true
 	}
 	fprintf(a.stderr, "pbp node %s: refused: run it interactively as root, not over SSH (%s)\n%s", sub, why, nodeUsage)
 	return false
+}
+
+// nodeGateReason says why node setup may not run here, "" when it may.
+func (a *app) nodeGateReason() string {
+	_, sshSet := os.LookupEnv("SSH_ORIGINAL_COMMAND")
+	switch {
+	case sshSet:
+		return "SSH_ORIGINAL_COMMAND is set"
+	case os.Getenv("SUDO_USER") == "pbp":
+		return "started through the pbp account's sudo rule"
+	case a.euid() != 0:
+		return "not root"
+	case !a.isTerminal():
+		return "stdin is not a terminal"
+	}
+	return ""
 }
 
 // usageErr prints a usage error for `pbp node <sub>`.
@@ -150,18 +156,57 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	sa := nodeproto.SetupArgs{VMIDRange: rng, Bridge: *bridge, PubKey: *pubkey, DaemonVersion: *daemonVersion,
 		Storages: sts, CreateToken: *createToken || *rotateToken, RotateToken: *rotateToken}
 
+	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: a.stdin, dryRun: *dryRun, yes: *yes, replace: *replace})
+	switch {
+	case code != exitOK || res.dryRun:
+		return code
+	case res.complete:
+		fprintln(a.stdout, msgAlreadyComplete)
+		return a.printBlock(sub, res.reply, "")
+	}
+	if code := a.printBlock(sub, res.reply, res.reply.TokenSecret); code != exitOK {
+		return code
+	}
+	fprintln(a.stdout, "pbp node setup: done; paste the block above into pbp setup on the PBP host")
+	return exitOK
+}
+
+// nodeRun holds how nodeSetupRun runs: where the y/N answer comes from,
+// and the --dry-run, --yes and --replace choices.
+type nodeRun struct {
+	in                   io.Reader
+	dryRun, yes, replace bool
+}
+
+// nodeResult is what a node setup run ends with: the reply for the PBP host
+// (with the token secret when one was created), and whether the node was
+// already complete or the run was only a dry run.
+type nodeResult struct {
+	reply            nodeproto.SetupReply
+	complete, dryRun bool
+}
+
+// nodeSetupRun is `pbp node setup` after its arguments: the checks, the
+// plan, the confirmation, apply and self-test, and the reply. Failures are
+// reported here and give a non-zero code. PVE shows a token secret only
+// once, so a secret created before a later failure is printed here, outside
+// any reply markers, before the failure is reported. The caller hands the
+// reply over: printed for a separate PBP host, or straight to pbp setup when
+// it runs on this node.
+func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRun) (nodeResult, int) {
+	const sub = "setup"
 	env := a.nodeSetupEnv
 	api := pve.NewLocal(pveshBin, nodesetup.PveshRun(env))
 	nodeName, err := nodesetup.Check(ctx, env, api, a.nodeSys, sa, version)
 	if err != nil {
-		return a.stepFailed(sub, "check", err)
+		return nodeResult{}, a.stepFailed(sub, "check", err)
 	}
 	if w := nodesetup.DaemonWarning(ctx, env); w != "" {
 		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
 	}
 	plan, err := nodesetup.BuildPlan(ctx, env, sa, nodeName)
 	if err != nil {
-		return a.stepFailed(sub, "plan", err)
+		return nodeResult{}, a.stepFailed(sub, "plan", err)
 	}
 	for _, w := range plan.Warnings {
 		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
@@ -172,27 +217,27 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	preflight, err := nodesetup.BuildReply(env, sa, nodeName, version, "")
 	if err != nil {
 		fprintf(a.stderr, "pbp node setup: FAILED at reply: %v\n%s\n", err, msgNothingChanged)
-		return exitFail
+		return nodeResult{}, exitFail
 	}
 	if plan.Complete() && !sa.RotateToken {
-		fprintln(a.stdout, msgAlreadyComplete)
-		return a.printBlock(sub, preflight, "")
+		return nodeResult{reply: preflight, complete: true}, exitOK
 	}
 
-	opts := nodesetup.ApplyOpts{Replace: *replace}
+	opts := nodesetup.ApplyOpts{Replace: o.replace}
 	fprintf(a.stdout, "pbp node setup on %s:\n", nodeName)
 	printPlan(a.stdout, plan)
-	if *dryRun {
+	if o.dryRun {
 		fprintln(a.stdout, "dry run: nothing changed")
-		return exitOK
+		return nodeResult{dryRun: true}, exitOK
 	}
 	// Apply would refuse this plan before any change: say so, do not ask.
 	if err := plan.Refusal(opts); err != nil {
 		fprintf(a.stderr, "pbp node setup: %v\n%s\n", err, msgNothingChanged)
-		return exitFail
+		return nodeResult{}, exitFail
 	}
-	if !a.confirm(*yes) {
-		return exitFail
+	if !o.yes && !nodesetup.Confirm(o.in, a.stdout, msgApplyPrompt) {
+		fprintln(a.stdout, msgNothingChanged)
+		return nodeResult{}, exitFail
 	}
 
 	secret, applyErr := nodesetup.Apply(ctx, env, plan, sa, nodeName, opts)
@@ -200,39 +245,37 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	if applyErr == nil {
 		selfErr = nodesetup.SelfTest(ctx, env, sa, nodeName)
 	}
-	code := exitOK
-	// PVE shows a token secret only once: hand it over before any error.
+	var rep nodeproto.SetupReply
+	var repErr error
 	if secret != "" || (applyErr == nil && selfErr == nil) {
-		code = a.printReply(sub, env, sa, nodeName, secret)
+		rep, repErr = nodesetup.BuildReply(env, sa, nodeName, version, secret)
 	}
-	switch {
-	case applyErr != nil:
-		return a.stepFailed(sub, "apply", applyErr)
-	case selfErr != nil:
-		return a.stepFailed(sub, "self-test", selfErr)
+	if applyErr != nil || selfErr != nil || repErr != nil {
+		if secret != "" {
+			a.handOverSecret(rep, repErr, secret)
+		}
+		switch {
+		case applyErr != nil:
+			return nodeResult{}, a.stepFailed(sub, "apply", applyErr)
+		case selfErr != nil:
+			return nodeResult{}, a.stepFailed(sub, "self-test", selfErr)
+		}
+		return nodeResult{}, a.stepFailed(sub, "reply", repErr)
 	}
-	if code == exitOK {
-		fprintln(a.stdout, "pbp node setup: done; paste the block above into pbp setup on the PBP host")
-	}
-	return code
+	return nodeResult{reply: rep}, exitOK
 }
 
-// printReply builds and prints the reply block for the PBP host. If the
-// reply cannot be built (the host key or certificate vanished after the
-// preflight) while a secret is in hand, the secret is printed on its own,
-// clearly labelled and outside any reply markers, so it is never lost and
-// no partial reply can be pasted; the failure is reported.
-func (a *app) printReply(sub string, env nodesetup.Env, sa nodeproto.SetupArgs, nodeName, secret string) int {
-	rep, err := nodesetup.BuildReply(env, sa, nodeName, version, secret)
-	if err != nil {
-		if secret != "" {
-			fprintf(a.stdout, "\nThe API token %s was created but the reply could not be built: %v.\n"+
-				"Its secret, shown once; put it in the PBP host's token file by hand:\n%s\n",
-				nodesetup.TokenID, err, secret)
-		}
-		return a.stepFailed(sub, "reply", err)
+// handOverSecret prints a token secret created by a run that then failed:
+// in a reply block when one could be built, else on its own, clearly
+// labelled and outside any reply markers, so no partial reply can be pasted.
+func (a *app) handOverSecret(rep nodeproto.SetupReply, repErr error, secret string) {
+	if repErr == nil {
+		_ = a.printBlock("setup", rep, secret)
+		return
 	}
-	return a.printBlock(sub, rep, secret)
+	fprintf(a.stdout, "\nThe API token %s was created but the reply could not be built: %v.\n"+
+		"Its secret, shown once; put it in the PBP host's token file by hand:\n%s\n",
+		nodesetup.TokenID, repErr, secret)
 }
 
 // printBlock prints rep as a reply block, after the copy warning when it

@@ -15,6 +15,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
 )
 
 const (
@@ -52,9 +53,12 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		return exitFail
 	}
 
+	// On a Proxmox VE node, a .deb host can set the node up in this same
+	// run: no second shell, no paste, and the token secret never shown.
+	onNode := l.Deb && a.onPVENode != nil && a.onPVENode()
 	cfg, pending, err := hostsetup.LoadState(l)
 	if errors.Is(err, fs.ErrNotExist) {
-		if code := a.askAndWrite(ctx, in, l); code != exitOK {
+		if code := a.askAndWrite(ctx, in, l, onNode); code != exitOK {
 			return code
 		}
 		cfg, pending, err = hostsetup.LoadState(l)
@@ -82,10 +86,20 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		fprintf(a.stdout, "The existing setup does not pass the check:\n%s\nRun the lines below on the node to repair it.\n", buf.String())
 	}
 
-	fprint(a.stdout, "\n"+hostsetup.NodeLines(cfg, pub, version, l.HaveToken())+"\n")
-	rep, code := a.readReply(ctx, in)
-	if code != exitOK {
+	var rep nodeproto.SetupReply
+	if local, code := a.offerLocalNode(onNode, in); code != exitOK {
 		return code
+	} else if local {
+		var code int
+		if rep, code = a.setUpLocalNode(ctx, in, l, cfg, pub); code != exitOK {
+			return code
+		}
+	} else {
+		fprint(a.stdout, "\n"+hostsetup.NodeLines(cfg, pub, version, l.HaveToken())+"\n")
+		var code int
+		if rep, code = a.readReply(ctx, in); code != exitOK {
+			return code
+		}
 	}
 	changes := hostsetup.Changes(cfg, rep)
 	needRotate, warning, err := hostsetup.FinishChecked(ctx, l, cfg, rep, a.probeHostKey)
@@ -129,7 +143,7 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 
 // askAndWrite asks the questions and writes config.yaml (and, for Docker,
 // logs/ and .env).
-func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Layout) int {
+func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, onNode bool) int {
 	if !l.Deb {
 		if fi, err := os.Stat(l.Dir); err != nil || !fi.IsDir() {
 			fprintf(a.stderr, "pbp setup: %s is not a directory\n", l.Dir)
@@ -139,7 +153,13 @@ func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Lay
 	fprintf(a.stdout, "No %s yet. A few questions (Enter accepts the default in brackets):\n", l.ConfigPath())
 	var ans hostsetup.Answers
 	var askErr error
-	if !a.interruptible(ctx, func() { ans, askErr = hostsetup.Ask(in, a.stdout, l, a.defaultTZ()) }) {
+	// On the node itself, 127.0.0.1 always reaches it, whatever its name
+	// resolves to.
+	defaultAddr := ""
+	if onNode {
+		defaultAddr = "127.0.0.1"
+	}
+	if !a.interruptible(ctx, func() { ans, askErr = hostsetup.AskWith(in, a.stdout, l, a.defaultTZ(), defaultAddr) }) {
 		fprintln(a.stderr, "\n"+msgInterrupted)
 		return exitFail
 	}
@@ -251,4 +271,50 @@ func hostTZ(getenv func(string) string, timezoneFile, localtime string) string {
 		}
 	}
 	return "Etc/UTC"
+}
+
+// offerLocalNode asks, on a Proxmox VE node, whether to set the node up in
+// this run. It is offered only where pbp node setup itself may run (root,
+// a terminal, not over SSH); otherwise the two-shell flow follows.
+func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
+	if !onNode {
+		return false, exitOK
+	}
+	if why := a.nodeGateReason(); why != "" {
+		fprintf(a.stdout, "\nThis host is a Proxmox VE node, but it cannot be set up in this run (%s); run the lines below in a root shell on it.\n", why)
+		return false, exitOK
+	}
+	fprintln(a.stdout, "\nThis host is a Proxmox VE node. pbp setup can set it up for PBP in this run as well:\n"+
+		"the same checks, plan and confirmation as pbp node setup, with no second shell and no reply to paste.")
+	return nodesetup.Confirm(in, a.stdout, "Set up this node here?"), exitOK
+}
+
+// setUpLocalNode runs pbp node setup's steps on this node and returns its
+// reply, as if it had been pasted. When the API token already exists and
+// this host has no secret for it, it offers to replace the token (PVE
+// cannot show an existing secret again).
+func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string) (nodeproto.SetupReply, int) {
+	sa := hostsetup.SetupArgs(cfg, pub, version, l.HaveToken())
+	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in})
+	if code != exitOK {
+		return nodeproto.SetupReply{}, code
+	}
+	if res.complete {
+		fprintln(a.stdout, "The node is already set up.")
+	}
+	if res.reply.TokenSecret != "" || l.HaveToken() {
+		return res.reply, exitOK
+	}
+	fprintf(a.stdout, "\nThe API token %s already exists on this node, and PVE cannot show its secret again.\n"+
+		"Replacing it makes a new secret; any other PBP daemon using the token loses access until it gets the new one.\n",
+		hostsetup.TokenID)
+	if !nodesetup.Confirm(in, a.stdout, "Replace the token?") {
+		fprintln(a.stdout, msgNothingChanged+" on the token; pbp setup needs a token secret to finish")
+		return nodeproto.SetupReply{}, exitFail
+	}
+	sa.CreateToken, sa.RotateToken = true, true
+	if res, code = a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: true}); code != exitOK {
+		return nodeproto.SetupReply{}, code
+	}
+	return res.reply, exitOK
 }

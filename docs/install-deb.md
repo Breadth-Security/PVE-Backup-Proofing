@@ -48,4 +48,4 @@ Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.
 
 **Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user. On a node that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs.
 
-PBP can run on the PVE host itself. It still connects over SSH as the restricted `pbp` user, but it then shares a host with the guests it restores. Prefer a separate host.
+PBP can run on the PVE host itself: install the package there, then `sudo pbp setup --deb` sets up both the daemon and the node in one shell (see [Setup step 3](setup.md#3-run-pbp-setup-on-the-pbp-host)). It still connects over SSH as the restricted `pbp` user (to `127.0.0.1` by default), but it then shares a host with the guests it restores. Prefer a separate host.

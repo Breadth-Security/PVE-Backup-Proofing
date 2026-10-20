@@ -47,11 +47,18 @@ var (
 // message. The time zone is asked only for the Docker layout, offering
 // defaultTZ. End of input is an error.
 func Ask(in io.Reader, out io.Writer, l Layout, defaultTZ string) (Answers, error) {
+	return AskWith(in, out, l, defaultTZ, "")
+}
+
+// AskWith is Ask with a default for the node address ("" for none):
+// 127.0.0.1 when PBP runs on the node itself, which always reaches that
+// node whatever its name resolves to.
+func AskWith(in io.Reader, out io.Writer, l Layout, defaultTZ, defaultAddr string) (Answers, error) {
 	q := asker{r: bufio.NewReader(in), w: out}
 	var a Answers
 	steps := []func() error{
 		func() error {
-			return q.ask("Node address (hostname or IP, as the host reaches its SSH and API)", "", func(s string) error {
+			return q.ask("Node address (hostname or IP, as the host reaches its SSH and API)", defaultAddr, func(s string) error {
 				if err := validAddress(s); err != nil {
 					return err
 				}

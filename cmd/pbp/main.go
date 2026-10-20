@@ -125,6 +125,9 @@ type app struct {
 	// probeHostKey reads the SSH host key at the configured node address,
 	// to catch an address that reaches another machine; nil skips it.
 	probeHostKey hostsetup.HostKeyProbe
+	// onPVENode reports whether this host is a Proxmox VE node, where pbp
+	// setup --deb can set the node up in the same run.
+	onPVENode func() bool
 }
 
 func newApp(stdout, stderr io.Writer) *app {
@@ -135,7 +138,8 @@ func newApp(stdout, stderr io.Writer) *app {
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
 		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") },
-		probeHostKey: hostsetup.ProbeHostKey}
+		probeHostKey: hostsetup.ProbeHostKey,
+		onPVENode:    func() bool { return exists("/etc/pve/local") }}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;

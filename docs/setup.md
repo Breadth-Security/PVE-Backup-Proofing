@@ -80,6 +80,8 @@ Do not start PBP with `docker compose run` or `docker compose up` before setup h
 sudo pbp setup --deb
 ```
 
+**PBP on the Proxmox node itself.** When `sudo pbp setup --deb` runs on a Proxmox VE node, it does both halves in one shell. The address question offers `127.0.0.1`, which always reaches the node, whatever its host name resolves to. Then, instead of printing the two lines for the node, setup asks `Set up this node here? [y/N]`. With yes, it runs `pbp node setup`'s checks, shows the same plan and asks the same `Apply these changes? [y/N]`, applies it, and hands the reply (token secret included) straight to its own second half: nothing is pasted and the secret is never shown. If the API token already exists on the node and this host has no secret for it, setup asks whether to replace it (`--rotate-token`). The node-side rules still apply: root, an interactive terminal, not from an SSH forced command or the `pbp` sudo rule; where they do not hold, setup says so and falls back to the two lines. Answer no to keep the two-shell flow.
+
 **The questions.** Setup asks these only when there is no `config.yaml` yet. Enter accepts the default in brackets, and each answer is checked as you type it:
 
 | Question | Default | Goes into |
@@ -156,7 +158,7 @@ Its options:
 | `--yes` | Skip the `Apply these changes?` prompt. It never lifts the root and terminal requirement. |
 | `--replace` | A file that exists but differs from what setup writes (a sudo rule or `authorized_keys` you edited, for example) stops setup, with the difference shown, and nothing is changed. With `--replace`, the old file is first copied to `<file>.pbp-backup-<YYYYMMDDTHHMMSS>` (for example `/etc/sudoers.d/pbp.pbp-backup-20261020T143005`), then replaced. |
 | `--create-token` | Create the role, user and token. `pbp setup` adds it when the host has no token secret yet. If the token already exists, no new secret is made (PVE cannot show an existing one), and the reply carries none. The role, user and ACLs are brought to the desired state whenever `--create-token` or `--rotate-token` is set or `--storages` is given, which the line `pbp setup` prints always does. |
-| `--rotate-token` | Delete the token and create it again with a new secret. Any daemon still using the old secret loses access until it gets the new one. `pbp setup` prints a line with this option when it needs it (see below). |
+| `--rotate-token` | Delete the token and create it again with a new secret. Any daemon still using the old secret loses access until it gets the new one. PVE drops a removed token's ACLs, so the new token is granted only the paths this run sets: `/vms`, the node, the SDN zone and the storages in `--storages` (the line `pbp setup` prints lists every storage in `config.yaml`). `pbp setup` prints a line with this option when it needs it (see below). |
 
 On a node where everything is already in place, `pbp node setup` changes nothing and prints:
 
