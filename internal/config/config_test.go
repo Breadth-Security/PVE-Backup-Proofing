@@ -286,3 +286,45 @@ func TestVMIDRangeTop(t *testing.T) {
 		t.Errorf("hi = %d, want 999999998", c.Target.VMIDRange[1])
 	}
 }
+
+func TestPendingSetupHint(t *testing.T) {
+	s := strings.Replace(strings.Replace(minimal, "node: pve1", "node: ''", 1), `api: {tls_fingerprint: "AB"}`, "api: {}", 1)
+	_, err := loadStr(t, s)
+	for _, want := range []string{
+		"target.node: required (run pbp setup to finish)",
+		"target.api.tls_fingerprint: set tls_fingerprint or target.api.ca_file (skip-verify is not supported; run pbp setup to finish)",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestParseMatchesLoad(t *testing.T) {
+	want, err := loadStr(t, minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Parse = %+v, Load = %+v", got, want)
+	}
+	if _, err := Parse([]byte(strings.Replace(minimal, "node: pve1", "node: ''", 1))); err == nil || !strings.Contains(err.Error(), "invalid config: target.node: required") {
+		t.Fatalf("Parse invalid: %v", err)
+	}
+	if _, err := Parse(nil); err == nil || err.Error() != "config is empty" {
+		t.Fatalf("Parse empty: %v", err)
+	}
+}
+
+func TestValidateVMIDRange(t *testing.T) {
+	if err := ValidateVMIDRange(990000, 990049); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVMIDRange(99, 200); err == nil || err.Error() != "need 100 <= lo <= hi < 999999999, got [99, 200]" {
+		t.Fatalf("err = %v", err)
+	}
+}

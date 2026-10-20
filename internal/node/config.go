@@ -32,6 +32,9 @@ const (
 // (option injection) must never get through.
 var reBridge = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}$`)
 
+// ValidBridge reports whether s is a bridge name the helper accepts.
+func ValidBridge(s string) bool { return reBridge.MatchString(s) }
+
 // Config is the helper's view of what PBP may touch on this node.
 type Config struct {
 	VMIDRange      [2]int
