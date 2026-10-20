@@ -58,7 +58,8 @@ func setupsAuthorizedKeys(b []byte) bool {
 // plan. A setup path that is not a regular file (or, for .ssh, a directory),
 // or cannot be read, gets a Refused item (Diff says why) instead of failing
 // the plan, so the sudo rule and the key are still removed. A missing pbp
-// user gives no shell item. Only a failing pveum query fails the plan.
+// user (Lookup's ErrNoSuchUser) gives no shell item; any other Lookup
+// failure gives a Refused one. Only a failing pveum query fails the plan.
 func BuildUninstallPlan(ctx context.Context, env Env, removeToken bool) (Plan, error) {
 	var p Plan
 	refuse := func(kind Kind, name, path string, err error) {
@@ -90,7 +91,14 @@ func BuildUninstallPlan(ctx context.Context, env Env, removeToken bool) (Plan, e
 	}
 
 	// No pbp user: nothing can log in as it, so there is no shell to change.
-	if _, _, _, shell, err := env.Lookup(PbpUser); err == nil && shell != NoLogin && shell != "/sbin/nologin" {
+	// Any other lookup failure leaves the shell unknown: refuse the item so
+	// it is reported, never silently skipped.
+	_, _, _, shell, err := env.Lookup(PbpUser)
+	switch {
+	case errors.Is(err, ErrNoSuchUser):
+	case err != nil:
+		refuse(KindShell, "pbp login shell", PbpUser, fmt.Errorf("cannot read the pbp login shell: %w", err))
+	case shell != NoLogin && shell != "/sbin/nologin":
 		p.Items = append(p.Items, Item{Kind: KindShell, Name: "pbp login shell", Path: PbpUser, Status: Remove,
 			Content: []byte(NoLogin), Diff: "-" + shell + "\n+" + NoLogin})
 	}

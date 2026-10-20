@@ -18,7 +18,11 @@ import (
 )
 
 const nodeUsage = "usage: pbp node            (SSH forced command only; reads SSH_ORIGINAL_COMMAND)\n" +
-	"       pbp node install-templates   (interactive, as root)\n"
+	"       pbp node install-templates   (interactive, as root)\n" +
+	"       pbp node setup --vmid-range LO-HI --bridge NAME --pubkey KEY --daemon-version V\n" +
+	"                      [--storages A,B] [--create-token|--rotate-token] [--replace] [--dry-run] [--yes]\n" +
+	"                      (interactive, as root; paste the line pbp setup prints)\n" +
+	"       pbp node uninstall [--remove-token] [--dry-run] [--yes]   (interactive, as root)\n"
 
 const msgNoRequest = "pbp-node: refused: no request (pbp node runs only as an SSH forced command)"
 
@@ -138,10 +142,17 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 	return t.w.Write(p)
 }
 
-// nodeMain runs `pbp node` and `pbp node install-templates`.
+// nodeMain runs `pbp node`, `pbp node install-templates`, `pbp node setup`
+// and `pbp node uninstall`.
 func (a *app) nodeMain(ctx context.Context, args []string) int {
 	request, sshSet := os.LookupEnv("SSH_ORIGINAL_COMMAND")
 	if len(args) > 0 {
+		switch args[0] {
+		case "setup":
+			return a.nodeSetup(ctx, args[1:])
+		case "uninstall":
+			return a.nodeUninstall(ctx, args[1:])
+		}
 		if args[0] != "install-templates" || len(args) > 1 {
 			fprintf(a.stderr, "pbp node: unexpected arguments %q\n%s", args, nodeUsage)
 			return exitUsage

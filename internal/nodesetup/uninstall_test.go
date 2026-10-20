@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -565,7 +566,7 @@ func TestUninstallNoPbpUser(t *testing.T) {
 	lookup := env.Lookup
 	env.Lookup = func(user string) (int, int, string, string, error) {
 		if user == PbpUser {
-			return 0, 0, "", "", errors.New("user: unknown user pbp")
+			return 0, 0, "", "", fmt.Errorf("pbp: %w", ErrNoSuchUser)
 		}
 		return lookup(user)
 	}
@@ -575,6 +576,39 @@ func TestUninstallNoPbpUser(t *testing.T) {
 	}
 	if err := Uninstall(context.Background(), env, p, false); err != nil {
 		t.Fatalf("Uninstall: %v", err)
+	}
+}
+
+// A Lookup failure other than "no such user" (an unreadable /etc/passwd)
+// must not silently drop the shell item: it is Refused and reported, while
+// the access files are still removed.
+func TestUninstallLookupFailureRefusesShell(t *testing.T) {
+	_, env := newUninstallFake(t)
+	lookup := env.Lookup
+	env.Lookup = func(user string) (int, int, string, string, error) {
+		if user == PbpUser {
+			return 0, 0, "", "", errors.New("read /etc/passwd: permission denied")
+		}
+		return lookup(user)
+	}
+	p := buildUninstallPlan(t, env, false)
+	var shell *Item
+	for i := range p.Items {
+		if p.Items[i].Kind == KindShell {
+			shell = &p.Items[i]
+		}
+	}
+	if shell == nil || shell.Status != Refused || !strings.Contains(shell.Diff, "permission denied") {
+		t.Fatalf("shell item %+v, want Refused naming the lookup error", shell)
+	}
+	err := Uninstall(context.Background(), env, p, false)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Uninstall err %v, want the lookup failure reported", err)
+	}
+	for _, f := range []string{SudoersPath, AuthorizedKeys} {
+		if _, err := os.Lstat(env.path(f)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s not removed: %v", f, err)
+		}
 	}
 }
 

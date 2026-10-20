@@ -24,6 +24,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
@@ -32,7 +33,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp node [install-templates]\n"
+const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp node [install-templates|setup|uninstall]\n"
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
@@ -106,12 +107,19 @@ type app struct {
 	audit       auditLog
 	euid        func() int
 	templateDir string
+
+	// pbp node setup and uninstall: whether stdin is a terminal, and every
+	// outside effect of the node setup library.
+	isTerminal   func() bool
+	nodeSetupEnv nodesetup.Env
 }
 
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
 		stdin: os.Stdin, nodeSys: node.NewSystem(),
-		euid: os.Geteuid, templateDir: node.DefaultTemplateDir}
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir,
+		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
+		nodeSetupEnv: nodesetup.NewEnv()}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;

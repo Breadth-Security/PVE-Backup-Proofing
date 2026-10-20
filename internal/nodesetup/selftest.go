@@ -28,6 +28,11 @@ const (
 func SelfTest(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string) error {
 	// The check comes first: it proves node.yaml holds a's range, so the
 	// exec probe at a.VMIDRange[1]+1 is outside the range the helper uses.
+	// A rotation is done by now: check the token as an existing one, since
+	// a plan with RotateToken always re-creates it and is never Complete.
+	if a.RotateToken {
+		a.RotateToken, a.CreateToken = false, true
+	}
 	p, err := BuildPlan(ctx, env, a, nodeName)
 	if err != nil {
 		return fmt.Errorf("self-test: check: %w", err)

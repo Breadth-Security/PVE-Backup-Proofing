@@ -96,6 +96,17 @@ func TestSelfTestPasses(t *testing.T) {
 	}
 }
 
+// After a rotation the token is in place; SelfTest must check it as an
+// existing token, not plan another rotation (which is never Complete).
+func TestSelfTestAfterRotate(t *testing.T) {
+	_, env := selfTestEnv(t)
+	a := testArgs()
+	a.RotateToken = true
+	if err := SelfTest(context.Background(), env, a, "pve1"); err != nil {
+		t.Fatalf("SelfTest with RotateToken: %v", err)
+	}
+}
+
 func TestSelfTestFails(t *testing.T) {
 	long := strings.Repeat("x", 5000)
 	for name, tc := range map[string]struct {
