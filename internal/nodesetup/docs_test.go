@@ -30,6 +30,9 @@ func TestDocsMatchState(t *testing.T) {
 	if !strings.HasPrefix(AuthorizedKeysLine("K"), `restrict,command="sudo /usr/bin/pbp node" `) {
 		t.Errorf("AuthorizedKeysLine prefix = %q", AuthorizedKeysLine("K"))
 	}
+	if !strings.Contains(readme, BridgeStanza("vmbr99")) {
+		t.Errorf("README does not contain the bridge stanza:\n%s", BridgeStanza("vmbr99"))
+	}
 	if privs := strings.Join(RolePrivs, ","); !strings.Contains(readme, privs) {
 		t.Errorf("README does not contain the privilege list %s", privs)
 	}

@@ -70,3 +70,18 @@ func (c *Client) NetIface(ctx context.Context, node, iface string) (NetIface, er
 	}
 	return NetIface(r), nil
 }
+
+// Nodes returns the names of the cluster's nodes.
+func (c *Client) Nodes(ctx context.Context) ([]string, error) {
+	var r []struct {
+		Node string `json:"node"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/nodes", nil, nil, &r); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(r))
+	for _, n := range r {
+		names = append(names, n.Node)
+	}
+	return names, nil
+}

@@ -86,3 +86,18 @@ func TestLocalClientErrors(t *testing.T) {
 		t.Error("non-GET accepted")
 	}
 }
+
+func TestLocalClientNodes(t *testing.T) {
+	f := &fakeRun{out: `[{"node":"pve1","status":"online"},{"node":"pve2"}]`}
+	got, err := NewLocal("pvesh", f.run).Nodes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"pve1", "pve2"}) {
+		t.Errorf("nodes = %v", got)
+	}
+	want := []string{"get", "/nodes", "--output-format", "json"}
+	if !slices.Equal(f.args, want) {
+		t.Errorf("args = %v, want %v", f.args, want)
+	}
+}
