@@ -30,3 +30,18 @@ func Confirm(r io.Reader, w io.Writer, question string) bool {
 	}
 	return false
 }
+
+// EchoOff turns off echo on the terminal fd, so a pasted secret is not shown,
+// and returns a function that restores the terminal's previous settings.
+func EchoOff(fd int) (restore func(), err error) {
+	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil, fmt.Errorf("read terminal settings: %w", err)
+	}
+	quiet := *old
+	quiet.Lflag &^= unix.ECHO
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &quiet); err != nil {
+		return nil, fmt.Errorf("turn off terminal echo: %w", err)
+	}
+	return func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, old) }, nil
+}

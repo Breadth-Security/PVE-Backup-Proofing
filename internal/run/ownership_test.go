@@ -338,3 +338,23 @@ func TestPreflightOrder(t *testing.T) {
 		}
 	})
 }
+
+// PreflightReadOnly runs the same checks without the janitor: it needs no
+// state store and destroys nothing (pbp setup runs it without the run lock).
+func TestPreflightReadOnly(t *testing.T) {
+	ctx := context.Background()
+	f := newRunFixture(t, 990000, 990009)
+	d := f.d
+	d.Store = nil
+	if err := PreflightReadOnly(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.tgt.CallLog(), []string{"CheckNode", "Prepare", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.checked != 1 {
+		t.Errorf("calls %q (want %q), templates checked %d", got, want, f.notif.checked)
+	}
+	f2 := newRunFixture(t, 990000, 990009)
+	f2.tgt.PrepareErr = errors.New("stop here")
+	if err := PreflightReadOnly(ctx, f2.d); err == nil || !strings.HasPrefix(err.Error(), "target: ") {
+		t.Errorf("err = %v", err)
+	}
+}

@@ -200,3 +200,12 @@ func (l Layout) writeFile(path string, data []byte, mode os.FileMode) (err error
 	}
 	return nil
 }
+
+// TestHooks replaces the ownership change, the pbp group lookup and the deb
+// root, so callers' tests run unprivileged. It returns the restore function.
+// Production code never calls it.
+func TestHooks(chownFn func(string, int, int) error, group func(string) (int, error), root string) (restore func()) {
+	oldChown, oldGroup, oldRoot := chown, lookupGroup, debRoot
+	chown, lookupGroup, debRoot = chownFn, group, root
+	return func() { chown, lookupGroup, debRoot = oldChown, oldGroup, oldRoot }
+}

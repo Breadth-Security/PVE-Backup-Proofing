@@ -44,3 +44,14 @@ func TestIsTerminalFalseForFileAndPipe(t *testing.T) {
 		t.Error("pipe reported as a terminal")
 	}
 }
+
+func TestEchoOffRefusesNonTerminal(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if restore, err := EchoOff(int(f.Fd())); err == nil || restore != nil {
+		t.Errorf("EchoOff on a file: restore=%v err=%v", restore != nil, err)
+	}
+}
