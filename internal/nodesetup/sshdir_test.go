@@ -167,10 +167,159 @@ func TestUninstallSSHDirSwappedAfterPlan(t *testing.T) {
 func TestSSHDirAllowed(t *testing.T) {
 	for name, want := range map[string]bool{
 		"authorized_keys": true, "authorized_keys.pbp-backup-20261020T120000": true,
-		"authorized_keys2": false, "known_hosts": false, ".pbp.tmp-1": false, "id_ed25519": false,
+		"authorized_keys2": false, "known_hosts": false, "id_ed25519": false,
+		".pbp.tmp-1": true, ".pbp.tmp-": false, ".pbp.tmp-x": false, ".pbp.tmp-1/../x": false,
 	} {
 		if got := sshDirAllowed(name); got != want {
 			t.Errorf("sshDirAllowed(%q) = %v", name, got)
 		}
 	}
+}
+
+// pbp hides .ssh while the plan is made (so the key is a Create) and puts
+// it back, with an edited key, before Apply: Apply re-reads the key through
+// the fd and refuses instead of overwriting it without a backup.
+func TestApplyKeyAppearedAfterPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name, key string
+		wantErr   bool
+	}{
+		{"edited key", "ssh-ed25519 AAAAadmin admin-edited\n", true},
+		{"setup's own key", AuthorizedKeysLine(testKey) + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, env := newApplyFake(t, "/bin/sh")
+			a := applyArgs()
+			p := buildPlan(t, env, a)
+			if it := item(t, p, KindFile, AuthorizedKeys); it.Status != Create {
+				t.Fatalf("authorized_keys status %v, want Create", it.Status)
+			}
+			mustWrite(t, env.path(AuthorizedKeys), tc.key, 0o644)
+
+			_, err := Apply(context.Background(), env, p, a, "pve1", ApplyOpts{})
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "after the plan") {
+					t.Fatalf("Apply err %v, want a refusal", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if got := readFile(t, env.path(AuthorizedKeys)); got != tc.key {
+				t.Errorf("authorized_keys = %q, want it left as %q", got, tc.key)
+			}
+			if names := backupsIn(t, env.path(SSHDir)); len(names) > 0 {
+				t.Errorf("unexpected backups %v", names)
+			}
+		})
+	}
+}
+
+// An authorized_keys over 64 KiB (sparse here) is never read in full or
+// copied: setup's plan calls it Differs, Apply refuses even with --replace
+// and makes no backup, and uninstall removes it without a backup.
+func TestOversizedAuthorizedKeys(t *testing.T) {
+	big := func(t *testing.T, env Env) {
+		t.Helper()
+		mustWrite(t, env.path(AuthorizedKeys), "", 0o644)
+		if err := os.Truncate(env.path(AuthorizedKeys), 1<<30); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("setup", func(t *testing.T) {
+		f, env := newApplyFake(t, "/bin/sh")
+		layoutComplete(t, env.Root)
+		f.complete("pve1")
+		big(t, env)
+		a := applyArgs()
+		p := buildPlan(t, env, a)
+		it := item(t, p, KindFile, AuthorizedKeys)
+		if it.Status != Differs || !strings.Contains(it.Diff, "64 KiB") {
+			t.Fatalf("authorized_keys %v %q, want Differs naming 64 KiB", it.Status, it.Diff)
+		}
+		_, err := Apply(context.Background(), env, p, a, "pve1", ApplyOpts{Replace: true})
+		if err == nil || !strings.Contains(err.Error(), "64 KiB") {
+			t.Fatalf("Apply err %v, want a refusal naming 64 KiB", err)
+		}
+		if names := backupsIn(t, env.path(SSHDir)); len(names) > 0 {
+			t.Errorf("backed up an oversized file: %v", names)
+		}
+	})
+	t.Run("uninstall", func(t *testing.T) {
+		_, env := newUninstallFake(t)
+		big(t, env)
+		p := buildUninstallPlan(t, env, false)
+		if !slices.Contains(planKeys(p), "file "+AuthorizedKeys) {
+			t.Fatalf("plan %q, want authorized_keys removed without a backup", planKeys(p))
+		}
+		if err := Uninstall(context.Background(), env, p, false); err != nil {
+			t.Fatalf("Uninstall: %v", err)
+		}
+		if !gone(env, AuthorizedKeys) {
+			t.Error("oversized authorized_keys left")
+		}
+		if names := backupsIn(t, filepath.Dir(env.path(AuthorizedKeys))); len(names) > 0 {
+			t.Errorf("backed up an oversized file: %v", names)
+		}
+	})
+}
+
+// Temp files an interrupted setup left in .ssh do not block the next run:
+// the plan accepts them and Apply removes them once .ssh is root's.
+func TestLeftoverTempFilesRemoved(t *testing.T) {
+	_, env := newApplyFake(t, "/bin/sh")
+	mustWrite(t, filepath.Join(env.path(SSHDir), ".pbp.tmp-12345"), "partial", 0o600)
+	a := applyArgs()
+	p := buildPlan(t, env, a)
+	for _, it := range p.Items {
+		if it.Path == SSHDir && it.Kind == KindCheck && it.Status != Correct {
+			t.Fatalf("plan refuses the leftover temp file: %s", it.Diff)
+		}
+	}
+	if _, err := Apply(context.Background(), env, p, a, "pve1", ApplyOpts{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !gone(env, filepath.Join(SSHDir, ".pbp.tmp-12345")) {
+		t.Error("leftover temp file not removed")
+	}
+	if gone(env, AuthorizedKeys) {
+		t.Error("authorized_keys not written")
+	}
+}
+
+// readManaged never blocks on a FIFO and never reads past the cap.
+func TestReadManaged(t *testing.T) {
+	env := Env{Root: t.TempDir()}
+	fifo := "/etc/pbp/node.yaml"
+	if err := os.MkdirAll(filepath.Dir(env.path(fifo)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscallMkfifo(env.path(fifo)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readManaged(env, fifo); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("FIFO: err %v, want not a regular file", err)
+	}
+	link := "/etc/pbp/link"
+	if err := os.Symlink(env.path(fifo), env.path(link)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readManaged(env, link); err == nil {
+		t.Error("read through a symlink")
+	}
+}
+
+// backupsIn lists the .pbp-backup- files in dir.
+func backupsIn(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range ents {
+		if strings.Contains(e.Name(), backupSuffix) {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }

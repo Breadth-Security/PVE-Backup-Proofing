@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"slices"
@@ -138,6 +137,10 @@ func planRemoveFile(env Env, name, path string, setups setupsFunc) (*Item, error
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
+	if errors.Is(err, errTooLarge) && path == AuthorizedKeys {
+		return &Item{Kind: KindFile, Name: name, Path: path, Status: Remove,
+			Diff: "-file (larger than 64 KiB, so not setup's: removed without a backup)"}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +174,7 @@ func readRegular(env Env, path string) ([]byte, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, notRegularUninstall(path, fi)
 	}
-	return io.ReadAll(f)
+	return readCapped(f, path)
 }
 
 // emptyAfter reports whether .ssh is left empty once ak (nil when absent)

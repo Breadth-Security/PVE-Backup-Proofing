@@ -19,6 +19,8 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+
+	"golang.org/x/sys/unix"
 )
 
 const pveum = "/usr/sbin/pveum"
@@ -214,6 +216,27 @@ func planDir(env Env, ids ids, name, path string, mode os.FileMode, owner, group
 // match it returns the diff.
 type sameFunc func(have []byte) (ok bool, diff string)
 
+// readManaged reads a file setup manages for the plan: never through a
+// symlink at the last component, never blocking on a FIFO swapped in after
+// the Lstat (O_NONBLOCK, then fstat must say regular), and never more than
+// maxManagedFile bytes (pbp can write its own .ssh before setup secures it).
+func readManaged(env Env, path string) ([]byte, error) {
+	fd, err := unix.Open(env.path(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (%s)", path, fi.Mode().Type())
+	}
+	return readCapped(f, path)
+}
+
 func planFile(env Env, ids ids, it Item, same sameFunc) Item {
 	fi, bad, err := statOwned(env, ids, it)
 	switch {
@@ -227,7 +250,7 @@ func planFile(env Env, ids ids, it Item, same sameFunc) Item {
 		it.Status, it.Diff = Differs, "not a regular file ("+fi.Mode().Type().String()+")"
 		return it
 	}
-	have, err := os.ReadFile(env.path(it.Path))
+	have, err := readManaged(env, it.Path)
 	if err != nil {
 		it.Status, it.Diff = Differs, err.Error()
 		return it

@@ -32,11 +32,51 @@ const (
 	sshDirMode = 0o755
 )
 
+// maxManagedFile caps how much of a file setup and uninstall read or back
+// up. pbp can write its own .ssh before setup secures it, so a huge or
+// sparse authorized_keys planted there must not make root read it into
+// memory or copy it in full. Every file setup writes is a few hundred bytes.
+const maxManagedFile = 64 << 10
+
+// errTooLarge marks a file over maxManagedFile.
+var errTooLarge = errors.New("larger than 64 KiB, which setup never writes")
+
+func tooLarge(path string) error {
+	return fmt.Errorf("%s is %w; move it away by hand", path, errTooLarge)
+}
+
+// readCapped reads all of f, refusing more than maxManagedFile bytes.
+func readCapped(f *os.File, path string) ([]byte, error) {
+	if fi, err := f.Stat(); err == nil && fi.Size() > maxManagedFile {
+		return nil, tooLarge(path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxManagedFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxManagedFile {
+		return nil, tooLarge(path)
+	}
+	return b, nil
+}
+
 // sshDirAllowed reports whether name may sit in pbp's .ssh: only
-// authorized_keys and setup's own backups of it. sshd reads other key
-// files (authorized_keys2, or whatever AuthorizedKeysFile names) too.
+// authorized_keys, setup's own backups of it, and temp files an interrupted
+// setup left (secureSSHDir removes those). sshd reads other key files
+// (authorized_keys2, or whatever AuthorizedKeysFile names) too.
 func sshDirAllowed(name string) bool {
-	return name == akName || strings.HasPrefix(name, akName+backupSuffix)
+	return name == akName || strings.HasPrefix(name, akName+backupSuffix) || isTempName(name)
+}
+
+// isTempName reports whether name is one of setup's temp names.
+func isTempName(name string) bool {
+	prefix := strings.TrimSuffix(tmpPattern, "*")
+	rest, ok := strings.CutPrefix(name, prefix)
+	if !ok || rest == "" {
+		return false
+	}
+	_, err := strconv.ParseUint(rest, 10, 64)
+	return err == nil
 }
 
 // openHome opens pbp's home (under Root) as a directory, never through a
@@ -99,6 +139,13 @@ func secureSSHDir(env Env, ids ids) (int, error) {
 		_ = unix.Close(fd)
 		return -1, &fs.PathError{Op: "chown/chmod", Path: SSHDir, Err: err}
 	}
+	// .ssh is root's now, so nothing new can appear in it: remove the temp
+	// files an interrupted setup left (unlinkat removes a symlink itself,
+	// never its target).
+	if err := removeTempFiles(fd); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
 	if extra, err := sshDirExtra(fd); err != nil || len(extra) > 0 {
 		_ = unix.Close(fd)
 		if err != nil {
@@ -110,16 +157,38 @@ func secureSSHDir(env Env, ids ids) (int, error) {
 	return fd, nil
 }
 
-// sshDirExtra lists the entries of the directory fd that sshDirAllowed
-// rejects. dir stays open.
-func sshDirExtra(dir int) ([]string, error) {
+// dirNames lists the entries of the directory fd. dir stays open.
+func dirNames(dir int) ([]string, error) {
 	dup, err := unix.Openat(dir, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: SSHDir, Err: err}
 	}
 	f := os.NewFile(uintptr(dup), SSHDir)
 	defer func() { _ = f.Close() }()
-	names, err := f.Readdirnames(-1)
+	return f.Readdirnames(-1)
+}
+
+// removeTempFiles unlinks setup's leftover temp names in the directory fd.
+func removeTempFiles(dir int) error {
+	names, err := dirNames(dir)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if !isTempName(n) {
+			continue
+		}
+		if err := unix.Unlinkat(dir, n, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return &fs.PathError{Op: "remove", Path: fdPath(n), Err: err}
+		}
+	}
+	return nil
+}
+
+// sshDirExtra lists the entries of the directory fd that sshDirAllowed
+// rejects. dir stays open.
+func sshDirExtra(dir int) ([]string, error) {
+	names, err := dirNames(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -180,13 +249,16 @@ func backupAt(env Env, dir int, name string) error {
 	if err != nil {
 		return err
 	}
+	if fi.Size() > maxManagedFile {
+		return tooLarge(fdPath(name))
+	}
 	bak := name + backupSuffix + env.Now().Format(backupTime)
 	out, err := createExclAt(dir, bak)
 	if err != nil {
 		return err
 	}
 	err = func() error {
-		if _, err := io.Copy(out, in); err != nil {
+		if _, err := io.Copy(out, io.LimitReader(in, maxManagedFile)); err != nil {
 			return err
 		}
 		if err := out.Sync(); err != nil {
@@ -262,11 +334,32 @@ func writeFileAt(env Env, dir int, name string, content []byte, mode os.FileMode
 	return err
 }
 
-// applyAuthorizedKeys writes authorized_keys into the secured .ssh dir fd,
-// after a backup when it replaces one.
+// applyAuthorizedKeys writes authorized_keys into the secured .ssh dir fd.
+// The plan was made by path before the y/N prompt, and pbp owns its home:
+// it can hide .ssh while planning and put it back before this runs. So the
+// file is read again through the fd, and whatever is there now decides:
+// setup's own line needs no write, a file the plan did not expect (a
+// planned Create that finds one) is refused, and a planned Differs (only
+// reached with --replace) is backed up first.
 func applyAuthorizedKeys(env Env, ids ids, dir int, it Item) error {
-	if it.Status == Differs {
-		if err := backupAt(env, dir, akName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	f, err := openRegularAt(dir, akName)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		have, err := readCapped(f, fdPath(akName))
+		_ = f.Close()
+		if err != nil {
+			return err
+		}
+		if string(have) == string(it.Content) {
+			return nil
+		}
+		if it.Status != Differs {
+			return fmt.Errorf("%s appeared or changed after the plan was made; nothing was overwritten, run pbp node setup again", AuthorizedKeys)
+		}
+		if err := backupAt(env, dir, akName); err != nil {
 			return err
 		}
 	}
@@ -297,12 +390,15 @@ func removeAuthorizedKeys(env Env, it Item, setups setupsFunc) error {
 	if err != nil {
 		return err
 	}
-	b, err := io.ReadAll(f)
+	b, err := readCapped(f, fdPath(akName))
 	_ = f.Close()
-	if err != nil {
+	// An oversized file is not setup's (and pbp may have planted it to
+	// fill the disk): remove it without a backup.
+	big := errors.Is(err, errTooLarge)
+	if err != nil && !big {
 		return err
 	}
-	if it.Backup || !setups(env, b) {
+	if !big && (it.Backup || !setups(env, b)) {
 		if err := backupAt(env, dir, akName); err != nil {
 			return err
 		}
