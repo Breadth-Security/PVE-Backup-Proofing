@@ -42,6 +42,7 @@ type fakePVE struct {
 	users  []string            // userids
 	tokens map[string][]string // userid -> token names
 	nosep  bool                // tokens are listed with privsep 0
+	groups map[string]any      // userid -> pveum's "groups" field
 	acls   []aclEntry
 	calls  []string
 	// sshd is the output of `sshd -T -C …`; "" means Debian's defaults.
@@ -80,7 +81,11 @@ func (f *fakePVE) run(_ context.Context, name string, args []string, stdin []byt
 	case "user list":
 		out := []map[string]any{{"userid": "root@pam", "enable": 1}}
 		for _, u := range f.users {
-			out = append(out, map[string]any{"userid": u, "enable": 1})
+			e := map[string]any{"userid": u, "enable": 1}
+			if g, ok := f.groups[u]; ok {
+				e["groups"] = g
+			}
+			out = append(out, e)
 		}
 		return j(out), "", 0, nil
 	case "acl list":
@@ -674,5 +679,65 @@ func TestExpandKeysFile(t *testing.T) {
 		if ok != (want != "") || got != want {
 			t.Errorf("expandKeysFile(%q) = %q, %v; want %q", in, got, ok, want)
 		}
+	}
+}
+
+// Grants beyond PBPProofer on setup's paths, group memberships and other
+// tokens of pbp@pve are reported as warnings, never refused or changed:
+// the plan stays complete.
+func TestPlanPermissionWarnings(t *testing.T) {
+	pve := &fakePVE{}
+	pve.complete("pve1")
+	env := testEnv(t, pve, "/bin/sh")
+	layoutComplete(t, env.Root)
+	if p := buildPlan(t, env, testArgs()); len(p.Warnings) > 0 || !p.Complete() {
+		t.Fatalf("baseline: warnings %q, complete %v", p.Warnings, p.Complete())
+	}
+
+	pve.acls = append(pve.acls,
+		aclEntry{"/", "Administrator", "token", TokenID, 1},
+		aclEntry{"/vms", "PVEAdmin", "user", UserID, 1},
+		aclEntry{"/pool/prod", RoleName, "user", UserID, 1},
+		aclEntry{"/", "Administrator", "user", "root@pam", 1}, // not pbp's
+		aclEntry{"/", "Administrator", "user", "pbp@pvex", 1}) // not pbp's either
+	pve.tokens[UserID] = append(pve.tokens[UserID], "other")
+	for _, groups := range []any{"admins,ops", []string{"admins", "ops"}} {
+		pve.groups = map[string]any{UserID: groups}
+		p := buildPlan(t, env, testArgs())
+		if !p.Complete() {
+			t.Errorf("warnings made the plan incomplete:\n%s", dump(p))
+		}
+		all := strings.Join(p.Warnings, "\n")
+		for _, want := range []string{
+			"token " + TokenID + " also has role Administrator on /",
+			"user " + UserID + " also has role PVEAdmin on /vms",
+			"user " + UserID + " also has role " + RoleName + " on /pool/prod",
+			UserID + " is in group(s) admins, ops",
+			"another API token, " + UserID + "!other",
+		} {
+			if !strings.Contains(all, want) {
+				t.Errorf("warnings lack %q:\n%s", want, all)
+			}
+		}
+		if strings.Contains(all, "root@pam") || strings.Contains(all, "pbp@pvex") {
+			t.Errorf("warned about someone else's grant:\n%s", all)
+		}
+	}
+}
+
+// An ACL entry that does not propagate covers only the path itself, not
+// the guests or storages under it: setup plans it again.
+func TestPlanACLWithoutPropagate(t *testing.T) {
+	pve := &fakePVE{}
+	pve.complete("pve1")
+	for i := range pve.acls {
+		if pve.acls[i].Path == "/vms" && pve.acls[i].Type == "token" {
+			pve.acls[i].Propagate = 0
+		}
+	}
+	env := testEnv(t, pve, "/bin/sh")
+	layoutComplete(t, env.Root)
+	if it := item(t, buildPlan(t, env, testArgs()), KindACL, "/vms"); it.Status != Create || !strings.Contains(it.Diff, "+token "+TokenID) {
+		t.Errorf("non-propagating /vms token ACL: status %v diff %q, want Create", it.Status, it.Diff)
 	}
 }

@@ -163,6 +163,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.stepFailed(sub, "plan", err)
 	}
+	for _, w := range plan.Warnings {
+		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+	}
 	// The reply needs the node's ed25519 host key and API certificate, which
 	// setup does not create: prove they are readable before changing
 	// anything, so a token secret is never minted with no reply to carry it.

@@ -227,6 +227,8 @@ The container's `stop_grace_period` is 11 minutes because on shutdown the daemon
 
 `SDN.Use` is needed on the bridges the **original** guests use, not only on the isolated bridge: PVE checks the backed-up NIC configuration (for example `bridge=vmbr0,tag=2`) when it restores, before PBP can move the NICs to the isolated bridge. Granting it on `/sdn/zones/localnetwork` covers every local bridge and VLAN. The restored guest is never started until every NIC is on the isolated bridge.
 
+`pbp node setup` warns, without changing anything, when `pbp@pve` or one of its tokens has more than this: another role or another path in an ACL, membership in a group (whose permissions apply too), or a second API token. Grant extra only on purpose (see privileged containers below). An ACL entry for these paths that does not propagate covers only the path itself, so setup sets it again.
+
 `/vms` cannot be narrowed to the VMID range in PVE's permission model, so the token could act on every guest. The reserved range is enforced by PBP itself; the token is the second line, not the first.
 
 Guests PBP cannot proof with this token (each ends `ERROR`, never started; the backup is not blamed):

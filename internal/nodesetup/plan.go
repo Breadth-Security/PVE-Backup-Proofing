@@ -97,7 +97,12 @@ type Item struct {
 }
 
 // Plan lists every item in apply order.
-type Plan struct{ Items []Item }
+type Plan struct {
+	Items []Item
+	// Warnings name what setup leaves alone but the admin should know:
+	// permissions for pbp@pve or its tokens beyond what PBP needs.
+	Warnings []string
+}
 
 // Complete reports whether every item is already correct.
 func (p Plan) Complete() bool {
@@ -138,11 +143,12 @@ func BuildPlan(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName str
 
 	token := a.CreateToken || a.RotateToken
 	if token || len(a.Storages) > 0 {
-		pve, err := planPVE(ctx, env, a, nodeName, token)
+		pve, warn, err := planPVE(ctx, env, a, nodeName, token)
 		if err != nil {
 			return Plan{}, err
 		}
 		p.Items = append(p.Items, pve...)
+		p.Warnings = append(p.Warnings, warn...)
 	}
 
 	add(planDir(env, ids, "pbp .ssh dir", SSHDir, 0o755, "root", "root"))
@@ -572,15 +578,16 @@ func (p *privList) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string, token bool) ([]Item, error) {
+func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string, token bool) ([]Item, []string, error) {
 	var items []Item
+	var warn []string
 
 	var roles []struct {
 		RoleID string   `json:"roleid"`
 		Privs  privList `json:"privs"`
 	}
 	if _, _, err := runPveum(ctx, env, &roles, "role", "list"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	role := Item{Kind: KindRole, Name: "PVE role", Path: RoleName, Status: Create, Diff: prefixLines("+", RolePrivs)}
 	for _, r := range roles {
@@ -600,15 +607,19 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 	items = append(items, role)
 
 	var users []struct {
-		UserID string `json:"userid"`
+		UserID string          `json:"userid"`
+		Groups json.RawMessage `json:"groups"`
 	}
 	if _, _, err := runPveum(ctx, env, &users, "user", "list"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	user := Item{Kind: KindUser, Name: "PVE user", Path: UserID, Status: Create, Diff: "+" + UserID}
 	for _, u := range users {
 		if u.UserID == UserID {
 			user.Status, user.Diff = Correct, ""
+			if g := groupList(u.Groups); g != "" {
+				warn = append(warn, UserID+" is in group(s) "+g+": the groups' permissions apply to it too, beyond what PBP needs")
+			}
 		}
 	}
 	items = append(items, user)
@@ -627,10 +638,11 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 			switch {
 			case exit != 0 && strings.Contains(strings.ToLower(stderr), "no such user"):
 			case err != nil:
-				return nil, err
+				return nil, nil, err
 			}
 			for _, t := range toks {
 				if t.TokenID != TokenName {
+					warn = append(warn, UserID+" has another API token, "+UserID+"!"+t.TokenID+"; setup manages only "+TokenID)
 					continue
 				}
 				// privsep 0 gives the token every permission of the user.
@@ -653,18 +665,32 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 	}
 
 	var acls []struct {
-		Path   string `json:"path"`
-		RoleID string `json:"roleid"`
-		Type   string `json:"type"`
-		UGID   string `json:"ugid"`
+		Path      string          `json:"path"`
+		RoleID    string          `json:"roleid"`
+		Type      string          `json:"type"`
+		UGID      string          `json:"ugid"`
+		Propagate json.RawMessage `json:"propagate"`
 	}
 	if _, _, err := runPveum(ctx, env, &acls, "acl", "list"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for _, path := range ACLPaths(nodeName, a.Storages) {
+	paths := ACLPaths(nodeName, a.Storages)
+	// Any grant to pbp@pve or one of its tokens beyond PBPProofer on these
+	// paths widens what a stolen token can do. Setup leaves it (an admin may
+	// grant more on purpose, see docs/setup.md) but says so.
+	for _, e := range acls {
+		mine := e.UGID == UserID || strings.HasPrefix(e.UGID, UserID+"!")
+		if mine && (e.RoleID != RoleName || !slices.Contains(paths, e.Path)) {
+			warn = append(warn, fmt.Sprintf("%s %s also has role %s on %s, beyond what PBP needs", e.Type, e.UGID, e.RoleID, e.Path))
+		}
+	}
+	for _, path := range paths {
 		var hasUser, hasToken bool
 		for _, e := range acls {
-			if e.Path != path || e.RoleID != RoleName {
+			// An entry that does not propagate covers only the path itself,
+			// not the guests or storages under it: count it as missing, and
+			// acl modify (which propagates by default) sets it again.
+			if e.Path != path || e.RoleID != RoleName || strings.Trim(string(e.Propagate), `"`) == "0" {
 				continue
 			}
 			hasUser = hasUser || e.Type == "user" && e.UGID == UserID
@@ -683,5 +709,19 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 		}
 		items = append(items, it)
 	}
-	return items, nil
+	return items, warn, nil
+}
+
+// groupList renders pveum's "groups" field, a comma-separated string (or,
+// tolerated, a list), as "a, b"; "" when there are none.
+func groupList(raw json.RawMessage) string {
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return strings.Join(strings.FieldsFunc(str, func(r rune) bool { return r == ',' || r == ' ' }), ", ")
+	}
+	var list []string
+	if json.Unmarshal(raw, &list) == nil {
+		return strings.Join(list, ", ")
+	}
+	return ""
 }
