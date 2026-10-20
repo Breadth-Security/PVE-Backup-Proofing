@@ -486,7 +486,10 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 	}
 	items = append(items, user)
 
-	if token {
+	// The token item appears when asked for, or when it is absent: the
+	// ACL items name the token, and `acl modify --tokens` fails on a token
+	// that does not exist.
+	{
 		tok := Item{Kind: KindToken, Name: "API token", Path: TokenID, Status: Create, Diff: "+" + TokenID + " (privsep 1)"}
 		if user.Status == Correct {
 			var toks []struct {
@@ -517,7 +520,9 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 		if tok.Status != Create && a.RotateToken {
 			tok.Status, tok.Diff = Create, "rotate: the existing "+TokenID+" is removed and created again with a new secret"
 		}
-		items = append(items, tok)
+		if token || tok.Status == Create {
+			items = append(items, tok)
+		}
 	}
 
 	var acls []struct {

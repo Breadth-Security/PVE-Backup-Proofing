@@ -284,15 +284,24 @@ func TestPlanItemsOnlyWithToken(t *testing.T) {
 		t.Errorf("pveum called without token items: %v", pve.calls)
 	}
 
+	// ACLs name the token, so an absent token is created for them.
 	a.Storages = []string{"pbs1"}
 	p := buildPlan(t, env, a)
-	for _, it := range p.Items {
-		if it.Kind == KindToken {
-			t.Error("token item without --create-token")
-		}
+	if tok := item(t, p, KindToken, TokenID); tok.Status != Create {
+		t.Errorf("absent token with ACLs planned: %v", tok.Status)
 	}
 	item(t, p, KindRole, RoleName)
 	item(t, p, KindACL, "/storage/pbs1")
+
+	// A present token is left alone without --create-token.
+	pve.complete("pve1")
+	for _, it := range buildPlan(t, env, a).Items {
+		if it.Kind == KindToken {
+			t.Error("token item for a present token without --create-token")
+		}
+	}
+	pve.users = nil // the user (and so the token) absent
+	item(t, buildPlan(t, env, a), KindToken, TokenID)
 
 	a.RotateToken = true
 	item(t, buildPlan(t, env, a), KindToken, TokenID)

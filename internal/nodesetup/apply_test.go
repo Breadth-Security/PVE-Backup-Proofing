@@ -124,6 +124,9 @@ func (f *applyFake) run(ctx context.Context, name string, args []string, stdin [
 			return "", "no such token", 255, nil
 		}
 		f.tokens[UserID] = slices.DeleteFunc(f.tokens[UserID], func(s string) bool { return s == TokenName })
+		// PVE drops a removed token's ACL entries, and re-adding the token
+		// does not bring them back (verified on pve1).
+		f.acls = slices.DeleteFunc(f.acls, func(e aclEntry) bool { return e.Type == "token" && e.UGID == TokenID })
 		return "", "", 0, nil
 	case slices.Equal(args, []string{"user", "token", "add", UserID, TokenName, "--privsep", "1", "--comment", "PBP proof token", "--output-format", "json"}):
 		f.events = append(f.events, ev)
@@ -398,6 +401,27 @@ func TestApplyInterrupted(t *testing.T) {
 	}
 }
 
+// A failure after the token was added still returns its one-time secret.
+func TestApplyFailureAfterTokenKeepsSecret(t *testing.T) {
+	f, env := newApplyFake(t, "/usr/sbin/nologin")
+	f.fail = func(name string, args []string) bool {
+		return len(args) > 2 && args[0] == "acl" && args[1] == "modify" && args[2] == "/storage/pbs1"
+	}
+	secret, err := apply(t, env, applyArgs(), ApplyOpts{})
+	if err == nil || !strings.Contains(err.Error(), "ACL /storage/pbs1") {
+		t.Fatalf("err %v, want the ACL failure", err)
+	}
+	if secret != testSecret {
+		t.Errorf("secret %q with the error, want %q", secret, testSecret)
+	}
+	if strings.Contains(err.Error(), testSecret) {
+		t.Errorf("secret in error: %v", err)
+	}
+	if _, err := os.Stat(env.path(AuthorizedKeys)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("authorized_keys written after a failure: %v", err)
+	}
+}
+
 func TestApplyExistingTokenNoSecret(t *testing.T) {
 	f, env := newApplyFake(t, "/usr/sbin/nologin")
 	f.complete("pve1")
@@ -433,7 +457,7 @@ func TestApplyRotate(t *testing.T) {
 		f.secret = "new-secret-value"
 		a := applyArgs()
 		a.CreateToken, a.RotateToken = false, true
-		secret, err := apply(t, env, a, ApplyOpts{RotateToken: true})
+		secret, err := apply(t, env, a, ApplyOpts{})
 		if err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -451,7 +475,7 @@ func TestApplyRotate(t *testing.T) {
 		f, env := newApplyFake(t, "/bin/sh")
 		a := applyArgs()
 		a.CreateToken, a.RotateToken = false, true
-		secret, err := apply(t, env, a, ApplyOpts{RotateToken: true})
+		secret, err := apply(t, env, a, ApplyOpts{})
 		if err != nil || secret != testSecret {
 			t.Fatalf("Apply: %q, %v", secret, err)
 		}
@@ -499,5 +523,62 @@ func TestApplyTemplates(t *testing.T) {
 	}
 	if p := buildPlan(t, env, applyArgs()); item(t, p, KindTemplates, TemplateDir).Status != Correct {
 		t.Errorf("templates not installed:\n%s", dump(p))
+	}
+}
+
+// A pre-placed symlink at a backup name is never written through.
+func TestApplyBackupNeverFollowsSymlink(t *testing.T) {
+	for _, tc := range []struct{ name, path string }{
+		{"file", NodeYAMLPath},
+		{"template", filepath.Join(TemplateDir, "pbp-body.txt.hbs")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, env := newApplyFake(t, "/bin/sh")
+			mustWrite(t, env.path(tc.path), "old\n", 0o640)
+			victim := filepath.Join(t.TempDir(), "victim")
+			mustWrite(t, victim, "precious\n", 0o600)
+			bak := env.path(tc.path) + ".pbp-backup-20261020T120000"
+			if err := os.Symlink(victim, bak); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := apply(t, env, applyArgs(), ApplyOpts{Replace: true}); err == nil {
+				t.Fatal("no error with a symlink at the backup path")
+			}
+			if got := readFile(t, victim); got != "precious\n" {
+				t.Errorf("symlink target written: %q", got)
+			}
+			if got := readFile(t, env.path(tc.path)); got != "old\n" {
+				t.Errorf("%s replaced without a backup: %q", tc.path, got)
+			}
+		})
+	}
+}
+
+// A path that is not a regular file is refused, not backed up or replaced.
+func TestApplyRefusesNonRegular(t *testing.T) {
+	for _, path := range []string{NodeYAMLPath, SudoersPath} {
+		t.Run(path, func(t *testing.T) {
+			f, env := newApplyFake(t, "/bin/sh")
+			mustMkdir(t, env.path(EtcDir), 0o750)
+			target := filepath.Join(t.TempDir(), "target")
+			mustWrite(t, target, "x\n", 0o644)
+			if err := os.Symlink(target, env.path(path)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := apply(t, env, applyArgs(), ApplyOpts{Replace: true})
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("err %v, want a refusal naming %s", err, path)
+			}
+			if fi, err := os.Lstat(env.path(path)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("%s changed: %v %v", path, fi, err)
+			}
+			if m, _ := filepath.Glob(env.path(path) + ".pbp-backup-*"); len(m) != 0 {
+				t.Errorf("backed up: %q", m)
+			}
+			if readFile(t, target) != "x\n" {
+				t.Error("target written")
+			}
+			_ = f
+		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -34,19 +35,18 @@ const (
 type ApplyOpts struct {
 	// Replace allows changing items that differ, after a backup.
 	Replace bool
-	// RotateToken removes an existing API token and adds it again with a
-	// new secret.
-	RotateToken bool
 }
 
 // Apply brings the node to the state p describes, item by item in plan
 // order (authorized_keys last, so the host cannot log in before the rest is
 // in place). Correct items are skipped. It refuses, changing nothing, when a
 // check-only item is not correct or an item differs and o.Replace is false.
-// It returns the API token's secret when it created the token, else "".
-// The secret never appears in an argv, a log or an error. ACL paths come
-// from p, so nodeName and a only add RotateToken (a.RotateToken or
-// o.RotateToken rotates).
+// It returns the API token's secret when it added the token, else "".
+// tokenSecret may be non-empty when err != nil (a step after the token
+// failed): the secret is shown only once, so the caller must still hand it
+// over. The secret never appears in an argv, a log or an error.
+// a.RotateToken removes an existing token before adding it again. ACL paths
+// come from p; nodeName is unused.
 func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName string, o ApplyOpts) (tokenSecret string, err error) {
 	var checkOnly, differs []string
 	for _, it := range p.Items {
@@ -67,9 +67,12 @@ func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName
 	if err != nil {
 		return "", err
 	}
-	rotate := o.RotateToken || a.RotateToken
+	// readded: PVE drops a token's ACL entries when the token is removed,
+	// and adding it again does not restore them, so after the token is added
+	// every ACL item is applied, whatever its planned status.
+	readded := false
 	for _, it := range p.Items {
-		if it.Status == Correct {
+		if it.Status == Correct && !(it.Kind == KindACL && readded) {
 			continue
 		}
 		var err error
@@ -95,14 +98,18 @@ func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName
 		case KindUser:
 			err = runCmd(ctx, env, pveum, "user", "add", UserID, "--comment", "PBP proofing")
 		case KindToken:
-			tokenSecret, err = applyToken(ctx, env, it, rotate)
+			var s string
+			s, err = applyToken(ctx, env, it, a.RotateToken)
+			if s != "" {
+				tokenSecret, readded = s, true
+			}
 		case KindACL:
 			err = runCmd(ctx, env, pveum, "acl", "modify", it.Path, "--users", UserID, "--tokens", TokenID, "--roles", RoleName)
 		default:
 			err = fmt.Errorf("unknown item kind %q", it.Kind)
 		}
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", it.Name, err)
+			return tokenSecret, fmt.Errorf("%s: %w", it.Name, err)
 		}
 	}
 	return tokenSecret, nil
@@ -284,7 +291,8 @@ func applySudoers(ctx context.Context, env Env, ids ids, it Item) error {
 }
 
 // restore puts the backup bak back at p, or removes p when there was no
-// backup. The backup is copied (it stays) through a dotted temp file.
+// backup. The backup is copied (it stays) into a dotted temp file restore
+// creates itself, which is then renamed over p.
 func restore(env Env, bak, p string) error {
 	if bak == "" {
 		return os.Remove(p)
@@ -294,8 +302,7 @@ func restore(env Env, bak, p string) error {
 		return err
 	}
 	tmp := f.Name()
-	_ = f.Close()
-	if err := copyFile(env, bak, tmp); err != nil {
+	if err := copyInto(env, bak, f); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
@@ -306,64 +313,75 @@ func restore(env Env, bak, p string) error {
 	return nil
 }
 
-// backup copies the file at p to p.pbp-backup-<YYYYMMDDTHHMMSS>, keeping its
-// mode and owner, and returns the backup's path. A symlink is backed up as
-// a symlink; anything else that is not a regular file is refused.
+// backup copies the regular file at p to a new p.pbp-backup-<YYYYMMDDTHHMMSS>,
+// keeping its mode and owner, and returns the backup's path. The backup is
+// always created with O_EXCL, so an existing path there (even a symlink,
+// e.g. pre-placed in pbp's home) is never written through; a same-second
+// second backup is an error. Anything but a regular file at p is refused.
 func backup(env Env, p string) (string, error) {
 	fi, err := os.Lstat(p)
 	if err != nil {
 		return "", err
 	}
-	bak := p + backupSuffix + env.Now().Format(backupTime)
-	switch {
-	case fi.Mode()&fs.ModeSymlink != 0:
-		target, err := os.Readlink(p)
-		if err != nil {
-			return "", err
-		}
-		return bak, os.Symlink(target, bak)
-	case !fi.Mode().IsRegular():
-		return "", fmt.Errorf("%s is not a regular file (%s); setup does not replace it, move it away by hand", p, fi.Mode().Type())
+	if !fi.Mode().IsRegular() {
+		return "", notRegular(p, fi)
 	}
-	return bak, copyFile(env, p, bak)
+	bak := p + backupSuffix + env.Now().Format(backupTime)
+	f, err := createExcl(bak)
+	if err != nil {
+		return "", err
+	}
+	if err := copyInto(env, p, f); err != nil {
+		_ = os.Remove(bak)
+		return "", err
+	}
+	return bak, nil
 }
 
-// copyFile copies src to dst (created, or truncated when it exists empty
-// from CreateTemp) with src's mode and owner.
-func copyFile(env Env, src, dst string) error {
-	fi, err := os.Lstat(src)
+func notRegular(p string, fi fs.FileInfo) error {
+	return fmt.Errorf("%s is not a regular file (%s); setup does not replace it, move it away by hand", p, fi.Mode().Type())
+}
+
+// createExcl creates a new file, failing if anything (a symlink too) is
+// already at p.
+func createExcl(p string) (*os.File, error) {
+	return os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- a path setup manages
+}
+
+// copyInto copies the regular file src (never followed if it is a symlink)
+// into dst, a file the caller just created, gives dst src's mode and owner,
+// and closes it.
+func copyInto(env Env, src string, dst *os.File) (err error) {
+	defer func() {
+		if cerr := dst.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- a path setup manages
 	if err != nil {
 		return err
 	}
-	b, err := os.ReadFile(src) // #nosec G304 -- a path setup manages
+	defer func() { _ = in.Close() }()
+	fi, err := in.Stat()
 	if err != nil {
 		return err
 	}
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if _, err := os.Lstat(dst); err == nil {
-		flags = os.O_WRONLY | os.O_TRUNC
+	if !fi.Mode().IsRegular() {
+		return notRegular(src, fi)
 	}
-	f, err := os.OpenFile(dst, flags, 0o600) // #nosec G304 -- see above
-	if err != nil {
+	if _, err := io.Copy(dst, in); err != nil {
 		return err
 	}
-	_, err = f.Write(b)
-	if err == nil {
-		err = f.Sync()
+	if err := dst.Sync(); err != nil {
+		return err
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	if err := dst.Chmod(fi.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)); err != nil {
+		return err
 	}
-	if err == nil {
-		err = os.Chmod(dst, fi.Mode()&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky))
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return env.Chown(dst.Name(), int(st.Uid), int(st.Gid))
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && err == nil {
-		err = env.Chown(dst, int(st.Uid), int(st.Gid))
-	}
-	if err != nil {
-		_ = os.Remove(dst)
-	}
-	return err
+	return nil
 }
 
 // applyTemplates installs the notification templates as node.InstallTemplates
@@ -382,8 +400,15 @@ func applyTemplates(env Env, it Item) error {
 			if err != nil {
 				return err
 			}
-			bak := p + backupSuffix + env.Now().Format(backupTime)
-			if err := os.WriteFile(bak, have, 0o644); err != nil { // #nosec G306 -- templates are not secret
+			f, err := createExcl(p + backupSuffix + env.Now().Format(backupTime))
+			if err != nil {
+				return err
+			}
+			_, err = f.Write(have)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
 				return err
 			}
 		}
