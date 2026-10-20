@@ -382,6 +382,13 @@ func TestNodeSetupUsageErrors(t *testing.T) {
 	if len(r.f.events) != 0 {
 		t.Errorf("usage errors ran commands: %v", r.f.events)
 	}
+	// A bad bridge name is a usage error before any check runs.
+	for _, b := range []string{"-x", "../etc", "vmbr99;id", "a/b", "averyveryverylongbridge"} {
+		if code := r.main("", "node", "setup", "--vmid-range", "990000-990049", "--bridge", b, "--pubkey", r.pubkey); code != exitUsage ||
+			!strings.Contains(r.errOut.String(), "--bridge must be a bridge name") {
+			t.Errorf("--bridge %q: exit %d; stderr %q", b, code, r.errOut)
+		}
+	}
 }
 
 func TestNodeSetupMissingDaemonVersion(t *testing.T) {

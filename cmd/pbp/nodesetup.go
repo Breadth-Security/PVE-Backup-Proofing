@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
@@ -133,6 +134,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	rng, err := parseVMIDRange(*vmidRange)
 	if err != nil {
 		return a.usageErr(sub, "%v", err)
+	}
+	if !node.ValidBridge(*bridge) {
+		return a.usageErr(sub, "--bridge must be a bridge name such as vmbr99, got %q", *bridge)
 	}
 	var sts []string
 	if *storages != "" {
