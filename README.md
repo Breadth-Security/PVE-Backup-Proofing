@@ -1,6 +1,6 @@
 # PBP - Proxmox Backup Proofing
 
-> "Trust but verify"
+> "Trust, but verify"
 --Ronald Reagan
 
 > ## *Proof - the act of proving, verifying, or substantiating that something is true, correct, or officially acceptable. It confirms that a claim, process, or product meets specified requirements, functions as intended, and operates within expected parameters.*
