@@ -15,11 +15,11 @@ for p in /vms /storage/<restore storage> /storage/<each PBS storage> /nodes/<nod
 done
 ```
 
-Put the token secret in `secrets/pve_token` (see [Configure and start](#configure-and-start)). `pbp node setup --create-token` does this step and prints the secret in its reply block.
+Put the token secret in `secrets/pve_token` in the Docker checkout, or `/etc/pbp/secrets/pve_token` on a `.deb` host (see [Configure and start](#configure-and-start)). `pbp node setup --create-token` does this step and prints the secret in its reply block.
 
 ## Create the SSH key
 
-Create a dedicated key pair and capture the node's host key. PBP refuses a host that does not match `known_hosts`. The public key is installed on the node in the next step, for the `pbp` user, with a forced command (not in `root`'s `authorized_keys`):
+Create a dedicated key pair and capture the node's host key (paths for the Docker checkout; on a `.deb` host use `/etc/pbp/secrets/pve_ssh_key` and `/etc/pbp/known_hosts`). PBP refuses a host that does not match `known_hosts`, so check the scanned key against one you already trust (for example `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the node). The public key is installed on the node in the next step, for the `pbp` user, with a forced command (not in `root`'s `authorized_keys`):
 
 ```
 ssh-keygen -t ed25519 -f secrets/pve_ssh_key -N '' -C pbp
@@ -119,7 +119,9 @@ echo 'pbp hard maxlogins 8' > /etc/security/limits.d/pbp.conf
 
 ## Configure and start
 
-Create these next to `docker-compose.yml` before the first `docker compose up`:
+**`.deb` host:** see [Install from the .deb](install-deb.md), "By hand instead of `pbp setup`".
+
+**Docker:** create these next to `docker-compose.yml` before the first `docker compose up`:
 
 - [ ] `config.yaml`, copied from `config.example.yaml` and edited
 - [ ] `known_hosts`, from `ssh-keyscan` ([Create the SSH key](#create-the-ssh-key))
@@ -131,4 +133,4 @@ Create these next to `docker-compose.yml` before the first `docker compose up`:
 
 The secret files and `config.yaml` must be readable by uid 65532 (for example `chown 65532:65532 secrets/* known_hosts config.yaml && chmod 400 secrets/*`, or `chmod 444` for the non-secret files). A bind mount hides the image's ownership: for `./logs:/var/log/pbp` run `mkdir -p logs && chown 65532:65532 logs` on the host first.
 
-Then start PBP and check it as in [Setup step 6](setup.md#6-start).
+Then start PBP and check it as in [Setup step 6](setup.md#6-start-and-check).

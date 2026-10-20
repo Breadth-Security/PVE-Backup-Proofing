@@ -1,51 +1,75 @@
 # Install from the .deb
 
-As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same `.deb` is also the node helper: `pbp setup` prints the line that installs it on the PVE node, where the package never starts the `pbp` service.
+As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs on the [releases page](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases). The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same package is also the node helper: `pbp setup` prints the line that installs it on the Proxmox node.
 
-1. Download the `.deb` and `SHA256SUMS` from the release and verify:
+## Install
+
+1. **Download and verify** the package and `SHA256SUMS` of a release (here `0.3.0`; use the version you want):
 
    ```
+   v=0.3.0; a=$(dpkg --print-architecture)
+   base=https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v$v
+   curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS"
    sha256sum -c SHA256SUMS --ignore-missing
-   sudo apt install ./pbp_<version>_<arch>.deb
+   sudo apt install "./pbp_${v}_${a}.deb"
    ```
 
-2. Run the guided setup ([Setup](setup.md) steps 3 to 5) with the `.deb` layout:
+   Pre-releases are tagged like `v0.3.0-rc.2` and their files carry the Debian version `0.3.0~rc.2` (`pbp_0.3.0~rc.2_amd64.deb`), which sorts before `0.3.0`, so the final release installs over a pre-release as an upgrade.
+
+2. **Set it up.** Choose the VMID range and create the bridge first ([Setup](setup.md) steps 1 and 2), then run:
 
    ```
    sudo pbp setup --deb
    ```
 
-   It writes `/etc/pbp/config.yaml`, `/etc/pbp/known_hosts` and `/etc/pbp/secrets/` (`root:pbp`, `0640`, the directory `0750`), with `/etc/pbp/...` paths in the config. The package creates `/etc/pbp` (`0750 root:pbp`) but never creates or overwrites `config.yaml`.
+   and continue with [Setup](setup.md) steps 4 and 5. On the Proxmox node itself, the same command sets up the node in the same shell: [PBP on the Proxmox node itself](setup.md#pbp-on-the-proxmox-node-itself).
 
-   **By hand** instead (after the [manual setup](manual-setup.md) steps for the token, key and node):
+   It writes `/etc/pbp/config.yaml`, `/etc/pbp/known_hosts` and `/etc/pbp/secrets/` (`root:pbp`, `0640`; the directory `0750`). The service can read `/etc/pbp` but not write to it. The package creates `/etc/pbp` but never creates or overwrites `config.yaml`.
 
-   ```
-   sudo cp /usr/share/doc/pbp/config.example.yaml /etc/pbp/config.yaml   # then edit
-   sudo install -d -m 0750 -o root -g pbp /etc/pbp/secrets
-   sudo install -m 0640 -o root -g pbp pve_token /etc/pbp/secrets/pve_token
-   sudo install -m 0640 -o root -g pbp pve_ssh_key /etc/pbp/secrets/pve_ssh_key
-   ssh-keyscan -t ed25519 pve-node.example.lan | sudo tee /etc/pbp/known_hosts
-   sudo chown root:pbp /etc/pbp/config.yaml /etc/pbp/known_hosts
-   sudo chmod 0640 /etc/pbp/config.yaml /etc/pbp/known_hosts
-   ```
-
-   In `config.yaml` set `token_secret_file` and `key_file` to `/etc/pbp/secrets/...` and `known_hosts_file: /etc/pbp/known_hosts`. The service can read `/etc/pbp` but not write to it.
-
-3. Check, then start:
+3. **Start it and check:**
 
    ```
-   sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
    sudo systemctl start pbp
+   sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
    ```
 
-   `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished. The package enables the unit on install but never starts it: you start it, once, with `systemctl start pbp` (it does nothing without `/etc/pbp/config.yaml`). After that it starts at boot.
+   The package enables the unit on install but never starts it: you start it once, and after that it starts at boot. Without a usable `/etc/pbp/config.yaml` it does not start (`ConditionPathExists`), or stops with exit code 78 and is not restarted until the config is fixed. `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished.
 
-Logs: `journalctl -u pbp -f`, and the per-run files in `/var/log/pbp` (read them as root or `pbp`). State is in `/var/lib/pbp/state`.
+Everyday commands for a `.deb` host (a run on demand, logs, the health check): [Operating](operating.md).
 
-Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.2.0-rc1` produces `1.2.0~rc1`, which sorts before `1.2.0`. File names carry that Debian version (`pbp_1.2.0~rc1_amd64.deb`).
+**By hand instead of `pbp setup`** (after the [manual setup](manual-setup.md) steps for the token, key and node):
 
-**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched, and the service is restarted if it is running (a stopped one stays stopped). **On a PVE node** the same package is the helper (see [Node setup](manual-setup.md#node-setup)). Its postinst creates the `pbp` user with the `nologin` shell, keeps its home `/var/lib/pbp` root's (`0755`, also on an upgrade) and never touches sshd, sudo or `authorized_keys`; the node-only steps (`usermod -s /bin/sh pbp`, the forced-command key, the sudoers rule, `node.yaml`) are done by `pbp node setup` or by hand, never by the package, so daemon-only hosts never get a login shell. Installing a newer `.deb` on the node upgrades the helper and keeps that setup, but the daemon and the helper must share major.minor, so upgrade both. `pbp node setup` warns when the node also runs a PBP daemon (`/etc/pbp/config.yaml` exists or `pbp.service` is active): the daemon runs as `pbp`, which owns `/var/lib/pbp`.
+```
+sudo cp /usr/share/doc/pbp/config.example.yaml /etc/pbp/config.yaml   # then edit
+sudo install -d -m 0750 -o root -g pbp /etc/pbp/secrets
+sudo install -m 0640 -o root -g pbp pve_token /etc/pbp/secrets/pve_token
+sudo install -m 0640 -o root -g pbp pve_ssh_key /etc/pbp/secrets/pve_ssh_key
+ssh-keyscan -t ed25519 pve-node.example.lan | sudo tee /etc/pbp/known_hosts
+sudo chown root:pbp /etc/pbp/config.yaml /etc/pbp/known_hosts
+sudo chmod 0640 /etc/pbp/config.yaml /etc/pbp/known_hosts
+```
 
-**Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user. On a node that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs.
+In `config.yaml` set `token_secret_file` and `key_file` to `/etc/pbp/secrets/...` and `known_hosts_file: /etc/pbp/known_hosts`.
 
-PBP can run on the PVE host itself: install the package there, then `sudo pbp setup --deb` sets up both the daemon and the node in one shell (see [Setup step 3](setup.md#3-run-pbp-setup-on-the-pbp-host)). It still connects over SSH as the restricted `pbp` user (to `127.0.0.1` by default), but it then shares a host with the guests it restores. Prefer a separate host.
+## Where things are
+
+| | Path |
+|---|---|
+| config, secrets, `known_hosts` | `/etc/pbp/` |
+| state (in-flight proofs, the run lock) | `/var/lib/pbp/state` (owned by `pbp`) |
+| per-run logs | `/var/log/pbp` (readable by root and `pbp`) |
+| service log | `journalctl -u pbp` |
+
+## Upgrade
+
+Install the newer `.deb` the same way (`sudo apt install ./pbp_<new>_<arch>.deb`). Config, secrets and state are kept, and the service is restarted if it was running (a stopped one stays stopped). The daemon and the helper on the node must share major.minor, so upgrade the node too: see [Upgrading](upgrading.md).
+
+## On a Proxmox node
+
+On the node, the package is the helper. Its install script creates the `pbp` user with the `nologin` shell and keeps the user's home `/var/lib/pbp` owned by root (`0755`, also on an upgrade), and it never touches sshd, sudo or `authorized_keys`. The node-only steps (the `pbp` login shell, the forced-command key, the sudo rule, `node.yaml`) are done by `pbp node setup` (or [by hand](manual-setup.md#node-setup)), never by the package, so a host that only runs the daemon never gets a `pbp` login.
+
+`pbp node setup` warns when the node also runs a PBP daemon (`/etc/pbp/config.yaml` exists or `pbp.service` is active), except in the [on-node setup](setup.md#pbp-on-the-proxmox-node-itself) you chose on purpose: the proofs then share a host with the guests they restore, so a separate PBP host is preferred.
+
+## Remove
+
+`apt remove pbp` stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp`, `/var/log/pbp` and the `pbp` user. `apt purge pbp` deletes all three directories and the user. On a node, that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs; to undo the node setup cleanly, use [`pbp node uninstall`](setup.md#removing-pbp-from-a-node).

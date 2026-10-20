@@ -1,7 +1,9 @@
-# PBP example configuration. Mount at /etc/pbp/config.yaml.
+# PBP example configuration. pbp setup writes config.yaml from this file, with
+# your answers filled in; edit it afterwards with sudoedit. Docker mounts it at
+# /etc/pbp/config.yaml; a .deb host reads /etc/pbp/config.yaml.
 # Secrets are referenced by file path, never inline.
 
-schedule: "0 2 * * *"          # cron, container TZ
+schedule: "0 2 * * *"          # cron, in the container's TZ (Docker: .env) or the host's
 workers: 1                     # default 1
 
 target:
@@ -27,7 +29,7 @@ target:
 sources:
   storages: [pbs-main]         # PBS-type storages visible on the node
 
-selection: {}                  # reserved for future scoping; v1 = newest per guest
+selection: {}                  # reserved for future scoping; today: the newest backup of every guest
 
 restore:
   storage: local-zfs

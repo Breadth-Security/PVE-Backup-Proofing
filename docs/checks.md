@@ -1,5 +1,7 @@
 # Checks inside the guest
 
+Once a restored guest has booted, PBP looks inside it: the system state, failed units, a read-write root filesystem, and service checks. This page explains what counts as a failure, how to add your own checks, and what PBP deliberately does not blame on a backup. The settings live under `checks:` in `config.yaml`.
+
 ## The ignore list
 
 A guest is `FAILED` if any systemd unit has failed, **unless** the unit is on the ignore list. Proof guests have no uplink: the bridge is isolated on purpose. Units that only make sense with a network therefore fail in a perfectly good restore. Ignored failures are still written to the log, as "ignored"; they are never silently dropped.

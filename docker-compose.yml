@@ -11,7 +11,7 @@ services:
       TZ: ${TZ:-Europe/London} # pbp setup writes TZ to .env; drives the cron schedule
     volumes:
       - ./config.yaml:/etc/pbp/config.yaml:ro
-      - ./known_hosts:/etc/pbp/known_hosts:ro   # the node's host key (ssh-keyscan)
+      - ./known_hosts:/etc/pbp/known_hosts:ro   # the node's host key (pbp setup writes it)
       - pbp-state:/var/lib/pbp
       - ./logs:/var/log/pbp    # must be writable by uid 65532
     secrets:

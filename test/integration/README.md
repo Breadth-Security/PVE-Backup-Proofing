@@ -140,56 +140,12 @@ Only while live tests run, and only with the owner's approval at the time:
 The admin key is not PBP's key. PBP's own key stays the forced-command `pbp`
 key, and root's `authorized_keys` must hold no PBP key between runs.
 
-## Node setup (done once on pve-node, 2026-10-19)
+## Preparing the test node
 
-**Node helper** (prerequisite): the `pbp` user, forced command, sudoers rule and
-`/etc/pbp/node.yaml` exactly as in the main README "Node setup" (the node
-`vmid_range` and `bridge` must equal the test config's), plus `pbp node
-install-templates` run once as root. PBP no longer installs the templates
-itself, so `TestCheck` and the notification tests fail until that is done.
+Set the node up the normal way, with a test config of its own:
 
-**Isolated bridge `vmbr99`** (Linux bridge, no ports, no address). Backup of
-the network config first, then:
+- **Bridge** `vmbr99`, created as in [docs/setup.md](../../docs/setup.md#2-create-the-isolated-bridge) step 2, including the `post-up` line that disables IPv6 (preflight refuses the bridge without it).
+- **PBP on the node:** `pbp setup` and the `pbp node setup` line it prints ([docs/setup.md](../../docs/setup.md)). That installs the helper, `/etc/pbp/node.yaml`, the sudo rule, the notification templates, and the `pbp@pve` user, `PBPProofer` role and `pbp@pve!proof` token with their ACLs. The node's `vmid_range` and `bridge` must equal the test config's.
+- **Test config** (`PBP_IT_CONFIG`): `workers: 1`, `target.ssh.user: pbp`, the range and bridge above, `restore.storage` an active storage for VM images and container volumes, `sources.storages` the PBS storages holding the test guests' backups. The SSH key, token secret and `known_hosts` can be the ones `pbp setup` wrote.
 
-```
-cp -p /etc/network/interfaces /root/interfaces.pbp-backup-<timestamp>
-pvesh create /nodes/pve-node/network --iface vmbr99 --type bridge --autostart 1
-diff -u /etc/network/interfaces /etc/network/interfaces.new   # only the vmbr99 stanza
-pvesh set /nodes/pve-node/network                                  # applies with ifreload
-```
-
-The API reports it as `type: bridge`, `bridge_ports: ""`, no address.
-
-Preflight also requires IPv6 disabled on the bridge (see the main README):
-add `post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6` to the
-`vmbr99` stanza and run that `echo` once. **Not yet done on pve-node**: until it
-is, `pbp check` and the suite refuse the bridge with `bridge is not isolated`.
-
-**User, role, token.** User `pbp@pve`, role `PBPProofer`, token
-`pbp@pve!proof` (privilege separated). A privilege-separated token gets the
-intersection of the user's and the token's permissions, so the ACLs are
-granted to both:
-
-```
-pveum user add pbp@pve
-pveum role add PBPProofer --privs "VM.Allocate,VM.Audit,VM.Backup,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit,VM.GuestAgent.Unrestricted,Datastore.AllocateSpace,Datastore.Audit,Sys.Audit,SDN.Use"
-pveum user token add pbp@pve proof --privsep 1
-for p in /vms /storage/pool_qemu /storage/PBS-qemu /storage/PBS-Baremetal /nodes/pve-node /sdn/zones/localnetwork; do
-  pveum acl modify $p --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer
-done
-```
-
-This is the minimal set found empirically: the suite passes with it, and it
-started from a larger set (`Datastore.Allocate`, `VM.Config.CPU/Memory/Disk/
-CDROM/Cloudinit` were removed without any test failing). `VM.Backup` (backup
-config and volume access) and `SDN.Use` on `/sdn/zones/localnetwork` (restore
-checks the original NIC bridges and VLANs) were found missing by the suite.
-
-**Notification templates.** `pbp-subject.txt.hbs` and `pbp-body.txt.hbs` in
-`/etc/pve/notification-templates/default/`, installed by `pbp node install-templates` as root.
-
-**Test config.** `restore.storage: pool_qemu`, `sources.storages:
-[PBS-Baremetal, PBS-qemu]` (encrypted; the node holds the key), bridge
-`vmbr99`, range `[990000, 990009]`, `workers: 1`, `boot_timeout: 5m`, TLS
-pinned to the pveproxy certificate's SHA-256, SSH `known_hosts` from
-`ssh-keyscan` cross-checked against an existing trusted entry.
+The token's privilege list (see [docs/security.md](../../docs/security.md#the-api-token)) is the minimal set found empirically: the suite passes with it, and it started from a larger set (`Datastore.Allocate`, `VM.Config.CPU/Memory/Disk/CDROM/Cloudinit` were removed without any test failing). `VM.Backup` (backup config and volume access) and `SDN.Use` on `/sdn/zones/localnetwork` (restore checks the original NIC bridges and VLANs) were found missing by the suite. When you change PBP in a way that needs a new privilege, add it to `RolePrivs` in `internal/nodesetup` and to that table together.

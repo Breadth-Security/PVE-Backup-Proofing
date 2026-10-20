@@ -1,5 +1,9 @@
 # Operating
 
+## Everyday commands
+
+On a Docker host, in your checkout:
+
 ```
 docker compose up -d                              # start the daemon (scheduled runs)
 docker compose exec pbp pbp check                 # preflight only; nothing is restored
@@ -26,6 +30,8 @@ Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and th
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`.
 
+## Exit codes
+
 | Exit code | Meaning |
 |-----------|---------|
 | 0 | Success (`check` passed, or the run finished without error) |
@@ -34,11 +40,14 @@ Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and th
 | 3 | Busy: another run or check holds the run lock. `run` and `check` both exit 3 and print "a run is already in progress" |
 | 78 | `daemon` only: the config is missing or unusable (for example a `config.yaml` that `pbp setup` has not finished). `pbp.service` does not restart on it; fix the config (run `pbp setup` again) and start the service |
 
-Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp/state`, overridable with `PBP_STATE_DIR`. With no config mounted, the container exits non-zero and names `/etc/pbp/config.yaml`.
+Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp/state`, overridable with `PBP_STATE_DIR`. Errors and what to do about them: [Troubleshooting](troubleshooting.md).
 
 ## Health check
 
-The image has a Docker `HEALTHCHECK` running `pbp health`. The container reports **unhealthy** when the last run ended in a run-level error (for example the node or SSH is unreachable, so no notification could be sent), when a scheduled run did not start, or when the current run has overrun. This is the backstop for a silent night when the node itself cannot notify you. Watch it with your usual container monitoring.
+`pbp health` reports a problem when the last run ended in a run-level error (for example the node or SSH is unreachable, so no notification could be sent), when a scheduled run did not start, or when the current run has overrun. It prints `ok` and exits 0 when all is well, and otherwise prints the reason and exits 1. This is the backstop for a silent night when the node itself cannot notify you.
+
+- **Docker:** the image's `HEALTHCHECK` runs it, so the container reports **unhealthy**. Watch that with your usual container monitoring.
+- **`.deb` host:** run `sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp health` from your monitoring (a check script, or a systemd timer that alerts on failure).
 
 ## Notifications
 
