@@ -41,4 +41,5 @@ jobs:
             --scanners vuln,secret,misconfig \
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
             --skip-dirs .superpowers \
+            --ignorefile .trivyignore.yaml \
             .

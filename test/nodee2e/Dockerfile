@@ -13,7 +13,7 @@ RUN apt-get update \
 
 # Step 1: install the helper from the package.
 COPY pbp.deb /tmp/pbp.deb
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pbp.deb && rm /tmp/pbp.deb
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/pbp.deb && rm /tmp/pbp.deb
 
 # Step 2: /etc/pbp/node.yaml.
 COPY node/node.yaml /tmp/node.yaml
@@ -52,5 +52,4 @@ RUN install -d -m 0755 /var/log/pbp-e2e /run/sshd \
     && dpkg-divert --local --rename --add /usr/bin/perl
 COPY node/stubs/perl /usr/bin/perl
 
-EXPOSE 22
 ENTRYPOINT ["/usr/local/sbin/pbp-e2e-entrypoint"]
