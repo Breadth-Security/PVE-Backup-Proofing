@@ -29,7 +29,7 @@
 - No secret in argv, logs, the audit line, or echoed to the host terminal. The token secret appears only inside the reply block on the node's screen and in the host's token file.
 - Releases are public: `https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v<tag>/…`; tag = version with `~` → `-`.
 - Release version 0.3.0 (`VERSION`), CHANGELOG `## v0.3.0`.
-- Tests that need Docker, root, PVE or SSH run on dev-scratch (`ssh dev-scratch`, Go via `bash -lc`), never the workstation. pve1: only VMIDs 990000–990009; PBP's own setup there may be removed and changed; root's `authorized_keys`, sshd config, networking and other guests are off-limits.
+- Tests that need Docker, root, PVE or SSH run on dev-scratch (`ssh dev-scratch`, Go via `bash -lc`), never the workstation. pve-node: only VMIDs 990000–990009; PBP's own setup there may be removed and changed; root's `authorized_keys`, sshd config, networking and other guests are off-limits.
 
 ## Review Focus
 
@@ -264,11 +264,11 @@ Rules: refuse (error naming the items) if any item is Differs and `!o.Replace`; 
 - [ ] **Step 3: Run** `go test ./...` (docs test), gofmt, `go vet` (all three tag sets), staticcheck, golangci-lint (all three tag sets), gosec, Trivy and gitleaks on dev-scratch — clean.
 - [ ] **Step 4: Commit** "Document guided setup; v0.3.0".
 
-### Task 12: Acceptance on pve1 (controller-run)
+### Task 12: Acceptance on pve-node (controller-run)
 
-- [ ] Build `0.3.0~rc.1` `.deb` on dev-scratch; install on pve1 (upgrades the 0.2 helper).
+- [ ] Build `0.3.0~rc.1` `.deb` on dev-scratch; install on pve-node (upgrades the 0.2 helper).
 - [ ] `pbp node setup … --dry-run` then for real against the existing manual setup → `setup has already been completed`, no file changed (compare `stat` and `sha256sum` before/after for every §5.3 path).
 - [ ] `pbp node uninstall --yes`; the PBP key gets nothing (`id`, `version` request).
-- [ ] Fresh host dir on dev-scratch: `pbp setup` with pve1's values (restore storage `pool_qemu`, PBS storage `PBS-qemu`, range 990000–990009, vmbr99), paste on pve1 with `--rotate-token` (the token exists), paste the reply back → check passes.
+- [ ] Fresh host dir on dev-scratch: `pbp setup` with pve-node's values (restore storage `pool_qemu`, PBS storage `PBS-qemu`, range 990000–990009, vmbr99), paste on pve-node with `--rotate-token` (the token exists), paste the reply back → check passes.
 - [ ] Live integration suite with the new files: all PASS; range 990000–990009 empty afterwards.
-- [ ] Root's `authorized_keys` on pve1 unchanged (line count and hash before/after).
+- [ ] Root's `authorized_keys` on pve-node unchanged (line count and hash before/after).

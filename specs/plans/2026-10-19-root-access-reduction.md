@@ -21,7 +21,7 @@
 - **Versions:** daemon and helper must share major.minor, so `0.2.x` talks to `0.2.y`. A `dev` build is compatible only with `dev`, and the message says so.
 - **SSH user:** `target.ssh.user` defaults to `pbp`, and config validation rejects `root` with a pointer to README "Node setup".
 - **Release target `v0.2.0`.** This is a breaking change, and every document is updated (spec §9).
-- **Dev tests run on `dev-scratch`** (`ssh dev-scratch`, Go 1.26.9 at `/usr/local/go`, use `bash -lc`). Live `pve1` work needs owner approval at the time.
+- **Dev tests run on `dev-scratch`** (`ssh dev-scratch`, Go 1.26.9 at `/usr/local/go`, use `bash -lc`). Live `pve-node` work needs owner approval at the time.
 
 ## Review Focus
 
@@ -239,7 +239,7 @@ docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integrat
 - `docker-compose.yml`: comments.
 - `specs/2026-10-19-pbp-design.md`: §3, §8.3 and §11 (root removed; link to the new design).
 - `packaging/` README section: node install.
-- `test/integration/integration_test.go` and its README: the fixtures use `PBP_IT_ADMIN_SSH_KEY` and `PBP_IT_ADMIN_KNOWN_HOSTS` through the test's own SSH client; PBP under test uses `target.ssh.user: pbp`. Document adding the admin key to `pve1` before a live run and removing it afterwards.
+- `test/integration/integration_test.go` and its README: the fixtures use `PBP_IT_ADMIN_SSH_KEY` and `PBP_IT_ADMIN_KNOWN_HOSTS` through the test's own SSH client; PBP under test uses `target.ssh.user: pbp`. Document adding the admin key to `pve-node` before a live run and removing it afterwards.
 - **No change to the `.deb` postinst** (nologin stays the default, per spec §5).
 - [ ] **Step 1:** Grep check: `grep -rnE 'user: root|root SSH|as root' README.md config.example.yaml docker-compose.yml packaging specs/2026-10-19-pbp-design.md` shows only the intended mentions (the admin key in the test README, and the `install-templates` and `visudo` steps run as root).
 - [ ] **Step 2:** `go vet -tags integration ./...` and `go test ./...` pass. The Docker build passes **on dev-scratch**.
@@ -247,9 +247,9 @@ docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integrat
 
 ---
 
-### Task 9: Live verification on pve1 (owner approval required at the time)
+### Task 9: Live verification on pve-node (owner approval required at the time)
 
-- [ ] **Step 1:** Ask the owner to approve, then on `pve1`:
+- [ ] **Step 1:** Ask the owner to approve, then on `pve-node`:
   - set up the helper per README;
   - add the test-only admin key;
   - remove the old PBP root key from `/root/.ssh/authorized_keys`.

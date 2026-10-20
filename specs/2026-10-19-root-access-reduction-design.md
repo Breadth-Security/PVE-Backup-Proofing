@@ -169,13 +169,13 @@ request that prints the helper's range and bridge) and fails on any mismatch.
 - Dev (on `dev-scratch`): a Debian 13 container with `sshd`, the `pbp` user, forced command and
   sudo rule, and stub `pct`/`perl`/`ip` scripts — end-to-end over real SSH, including a stolen-key
   attempt to run `id` / `bash` / out-of-range exec (all refused).
-- Live (on `pve1`, with owner approval at the time): set up the helper per README, remove root's
+- Live (on `pve-node`, with owner approval at the time): set up the helper per README, remove root's
   PBP key, re-run the integration suite.
 - **Integration-suite fixtures** (decided by the owner): the suite's own setup steps (creating,
   backing up and destroying throwaway containers; the notification render test) still need root on
   the node. They use a **separate, test-only admin key**, configured only in the integration-test
   config (e.g. `PBP_IT_ADMIN_SSH_KEY` / its own known_hosts), never in PBP's config or product code.
-  The owner authorises that key on `pve1` only while live tests run. The test harness keeps its own
+  The owner authorises that key on `pve-node` only while live tests run. The test harness keeps its own
   SSH client for these fixtures; PBP itself (`pbp` daemon and `pbp node`) has no root path. The
   test README documents adding and removing the admin key.
 

@@ -374,14 +374,14 @@ up before removal. *(My calls; the owner saw these as guesses.)*
   `pbp node uninstall` leaves no access (the attacker key gets nothing).
 - A host-side test drives `pbp setup` end to end against that container: it
   answers the questions, pastes the reply, and gets a passing check.
-- pve1 (runs production guests; only VMIDs 990000–990009 are PBP's): upgrade
+- pve-node (runs production guests; only VMIDs 990000–990009 are PBP's): upgrade
   its helper to 0.3.0 (owner: no running daemon depends on it). Run
   `pbp node setup --dry-run` and then for real against the existing manual
   setup; it must report `setup has already been completed` and change nothing.
   Then `pbp node uninstall`, confirm PBP's key gets nothing, run the full
   round trip again from a fresh host directory (including `--rotate-token`
   for the existing `pbp@pve!proof`), and finish with `pbp check` and the
-  live suite. The owner allows PBP's own setup on pve1 (user, files, token)
+  live suite. The owner allows PBP's own setup on pve-node (user, files, token)
   to be removed and changed as needed; root's `authorized_keys`, sshd config,
   networking and every non-PBP guest stay untouched.
 

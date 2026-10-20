@@ -6,15 +6,15 @@ workers: 1                     # default 1
 
 target:
   type: existing-node          # default; future: provisioned-host
-  node: pve1
+  node: pve-node
   api:
-    url: https://pve1.example.lan:8006
+    url: https://pve-node.example.lan:8006
     token_id: pbp@pve!proof
     token_secret_file: /run/secrets/pve_token
     tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"  # or ca_file; never skip-verify
     # ca_file: /etc/pbp/pve-ca.pem
   ssh:
-    host: pve1.example.lan
+    host: pve-node.example.lan
     user: pbp                  # default; the restricted node helper user. root is rejected
                                # (docs/setup.md). The key must be installed on the
                                # node with a forced command, not in root's authorized_keys

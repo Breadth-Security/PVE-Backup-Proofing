@@ -24,7 +24,7 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
    sudo install -d -m 0750 -o root -g pbp /etc/pbp/secrets
    sudo install -m 0640 -o root -g pbp pve_token /etc/pbp/secrets/pve_token
    sudo install -m 0640 -o root -g pbp pve_ssh_key /etc/pbp/secrets/pve_ssh_key
-   ssh-keyscan -t ed25519 pve1.example.lan | sudo tee /etc/pbp/known_hosts
+   ssh-keyscan -t ed25519 pve-node.example.lan | sudo tee /etc/pbp/known_hosts
    sudo chown root:pbp /etc/pbp/config.yaml /etc/pbp/known_hosts
    sudo chmod 0640 /etc/pbp/config.yaml /etc/pbp/known_hosts
    ```

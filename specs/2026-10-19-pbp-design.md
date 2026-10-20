@@ -218,7 +218,7 @@ Only `FAILED` indicts the backup. `SKIPPED`/`ERROR` mean "not proven yet" and ar
   Before `rc-status --crashed`, wait (bounded like the systemd `--wait`) until OpenRC has finished
   booting: runlevel past sysinit/boot, the runlevel-changing `openrc` process exited, and no
   service starting/stopping. Default-runlevel services, where crashes show up, start only after the
-  boot runlevel, which on the isolated bridge waits on networking (~15s on Alpine, seen on pve1).
+  boot runlevel, which on the isolated bridge waits on networking (~15s on Alpine, seen on pve-node).
   Never settled in time → ERROR `guest still starting after <time>`.
 - OS detection: guest agent `get-osinfo` for VMs; container `ostype` for LXCs.
 
@@ -318,14 +318,14 @@ workers: 1
 
 target:
   type: existing-node          # future: provisioned-host
-  node: pve1
+  node: pve-node
   api:
-    url: https://pve1.example.lan:8006
+    url: https://pve-node.example.lan:8006
     token_id: pbp@pve!proof
     token_secret_file: /run/secrets/pve_token
     tls_fingerprint: "AB:CD:..."   # or ca_file; never skip-verify by default
   ssh:
-    host: pve1.example.lan
+    host: pve-node.example.lan
     user: pbp                  # restricted helper user; root is rejected (see root-access-reduction design)
     key_file: /run/secrets/pve_ssh_key
     known_hosts_file: /etc/pbp/known_hosts

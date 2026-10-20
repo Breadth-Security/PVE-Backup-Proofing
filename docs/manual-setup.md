@@ -23,7 +23,7 @@ Create a dedicated key pair and capture the node's host key. PBP refuses a host 
 
 ```
 ssh-keygen -t ed25519 -f secrets/pve_ssh_key -N '' -C pbp
-ssh-keyscan -t ed25519 pve1.example.lan > known_hosts
+ssh-keyscan -t ed25519 pve-node.example.lan > known_hosts
 ```
 
 ## Node setup

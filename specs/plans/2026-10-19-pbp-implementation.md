@@ -4,7 +4,7 @@
 
 **Goal:** Build `pbp`, a Go daemon shipped as a Docker image, that restores the newest PBS backup of every guest into an isolated temporary guest on one PVE node, proves it boots and runs its services, records the verdict on the backup and notifies through the node.
 
-**Architecture:** One binary with subcommands (`daemon`, `run`, `check`, `health`). Pure logic (selection, sanitizing, notes, probing rules, health) lives in small packages tested without a network. Side effects go through three interfaces (`pve.API`, `sshx.Runner`, `target.Target`) with in-memory fakes, so the run orchestrator is fully unit-testable. An opt-in integration suite runs against the real node `pve1`.
+**Architecture:** One binary with subcommands (`daemon`, `run`, `check`, `health`). Pure logic (selection, sanitizing, notes, probing rules, health) lives in small packages tested without a network. Side effects go through three interfaces (`pve.API`, `sshx.Runner`, `target.Target`) with in-memory fakes, so the run orchestrator is fully unit-testable. An opt-in integration suite runs against the real node `pve-node`.
 
 **Tech Stack:** Go (go directive `1.26`), stdlib `net/http` + `log/slog`, `golang.org/x/crypto/ssh` (+ `knownhosts`), `gopkg.in/yaml.v3`, `github.com/robfig/cron/v3`. Docker multi-stage build to `gcr.io/distroless/static-debian12`.
 
@@ -23,11 +23,11 @@
 - Secrets only via file paths in config; TLS: fingerprint or CA file, no skip-verify default; SSH: `known_hosts` mandatory.
 - Notification sent with template name `pbp` and fields `type=pbp`, `hostname=<node>`.
 - Config path: `/etc/pbp/config.yaml`, overridable by `--config` or env `PBP_CONFIG`. State dir `/var/lib/pbp`, logs `/var/log/pbp`.
-- Integration tests touch **pve1, which runs production guests**: they use only the configured VMID range and the isolated bridge; nothing else on the node is modified. Installing templates into `/etc/pve` on pve1 needs the owner's go-ahead first (ask before Task 19 step 4).
+- Integration tests touch **pve-node, which runs production guests**: they use only the configured VMID range and the isolated bridge; nothing else on the node is modified. Installing templates into `/etc/pve` on pve-node needs the owner's go-ahead first (ask before Task 19 step 4).
 
 ## Review Focus
 
-1. **Encrypted backups** (all backups on pve1 are encrypted): restore must work with the node's key; a key/decrypt failure is `ERROR`, not `FAILED`. Pinned in Task 13 (error classification test) and Task 19.
+1. **Encrypted backups** (all backups on pve-node are encrypted): restore must work with the node's key; a key/decrypt failure is `ERROR`, not `FAILED`. Pinned in Task 13 (error classification test) and Task 19.
 2. **Production clones on the network:** the restored guest carries the original's IP/hostname; every NIC, including OVS VLAN-tagged ones (`bridge=vmbr0,tag=2`), must end on the isolated bridge with tag/trunks/rate removed. Pinned in Task 7.
 3. **Existing notes:** vzdump writes the guest name as notes, sometimes multi-line; an old PBP line may sit anywhere. Merge must preserve user text and keep exactly one PBP line first. Pinned in Task 2.
 4. **Crash mid-job:** container killed after restore or after protect. Next start must destroy the tagged guest and restore `protected`. Pinned in Task 15.
@@ -191,7 +191,7 @@ Validation errors (each a test case): missing `target.node`, `target.bridge`, `r
 
 - [ ] **Step 1: Write failing tests:** `TestLoadExampleConfig` (loads `../../config.example.yaml`, asserts `Workers==1`, `Restore.SpaceMarginPercent==10`, `Restore.BootTimeout==5*time.Minute`, `Notify.When=="always"`, `Logging.RetainRuns==30`, `Target.SSH.Port==22`, ignore list contains `systemd-networkd-wait-online.service`); `TestValidateErrors` (table over the list above, each error message names the offending key); `TestEffectiveProfiles` (user profile `Name: "nginx", Ports: [8443]` replaces built-in nginx; user profile `myapp` appended; total = len(builtins)+1); `TestResolvePath`.
 - [ ] **Step 2: Run** `go test ./internal/config/` — FAIL.
-- [ ] **Step 3: Implement** types, `Load`, defaults, validation (cron via `cron.ParseStandard`), and write `config.example.yaml` matching §9 with `pve1`-agnostic placeholder values.
+- [ ] **Step 3: Implement** types, `Load`, defaults, validation (cron via `cron.ParseStandard`), and write `config.example.yaml` matching §9 with `pve-node`-agnostic placeholder values.
 - [ ] **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `"Add configuration loading, defaults and validation"`
 
@@ -289,7 +289,7 @@ MissingFromOriginal rules:
 - lxc `mp\d+` with storage source (not `/`) lacking `backup=1` → `{Kind:"excluded-mountpoint", Key, Path: mp=, Detail:"backup not enabled"}`.
 
 - [ ] **Step 1: Write failing tests:**
-  - Real pve1 VM 100 config (from research): `net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0,firewall=1,tag=2` → `virtio=BC:24:11:ED:57:35,bridge=vmbr-pbp,firewall=1`; `onboot: 1` → `0`; `startup: order=5` deleted; `serial0: socket` kept; `tags` → `pbp`.
+  - Real pve-node VM 100 config (from research): `net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0,firewall=1,tag=2` → `virtio=BC:24:11:ED:57:35,bridge=vmbr-pbp,firewall=1`; `onboot: 1` → `0`; `startup: order=5` deleted; `serial0: socket` kept; `tags` → `pbp`.
   - qemu `hostpci0: 0000:01:00.0,pcie=1`, `usb0: host=1234:5678`, `serial1: /dev/ttyUSB0` → all deleted, 3 Removed passthrough.
   - lxc `net0: name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=10.0.0.5/24,gw=10.0.0.1,rate=50` → bridge swapped, rate dropped, ip kept.
   - lxc `mp0: /mnt/media,mp=/media` → deleted, Removed bind-mount Path `/media`; `mp1: local-zfs:subvol-114-disk-1,mp=/data,size=8G` kept.
@@ -440,7 +440,7 @@ Algorithm (conservative: anything not proven to trace is untraced):
   - `targetfake.Fake` implementing Target with scripted outcomes per VMID for the runner tests.
 
 - [ ] **Step 1: Write failing tests** with `pvefake` + `sshx.Fake`:
-  - Prepare: real pve1 `vmbr0` (OVSBridge with `ovs_ports: "enp66s0f0 ovsport_host ovsport_dev"`) → `ErrNotIsolated`; isolated Linux bridge and isolated OVS bridge pass; PVE `8.4.1` → `ErrVersion`; untagged guest 990003 in range `[990000,990049]` → `ErrForeignInRange` mentioning `990003`.
+  - Prepare: real pve-node `vmbr0` (OVSBridge with `ovs_ports: "enp66s0f0 ovsport_host ovsport_dev"`) → `ErrNotIsolated`; isolated Linux bridge and isolated OVS bridge pass; PVE `8.4.1` → `ErrVersion`; untagged guest 990003 in range `[990000,990049]` → `ErrForeignInRange` mentioning `990003`.
   - AllocateVMID: range `[990000,990001]` with 990000 existing and 990001 in `inUse` → `ErrNoFreeVMID`; never returns a value outside range (table).
   - Sanitize: restored config with `hostpci0` → SetGuestConfig called with delete containing `hostpci0`; fake that ignores the bridge change → verification error, Start never called by caller contract (assert returned error is not nil).
   - Destroy: VMID 100 → refused, no API call; in-range untagged → refused.
@@ -563,13 +563,13 @@ Janitor: for each `state.InFlight` job: if guest exists and is tagged `pbp` and 
 
 ---
 
-### Task 19: Integration suite on pve1 (§12)
+### Task 19: Integration suite on pve-node (§12)
 
 **Files:** Create `test/integration/integration_test.go` (build tag `integration`), `test/integration/README.md`
 
-Environment: `PBP_IT_CONFIG` → a config file for pve1 (not committed); bridge `vmbr-pbp` created by the builder on pve1 (approved), range `[990000,990009]`, restore storage `local-zfs` (verify it is active on pve1 first — research showed it reported inactive; pick an active one via `pvesm status`).
+Environment: `PBP_IT_CONFIG` → a config file for pve-node (not committed); bridge `vmbr-pbp` created by the builder on pve-node (approved), range `[990000,990009]`, restore storage `local-zfs` (verify it is active on pve-node first — research showed it reported inactive; pick an active one via `pvesm status`).
 
-- [ ] **Step 1:** Create isolated bridge on pve1 (Linux bridge, `bridge-ports none`, no address), `ifreload -a`; record in `test/integration/README.md`. Run `pbp check` — all green.
+- [ ] **Step 1:** Create isolated bridge on pve-node (Linux bridge, `bridge-ports none`, no address), `ifreload -a`; record in `test/integration/README.md`. Run `pbp check` — all green.
 - [ ] **Step 2:** Test `TestProofSmallLXC` — proof one small running LXC's newest backup (pick e.g. `dnstest` 110); assert verdict PROVEN or a FAILED whose reason names real units; assert no guest left in range; assert notes first line matches the PBP regexp and the previous user note (guest name) is on line 2; assert `protected` back to original.
 - [ ] **Step 3:** Test `TestProofVMWithAgent` — a VM with `agent: 1` (e.g. `DebianBaseline` 103) → PROVEN/FAILED with agent used; and a VM with agent off → BOOTED `guest agent missing`.
 - [ ] **Step 4: Ask the owner before this step** to install notification templates in `/etc/pve`. Then `TestNotificationDelivers` — `EnsureTemplates` + `Send` exit 0; confirm with the owner that the message arrived and rendered (verifies §8.3 override-dir assumption; if new types are not picked up, implement the `/usr/share/pve-manager/templates/default/` fallback and document reinstall-after-upgrade).

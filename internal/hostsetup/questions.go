@@ -166,7 +166,7 @@ func validAddress(s string) error {
 		return nil
 	}
 	if strings.Contains(s, "://") || strings.ContainsAny(s, ":/[]@ ") || len(s) > 253 || !reHostname.MatchString(s) {
-		return errors.New("enter a hostname or IP address without a scheme, port or path (e.g. pve1.example.lan)")
+		return errors.New("enter a hostname or IP address without a scheme, port or path (e.g. pve-node.example.lan)")
 	}
 	return nil
 }
