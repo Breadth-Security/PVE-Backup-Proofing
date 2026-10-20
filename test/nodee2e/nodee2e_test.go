@@ -1139,6 +1139,57 @@ printf '%s' "$1" > /etc/sudoers.d/pbp`, "sh", nodesetup.SudoersText)
 	}
 }
 
+// TestSetupRefusesOtherKeySources: an authorized_keys2 in pbp's .ssh (which
+// Debian's sshd also reads) stops setup even with --replace, naming it, and
+// nothing changes.
+func TestSetupRefusesOtherKeySources(t *testing.T) {
+	const extra = nodesetup.SSHDir + "/authorized_keys2"
+	t.Cleanup(func() { _, _ = dockerOut("rm", "-f", extra) })
+	if _, err := dockerOut("sh", "-c", `printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl x\n' > "$1"`, "sh", extra); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t)
+	out, code, err := nodeSetup(env.rerunLine+" --yes --replace", "-t")
+	t.Logf("exit %d\n%s", code, out)
+	if err != nil || code == 0 {
+		t.Errorf("exit %d, %v; want failure", code, err)
+	}
+	for _, want := range []string{extra + " exists", "unexpected authorized_keys2", "fix it by hand", "nothing changed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q", want)
+		}
+	}
+	if strings.Contains(out, nodeproto.ReplyBegin) {
+		t.Errorf("a refused setup printed a reply block")
+	}
+	if after := snapshot(t); after != before {
+		t.Errorf("a refused setup changed files:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSetupNeedsSudo: without visudo (sudo not installed), setup stops in
+// its checks with the apt hint, and nothing changes.
+func TestSetupNeedsSudo(t *testing.T) {
+	t.Cleanup(func() { _, _ = dockerOut("mv", "/usr/sbin/visudo.e2e", "/usr/sbin/visudo") })
+	if _, err := dockerOut("mv", "/usr/sbin/visudo", "/usr/sbin/visudo.e2e"); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t)
+	out, code, err := nodeSetup(env.rerunLine+" --yes", "-t")
+	t.Logf("exit %d\n%s", code, out)
+	if err != nil || code == 0 {
+		t.Errorf("exit %d, %v; want failure", code, err)
+	}
+	for _, want := range []string{"FAILED at check", "/usr/sbin/visudo", "apt install sudo"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q", want)
+		}
+	}
+	if after := snapshot(t); after != before {
+		t.Errorf("a refused setup changed files:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestSetupRefusedOverSSHAndSudo: setup and uninstall run only for root at a
 // terminal on the node: not with the PBP key, not through the pbp sudo rule,
 // not with stdin redirected, not when the environment says SSH or the pbp
