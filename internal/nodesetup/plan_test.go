@@ -41,6 +41,7 @@ type fakePVE struct {
 	roles  map[string]string   // roleid -> privs (comma separated)
 	users  []string            // userids
 	tokens map[string][]string // userid -> token names
+	nosep  bool                // tokens are listed with privsep 0
 	acls   []aclEntry
 	calls  []string
 }
@@ -80,7 +81,11 @@ func (f *fakePVE) run(_ context.Context, name string, args []string, stdin []byt
 		}
 		out := []map[string]any{}
 		for _, t := range f.tokens[args[3]] {
-			out = append(out, map[string]any{"tokenid": t, "privsep": 1})
+			sep := 1
+			if f.nosep {
+				sep = 0
+			}
+			out = append(out, map[string]any{"comment": "PBP proof token", "expire": 0, "tokenid": t, "privsep": sep})
 		}
 		return j(out), "", 0, nil
 	}
@@ -369,6 +374,23 @@ func TestPlanDiffers(t *testing.T) {
 		t.Error("differing plan reports Complete")
 	}
 
+	// sudo reads #<digits> as a user id and #include/#includedir as
+	// directives, not comments: each is Differs.
+	for _, extra := range []string{"#0 ALL=(ALL) NOPASSWD: ALL", "#1001 ALL=(ALL) NOPASSWD: ALL",
+		"#include /tmp/x", "#includedir /tmp/d"} {
+		mustWrite(t, filepath.Join(env.Root, "etc/sudoers.d/pbp"), SudoersText+extra+"\n", 0o440)
+		it := item(t, buildPlan(t, env, testArgs()), KindFile, "/etc/sudoers.d/pbp")
+		if it.Status != Differs || !strings.Contains(it.Diff, "-"+extra) {
+			t.Errorf("sudoers with %q: status %v diff %q, want Differs", extra, it.Status, it.Diff)
+		}
+	}
+	for _, comment := range []string{"# comment", "#", "#comment", "#\tx"} {
+		mustWrite(t, filepath.Join(env.Root, "etc/sudoers.d/pbp"), comment+"\n"+SudoersText, 0o440)
+		if it := item(t, buildPlan(t, env, testArgs()), KindFile, "/etc/sudoers.d/pbp"); it.Status != Correct {
+			t.Errorf("sudoers with comment %q: status %v diff %q, want Correct", comment, it.Status, it.Diff)
+		}
+	}
+
 	// Correct content, wrong mode.
 	mustWrite(t, filepath.Join(env.Root, "etc/sudoers.d/pbp"), SudoersText, 0o640)
 	it := item(t, buildPlan(t, env, testArgs()), KindFile, "/etc/sudoers.d/pbp")
@@ -410,6 +432,21 @@ func TestPlanDiffersMore(t *testing.T) {
 		if it.Status != c.status || !strings.Contains(it.Diff, c.contains) {
 			t.Errorf("%s %s: status %v diff %q, want %v mentioning %q", c.k, c.path, it.Status, it.Diff, c.status, c.contains)
 		}
+	}
+}
+
+func TestPlanTokenWithoutPrivsep(t *testing.T) {
+	pve := &fakePVE{}
+	pve.complete("pve1")
+	pve.nosep = true
+	env := testEnv(t, pve, "/bin/sh")
+	layoutComplete(t, env.Root)
+	p := buildPlan(t, env, testArgs())
+	if tok := item(t, p, KindToken, TokenID); tok.Status != Differs || !strings.Contains(tok.Diff, "privsep") {
+		t.Errorf("privsep 0 token: status %v diff %q, want Differs", tok.Status, tok.Diff)
+	}
+	if p.Complete() {
+		t.Error("privsep 0 token reports Complete")
 	}
 }
 

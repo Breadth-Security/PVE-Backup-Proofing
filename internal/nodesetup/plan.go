@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -248,19 +249,31 @@ func sameNodeYAML(env Env, a nodeproto.SetupArgs) sameFunc {
 	}
 }
 
-// directives returns the trimmed lines of b, without blank and # lines.
-func directives(b []byte) []string {
+// directives returns the trimmed lines of b, without blank lines and the
+// lines isComment drops.
+func directives(b []byte, isComment func(string) bool) []string {
 	var out []string
 	for _, l := range lines(b) {
-		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+		if l = strings.TrimSpace(l); l != "" && !isComment(l) {
 			out = append(out, l)
 		}
 	}
 	return out
 }
 
+// sshComment: sshd ignores every line starting with #.
+func sshComment(l string) bool { return strings.HasPrefix(l, "#") }
+
+// reSudoersComment matches only lines sudo surely treats as comments. sudo
+// reads "#<digits>" as a user id and "#include"/"#includedir" as directives,
+// so a # followed by a digit or "i" is kept and makes the file differ
+// (over-strict is safe).
+var reSudoersComment = regexp.MustCompile(`^#($|[^0-9i])`)
+
+func sudoersComment(l string) bool { return reSudoersComment.MatchString(l) }
+
 func sameSudoers(have []byte) (bool, string) {
-	h, w := directives(have), directives([]byte(SudoersText))
+	h, w := directives(have, sudoersComment), directives([]byte(SudoersText), sudoersComment)
 	if slices.Equal(h, w) {
 		return true, ""
 	}
@@ -270,7 +283,7 @@ func sameSudoers(have []byte) (bool, string) {
 func sameAuthorizedKeys(pub string) sameFunc {
 	want := []string{AuthorizedKeysLine(pub)}
 	return func(have []byte) (bool, string) {
-		h := directives(have)
+		h := directives(have, sshComment)
 		if slices.Equal(h, want) {
 			return true, ""
 		}
@@ -477,7 +490,8 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 		tok := Item{Kind: KindToken, Name: "API token", Path: TokenID, Status: Create, Diff: "+" + TokenID + " (privsep 1)"}
 		if user.Status == Correct {
 			var toks []struct {
-				TokenID string `json:"tokenid"`
+				TokenID string          `json:"tokenid"`
+				Privsep json.RawMessage `json:"privsep"`
 			}
 			exit, stderr, err := runPveum(ctx, env, &toks, "user", "token", "list", UserID)
 			switch {
@@ -486,12 +500,21 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 				return nil, err
 			}
 			for _, t := range toks {
-				if t.TokenID == TokenName {
+				if t.TokenID != TokenName {
+					continue
+				}
+				// privsep 0 gives the token every permission of the user.
+				switch sep := strings.Trim(string(t.Privsep), `"`); sep {
+				case "1", "true":
 					tok.Status, tok.Diff = Correct, ""
+				default:
+					tok.Status, tok.Diff = Differs, "-privsep "+sep+"\n+privsep 1"
 				}
 			}
 		}
-		if tok.Status == Correct && a.RotateToken {
+		// Rotation removes the token and adds it again with --privsep 1,
+		// which also fixes a privsep 0 token.
+		if tok.Status != Create && a.RotateToken {
 			tok.Status, tok.Diff = Create, "rotate: the existing "+TokenID+" is removed and created again with a new secret"
 		}
 		items = append(items, tok)
