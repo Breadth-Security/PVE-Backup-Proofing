@@ -70,7 +70,7 @@ For each run, PBP:
 | [Operating](docs/operating.md) | Commands, exit codes, the health check, notifications, backup notes |
 | [Checks inside the guest](docs/checks.md) | The ignore list, service profiles and per-guest checks, "not covered by backup" |
 | [Troubleshooting](docs/troubleshooting.md) | What `pbp check` failures mean and how to fix them |
-| [Upgrading](docs/upgrading.md) | Moving from 0.1 to 0.2 and from 0.2 to 0.3 |
+| [Upgrading](docs/upgrading.md) | Upgrading the daemon and the node helper together |
 | [Development](docs/development.md) | Building, releases and the code scanners |
 | [Changelog](CHANGELOG.md) | What changed in each release |
 
