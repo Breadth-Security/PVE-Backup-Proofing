@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -134,6 +135,23 @@ func TestNodeSignalsNotInherited(t *testing.T) {
 	}
 }
 
+// blockedReadingStdin reports whether any thread of pid is blocked in the
+// read(2) system call (number nr) on file descriptor 0.
+func blockedReadingStdin(pid, nr int) bool {
+	files, _ := filepath.Glob("/proc/" + strconv.Itoa(pid) + "/task/*/syscall")
+	for _, f := range files {
+		b, err := os.ReadFile(f) // #nosec G304 -- /proc path built from a pid
+		if err != nil {
+			continue
+		}
+		fields := strings.Fields(string(b))
+		if len(fields) >= 2 && fields[0] == strconv.Itoa(nr) && fields[1] == "0x0" {
+			return true
+		}
+	}
+	return false
+}
+
 // TestNodeSurvivesHangup: a hangup (the SSH session going away) must not
 // kill the helper either; its own deadline handling ends the request.
 func TestNodeSurvivesHangup(t *testing.T) {
@@ -142,6 +160,15 @@ func TestNodeSurvivesHangup(t *testing.T) {
 	}
 	if _, err := os.Stat("/proc/self/status"); err != nil {
 		t.Skip("needs /proc")
+	}
+	var readSyscall int
+	switch runtime.GOARCH {
+	case "amd64":
+		readSyscall = 0
+	case "arm64":
+		readSyscall = 63
+	default:
+		t.Skip("unknown read(2) syscall number on " + runtime.GOARCH)
 	}
 	// notify reads its payload from stdin, so the helper waits there.
 	req, _ := nodeRequest(t, "notify", time.Minute)
@@ -154,18 +181,19 @@ func TestNodeSurvivesHangup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	// SigCgt is no readiness signal: the Go runtime installs handlers for
+	// SIGHUP and SIGPIPE at process start, before main() registers its own.
+	// Wait until a thread is blocked in read(2) on fd 0, which only happens
+	// after catchNodeSignals has run.
 	ready := false
-	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
-		pid := strconv.Itoa(cmd.Process.Pid)
-		hup, err1 := sigMask(pid, "SigCgt", syscall.SIGHUP)
-		pipe, err2 := sigMask(pid, "SigCgt", syscall.SIGPIPE)
-		if err1 == nil && err2 == nil && hup && pipe {
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+		if blockedReadingStdin(cmd.Process.Pid, readSyscall) {
 			ready = true
 			break
 		}
 	}
 	if !ready {
-		t.Fatal("pbp node never caught SIGHUP and SIGPIPE")
+		t.Fatal("pbp node never blocked reading stdin")
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
