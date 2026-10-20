@@ -1,14 +1,19 @@
 //go:build nodee2e
 
-// Package nodee2e tests the `pbp node` helper end to end over real SSH: a
-// throwaway Debian 13 container with sshd, PBP installed from its .deb and
-// the node set up per README "Node setup" (unprivileged pbp user, forced
-// command, one sudo rule), with stub Proxmox tools. It proves the daemon's
-// real client works through that setup and that the same key, used by an
-// attacker, gets nothing else.
+// Package nodee2e tests `pbp node setup` and the `pbp node` helper end to end
+// over real SSH: a throwaway Debian 13 container with sshd and PBP installed
+// from its .deb, with stub Proxmox tools, starts unconfigured. TestMain runs
+// the host side of pbp setup in process, `pbp node setup` on the node in a
+// terminal, and hands the node's reply back to the host. The tests then
+// prove the daemon's real client works through that setup (unprivileged pbp
+// user, forced command, one sudo rule), that the same key, used by an
+// attacker, gets nothing else, that setup is idempotent, refuses to be run
+// remotely and stops on a file that differs, and that uninstall removes all
+// access.
 //
-// It needs Docker and an OpenSSH client; run it with test/nodee2e/run.sh,
-// which builds the .deb and sets:
+// It needs Docker and an OpenSSH client and runs as root (it chowns the host
+// layout's files); run it with test/nodee2e/run.sh, which builds the .deb
+// and sets:
 //
 //	PBP_E2E_DEB      path of the amd64 .deb to install in the container
 //	PBP_E2E_VERSION  the version that .deb was built with
@@ -17,19 +22,24 @@ package nodee2e
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,7 +49,9 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
@@ -49,6 +61,8 @@ const (
 	vmidLo   = 990000
 	vmidHi   = 990009
 	bridge   = "vmbr99"
+	// nodeName is the container's hostname, so the PVE node name setup finds.
+	nodeName = "pbpe2e"
 )
 
 // env is the running container, shared by every test.
@@ -58,6 +72,15 @@ var env struct {
 	keyFile   string
 	knownHost string
 	version   string
+	// The host side of setup: its layout, the API certificate fingerprint
+	// the node should report, the line it printed for the node (with
+	// --create-token) and the line a later run prints, and the node's
+	// output of the first setup run.
+	layout    hostsetup.Layout
+	certFP    string
+	setupLine string
+	rerunLine string
+	setupOut  string
 }
 
 func TestMain(m *testing.M) {
@@ -104,27 +127,9 @@ func randBytes(n int) []byte {
 	return b
 }
 
-// setUp builds the image with a fresh key, starts the container and records
-// its host key.
+// setUp builds the image (PBP installed, node not set up), starts the
+// container, waits for sshd and sets the node up through pbp setup.
 func setUp(tmp, deb, image string) error {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return err
-	}
-	block, err := ssh.MarshalPrivateKey(priv, "pbp-nodee2e")
-	if err != nil {
-		return err
-	}
-	env.keyFile = filepath.Join(tmp, "id_ed25519")
-	if err := os.WriteFile(env.keyFile, pem.EncodeToMemory(block), 0o600); err != nil {
-		return err
-	}
-	sshPub, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		return err
-	}
-	pubLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))) + " pbp-nodee2e"
-
 	ctxDir := filepath.Join(tmp, "context")
 	if err := os.MkdirAll(ctxDir, 0o755); err != nil {
 		return err
@@ -139,12 +144,22 @@ func setUp(tmp, deb, image string) error {
 	if err := copyFile(deb, filepath.Join(ctxDir, "pbp.deb")); err != nil {
 		return err
 	}
-	if out, err := exec.Command("docker", "build", "-q", "-t", image,
-		"--build-arg", "PBP_PUBKEY="+pubLine, ctxDir).CombinedOutput(); err != nil {
+	certPEM, fp, err := selfSignedCert()
+	if err != nil {
+		return err
+	}
+	env.certFP = fp
+	if err := os.WriteFile(filepath.Join(ctxDir, "pve-ssl.pem"), certPEM, 0o644); err != nil {
+		return err
+	}
+	if out, err := exec.Command("docker", "build", "-q", "-t", image, ctxDir).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker build: %v\n%s", err, out)
 	}
-	if out, err := exec.Command("docker", "run", "-d", "--name", env.container,
-		"--cap-add", "NET_ADMIN", "-p", "127.0.0.1::22", image).CombinedOutput(); err != nil {
+	// The bridge gets IPv6 off from the default the entrypoint's new bridge
+	// inherits: Docker mounts /proc/sys read-only.
+	if out, err := exec.Command("docker", "run", "-d", "--name", env.container, "--hostname", nodeName,
+		"--cap-add", "NET_ADMIN", "--sysctl", "net.ipv6.conf.default.disable_ipv6=1",
+		"-p", "127.0.0.1::22", image).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker run: %v\n%s", err, out)
 	}
 	out, err := exec.Command("docker", "port", env.container, "22/tcp").Output()
@@ -158,19 +173,6 @@ func setUp(tmp, deb, image string) error {
 	if env.port, err = strconv.Atoi(p); err != nil {
 		return err
 	}
-	hostKey, err := dockerOut("cat", "/etc/ssh/ssh_host_ed25519_key.pub")
-	if err != nil {
-		return err
-	}
-	f := strings.Fields(hostKey)
-	if len(f) < 2 {
-		return fmt.Errorf("host key %q", hostKey)
-	}
-	env.knownHost = filepath.Join(tmp, "known_hosts")
-	line := fmt.Sprintf("[127.0.0.1]:%d %s %s\n", env.port, f[0], f[1])
-	if err := os.WriteFile(env.knownHost, []byte(line), 0o600); err != nil {
-		return err
-	}
 	// sshd answers once the entrypoint has built the bridge.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -181,7 +183,7 @@ func setUp(tmp, deb, image string) error {
 			_, rerr := io.ReadFull(c, banner)
 			_ = c.Close()
 			if rerr == nil && string(banner) == "SSH-" {
-				return nil
+				break
 			}
 		}
 		if time.Now().After(deadline) {
@@ -189,6 +191,132 @@ func setUp(tmp, deb, image string) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	return pairNode(filepath.Join(tmp, "host"))
+}
+
+// pairNode runs both halves of setup: the host side in process (questions,
+// config, key, node line), the node side as an admin would, in a terminal on
+// the node (`docker exec -t`), then the reply back to the host. The tests
+// then use the key and known_hosts the host side wrote.
+func pairNode(dir string) error {
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		return err
+	}
+	l := hostsetup.Layout{Dir: dir}
+	env.layout = l
+	// Node address, range, bridge, restore storage, PBS storage, schedule
+	// (default), time zone.
+	answers := "127.0.0.1\n" + fmt.Sprintf("%d-%d\n", vmidLo, vmidHi) + bridge + "\nlocal-zfs\npbs-e2e\n\nUTC\n"
+	var asked bytes.Buffer
+	a, err := hostsetup.Ask(strings.NewReader(answers), &asked, l, "UTC")
+	if err != nil {
+		return fmt.Errorf("ask: %v\n%s", err, asked.String())
+	}
+	if err := hostsetup.WriteConfig(l, a); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	// The container's sshd is reached on a mapped port: set it in the config
+	// as the operator of a node with sshd on another port would.
+	if err := setSSHPort(l, env.port); err != nil {
+		return err
+	}
+	cfg, pending, err := hostsetup.LoadState(l)
+	if err != nil || !pending {
+		return fmt.Errorf("load state after the questions: pending %v, %v", pending, err)
+	}
+	pub, created, err := hostsetup.EnsureKey(l)
+	if err != nil || !created {
+		return fmt.Errorf("ensure key: created %v, %v", created, err)
+	}
+	sa := hostsetup.SetupArgs(cfg, pub, env.version, l.HaveToken())
+	env.setupLine = sa.Line()
+	if lines := hostsetup.NodeLines(cfg, pub, env.version, l.HaveToken()); !strings.Contains(lines, env.setupLine+"\n") {
+		return fmt.Errorf("node lines lack the setup line %q:\n%s", env.setupLine, lines)
+	}
+	fmt.Fprintf(os.Stderr, "nodee2e: on the node: %s --yes\n", env.setupLine)
+
+	out, code, err := nodeSetup(env.setupLine+" --yes", "-t")
+	env.setupOut = out
+	if err != nil || code != 0 {
+		return fmt.Errorf("pbp node setup: exit %d, %v\n%s", code, err, out)
+	}
+	rep, err := nodeproto.ReadReply(strings.NewReader(out))
+	if err != nil {
+		return fmt.Errorf("read the node's reply: %v\n%s", err, out)
+	}
+	needRotate, err := hostsetup.Finish(l, cfg, rep)
+	if err != nil || needRotate {
+		return fmt.Errorf("finish: needRotate %v, %v", needRotate, err)
+	}
+	cfg, pending, err = hostsetup.LoadState(l)
+	if err != nil || pending {
+		return fmt.Errorf("load state after finish: pending %v, %v", pending, err)
+	}
+	if cfg.Target.Node != nodeName || cfg.Target.API.TLSFingerprint != env.certFP {
+		return fmt.Errorf("finished config: node %q, tls_fingerprint %q; want %q, %q",
+			cfg.Target.Node, cfg.Target.API.TLSFingerprint, nodeName, env.certFP)
+	}
+	env.keyFile, env.knownHost = l.KeyPath(), l.KnownHostsPath()
+	// Every later run of pbp setup prints the line without --create-token.
+	env.rerunLine = hostsetup.SetupArgs(cfg, pub, env.version, l.HaveToken()).Line()
+	return nil
+}
+
+// setSSHPort rewrites target.ssh.port in the layout's config.yaml.
+func setSSHPort(l hostsetup.Layout, port int) error {
+	b, err := os.ReadFile(l.ConfigPath())
+	if err != nil {
+		return err
+	}
+	re := regexp.MustCompile(`(?m)^(    port:) 22\b`)
+	if n := len(re.FindAllIndex(b, -1)); n != 1 {
+		return fmt.Errorf("config.yaml has %d target.ssh.port lines, want 1:\n%s", n, b)
+	}
+	return l.WritePlainFile(l.ConfigPath(), re.ReplaceAll(b, []byte("${1} "+strconv.Itoa(port))))
+}
+
+// selfSignedCert is the node's pve-ssl.pem and its SHA-256 fingerprint in
+// the form setup prints.
+func selfSignedCert() ([]byte, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: nodeName + ".e2e.invalid"},
+		DNSNames:     []string{nodeName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(der)
+	hexes := make([]string, len(sum))
+	for i, c := range sum {
+		hexes[i] = fmt.Sprintf("%02X", c)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), strings.Join(hexes, ":"), nil
+}
+
+// nodeSetup runs a pbp node command line as root in the container through
+// sh, as an admin pastes it. opts go to docker exec: "-t" gives the command a
+// terminal, as an admin's shell has; without it stdin is not a terminal. It
+// returns the combined output and the exit code.
+func nodeSetup(line string, opts ...string) (string, int, error) {
+	args := append(append([]string{"exec"}, opts...), env.container, "sh", "-c", line)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdin = nil // /dev/null
+	out, err := cmd.CombinedOutput()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return string(out), ee.ExitCode(), nil
+	}
+	return string(out), 0, err
 }
 
 func copyFile(src, dst string) error {
@@ -259,7 +387,7 @@ func TestHelperQueries(t *testing.T) {
 		t.Fatalf("Config: %v", err)
 	}
 	want := nodeproto.NodeConfig{VMIDRange: [2]int{vmidLo, vmidHi}, Bridge: bridge,
-		RequestTimeout: 2 * time.Minute, Version: env.version}
+		RequestTimeout: 15 * time.Minute, Version: env.version}
 	if c != want {
 		t.Errorf("Config = %+v, want %+v", c, want)
 	}
@@ -273,8 +401,8 @@ func TestHelperQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.Name != bridge || st.OVS || st.DisableIPv6 != strings.TrimSpace(v6) ||
-		!slices.Equal(st.Members, []string{"pbpe2e0"}) {
-		t.Errorf("Bridge = %+v, want vmbr99, not OVS, disable_ipv6 %q, members [pbpe2e0]", st, strings.TrimSpace(v6))
+		!slices.Equal(st.Members, []string{"tap990005i0"}) {
+		t.Errorf("Bridge = %+v, want vmbr99, not OVS, disable_ipv6 %q, members [tap990005i0]", st, strings.TrimSpace(v6))
 	}
 	var addrs []struct {
 		IfName string `json:"ifname"`
@@ -293,9 +421,21 @@ func TestHelperQueries(t *testing.T) {
 }
 
 // TestTemplates checks the templates op before and after the admin installs
-// them as root on the node (the only way: it is refused over SSH).
+// them as root on the node (the only way: it is refused over SSH). Setup
+// installed them: first that is checked, then they are removed so the op can
+// be seen reporting them missing.
 func TestTemplates(t *testing.T) {
 	h := helper(t)
+	tmpl0 := report.Templates()
+	for name, body := range tmpl0 {
+		p := nodesetup.TemplateDir + "/" + name
+		if have, err := dockerOut("cat", p); err != nil || have != string(body) {
+			t.Errorf("setup did not install %s: %v", p, err)
+		}
+		if _, err := dockerOut("rm", p); err != nil {
+			t.Fatal(err)
+		}
+	}
 	got, err := h.Templates(ctxT(t, 30*time.Second))
 	if err != nil {
 		t.Fatalf("Templates: %v", err)
@@ -782,4 +922,348 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		}
 		t.Logf("client gone after %v; sleep 62 gone %v after the request started", gone.Round(10*time.Millisecond), time.Since(start).Round(10*time.Millisecond))
 	})
+}
+
+// pbpE2EState is the stub pveum's state, and the token secrets it keeps
+// where PVE keeps them.
+var pbpE2EState = []string{
+	"/var/lib/pbp-e2e/roles", "/var/lib/pbp-e2e/users", "/var/lib/pbp-e2e/tokens",
+	"/var/lib/pbp-e2e/acls", "/etc/pve/priv/token.cfg",
+}
+
+// setupFiles are everything setup writes (design §5.3), the pbp account and
+// the PVE state.
+func setupFiles() []string {
+	files := []string{
+		nodesetup.EtcDir, nodesetup.NodeYAMLPath, "/etc/passwd", nodesetup.PbpHome,
+		nodesetup.SSHDir, nodesetup.AuthorizedKeys, nodesetup.SudoersPath,
+	}
+	for name := range report.Templates() {
+		files = append(files, nodesetup.TemplateDir+"/"+name)
+	}
+	slices.Sort(files[7:])
+	return append(files, pbpE2EState...)
+}
+
+// snapshot is name, mode, owner, size and mtime (ns) of every setup file;
+// a missing one shows as such.
+func snapshot(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	for _, f := range setupFiles() {
+		out, err := dockerOut("sh", "-c", `stat -c '%n %a %U:%G %s %y' "$1" 2>/dev/null || echo "$1 missing"`, "sh", f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(out)
+	}
+	return b.String()
+}
+
+// tokenSecret is the secret the stub pveum handed out for pbp@pve!proof.
+func tokenSecret(t *testing.T) string {
+	t.Helper()
+	out, err := dockerOut("cat", "/etc/pve/priv/token.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if id, secret, ok := strings.Cut(l, " "); ok && id == nodesetup.TokenID {
+			return secret
+		}
+	}
+	t.Fatalf("token.cfg has no %s", nodesetup.TokenID)
+	return ""
+}
+
+// TestSetupReplyAndToken: the first setup run handed the host exactly what
+// the node holds (the token secret, the host key, the certificate), and the
+// secret appeared nowhere but inside the reply block and the host's token
+// file.
+func TestSetupReplyAndToken(t *testing.T) {
+	out := env.setupOut
+	t.Logf("pbp node setup output:\n%s", out)
+	for _, want := range []string{"pbp node setup on " + nodeName + ":", "Copy this block now",
+		"pbp node setup: done"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("setup output lacks %q", want)
+		}
+	}
+	secret := tokenSecret(t)
+	if strings.Contains(out, secret) {
+		t.Errorf("the token secret is printed in clear text outside the reply block")
+	}
+	host, err := os.ReadFile(env.layout.TokenPath())
+	if err != nil || string(host) != secret+"\n" {
+		t.Errorf("host token file = %q, %v; want the secret pveum created", host, err)
+	}
+	logs, err := dockerOut("sh", "-c", "cat /var/log/pbp-e2e/*.log /var/log/pbp/* 2>/dev/null; true")
+	if err != nil || strings.Contains(logs, secret) {
+		t.Errorf("the token secret is in a log on the node (%v)", err)
+	}
+	hostKey, err := dockerOut("cat", nodesetup.HostKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kh, err := os.ReadFile(env.knownHost)
+	f := strings.Fields(hostKey)
+	if err != nil || len(f) < 2 || string(kh) != fmt.Sprintf("[127.0.0.1]:%d %s %s\n", env.port, f[0], f[1]) {
+		t.Errorf("known_hosts = %q, %v; want the node's ed25519 host key for [127.0.0.1]:%d", kh, err, env.port)
+	}
+	acls, err := dockerOut("cat", "/var/lib/pbp-e2e/acls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, p := range nodesetup.ACLPaths(nodeName, []string{"local-zfs", "pbs-e2e"}) {
+		want = append(want, p+"\tuser\t"+nodesetup.UserID+"\t"+nodesetup.RoleName,
+			p+"\ttoken\t"+nodesetup.TokenID+"\t"+nodesetup.RoleName)
+	}
+	if got := strings.Split(strings.TrimSpace(acls), "\n"); !slices.Equal(got, want) {
+		t.Errorf("ACLs:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	nodeYAML, err := dockerOut("cat", nodesetup.NodeYAMLPath)
+	if err != nil || nodeYAML != string(nodesetup.NodeYAML(vmidLo, vmidHi, bridge)) {
+		t.Errorf("node.yaml = %q, %v", nodeYAML, err)
+	}
+	modes, err := dockerOut("stat", "-c", "%a %U:%G %n", nodesetup.EtcDir, nodesetup.NodeYAMLPath,
+		nodesetup.PbpHome, nodesetup.SudoersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantModes := "750 root:pbp /etc/pbp\n640 root:pbp /etc/pbp/node.yaml\n700 pbp:pbp /var/lib/pbp\n440 root:root /etc/sudoers.d/pbp\n"
+	if modes != wantModes {
+		t.Errorf("modes:\n%s\nwant:\n%s", modes, wantModes)
+	}
+	if sudoers, err := dockerOut("cat", nodesetup.SudoersPath); err != nil || sudoers != nodesetup.SudoersText {
+		t.Errorf("sudoers = %q, %v", sudoers, err)
+	}
+	if shell, err := dockerOut("sh", "-c", "getent passwd pbp | cut -d: -f7"); err != nil || strings.TrimSpace(shell) != "/bin/sh" {
+		t.Errorf("pbp shell = %q, %v; want /bin/sh", shell, err)
+	}
+}
+
+// TestSetupRerunIsComplete: setup run again, with the first line (it asks
+// for the token) or the line a later pbp setup prints, finds everything in
+// place, says so, changes nothing, and its reply (no secret) is accepted by
+// the host.
+func TestSetupRerunIsComplete(t *testing.T) {
+	for _, line := range []string{env.setupLine, env.rerunLine} {
+		before := snapshot(t)
+		out, code, err := nodeSetup(line+" --yes", "-t")
+		t.Logf("%s --yes: exit %d\n%s", line, code, out)
+		if err != nil || code != 0 {
+			t.Fatalf("exit %d, %v", code, err)
+		}
+		if first, _, _ := strings.Cut(strings.TrimLeft(out, "\r\n"), "\n"); strings.TrimSpace(first) != "setup has already been completed" {
+			t.Errorf("first line %q, want exactly: setup has already been completed", first)
+		}
+		if after := snapshot(t); after != before {
+			t.Errorf("a complete setup run changed files:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		rep, err := nodeproto.ReadReply(strings.NewReader(out))
+		if err != nil {
+			t.Fatalf("reply: %v", err)
+		}
+		if rep.TokenSecret != "" || rep.Node != nodeName || rep.APIFingerprint != env.certFP {
+			t.Errorf("reply node %q, fingerprint %q, secret set %v; want %s, %s, no secret",
+				rep.Node, rep.APIFingerprint, rep.TokenSecret != "", nodeName, env.certFP)
+		}
+		cfg, pending, err := hostsetup.LoadState(env.layout)
+		if err != nil || pending {
+			t.Fatalf("load state: pending %v, %v", pending, err)
+		}
+		if needRotate, err := hostsetup.Finish(env.layout, cfg, rep); err != nil || needRotate {
+			t.Errorf("finish with the rerun's reply: needRotate %v, %v", needRotate, err)
+		}
+	}
+}
+
+// TestSetupDiffersStops: a sudoers file with an extra rule stops setup, which
+// names it and changes nothing; with --replace the old file is backed up and
+// the rule restored.
+func TestSetupDiffersStops(t *testing.T) {
+	widened := nodesetup.SudoersText + "pbp ALL=(root) NOPASSWD: /usr/bin/id\n"
+	t.Cleanup(func() {
+		_, _ = dockerOut("sh", "-c", `rm -f /etc/sudoers.d/pbp.pbp-backup-*
+printf '%s' "$1" > /etc/sudoers.d/pbp`, "sh", nodesetup.SudoersText)
+	})
+	if _, err := dockerOut("sh", "-c", `printf '%s' "$1" > /etc/sudoers.d/pbp`, "sh", widened); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t)
+	out, code, err := nodeSetup(env.rerunLine+" --yes", "-t")
+	t.Logf("without --replace: exit %d\n%s", code, out)
+	if err != nil || code == 0 {
+		t.Errorf("exit %d, %v; want failure", code, err)
+	}
+	for _, want := range []string{nodesetup.SudoersPath, "differs", "--replace", "nothing changed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q", want)
+		}
+	}
+	if strings.Contains(out, nodeproto.ReplyBegin) {
+		t.Errorf("a refused setup printed a reply block")
+	}
+	if after := snapshot(t); after != before {
+		t.Errorf("a refused setup changed files:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if got, err := dockerOut("cat", nodesetup.SudoersPath); err != nil || got != widened {
+		t.Errorf("sudoers = %q, %v; want it left as it was", got, err)
+	}
+
+	out, code, err = nodeSetup(env.rerunLine+" --yes --replace", "-t")
+	t.Logf("with --replace: exit %d\n%s", code, out)
+	if err != nil || code != 0 {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	if got, err := dockerOut("cat", nodesetup.SudoersPath); err != nil || got != nodesetup.SudoersText {
+		t.Errorf("sudoers = %q, %v; want the rule restored", got, err)
+	}
+	if got, err := dockerOut("stat", "-c", "%a %U:%G", nodesetup.SudoersPath); err != nil || got != "440 root:root\n" {
+		t.Errorf("sudoers mode = %q, %v", got, err)
+	}
+	backups, err := dockerOut("sh", "-c", "ls /etc/sudoers.d/pbp.pbp-backup-*")
+	names := strings.Fields(backups)
+	if err != nil || len(names) != 1 || !regexp.MustCompile(`^/etc/sudoers\.d/pbp\.pbp-backup-\d{8}T\d{6}$`).MatchString(names[0]) {
+		t.Fatalf("backups %q, %v; want one pbp.pbp-backup-<YYYYMMDDTHHMMSS>", backups, err)
+	}
+	if got, err := dockerOut("cat", names[0]); err != nil || got != widened {
+		t.Errorf("backup = %q, %v; want the old file", got, err)
+	}
+	if out, err := dockerAs("pbp", "sudo", "-n", "/usr/bin/id"); err == nil {
+		t.Errorf("pbp may still run id through sudo: %q", out)
+	}
+	if _, err := nodeproto.ReadReply(strings.NewReader(out)); err != nil {
+		t.Errorf("no reply after --replace: %v", err)
+	}
+}
+
+// TestSetupRefusedOverSSHAndSudo: setup and uninstall run only for root at a
+// terminal on the node: not with the PBP key, not through the pbp sudo rule,
+// not with stdin redirected, not when the environment says SSH or the pbp
+// sudo rule. Nothing changes.
+func TestSetupRefusedOverSSHAndSudo(t *testing.T) {
+	before := snapshot(t)
+	setupCmd := env.rerunLine + " --yes"
+	for _, cmd := range []string{setupCmd, "sudo /usr/bin/" + setupCmd, "pbp node uninstall --yes"} {
+		out, errOut, exit := attack(t, "127.0.0.1", cmd)
+		t.Logf("ssh %q: exit %d\nstdout: %q\nstderr: %q", cmd, exit, out, errOut)
+		if exit != nodeproto.ExitRefused || !strings.Contains(errOut, "refused") || out != "" {
+			t.Errorf("ssh %q: exit %d, stdout %q; want the helper's refusal (%d) and no output", cmd, exit, out, nodeproto.ExitRefused)
+		}
+	}
+
+	setupArgv := []string{"sudo", "-n", "/usr/bin/pbp", "node", "setup", "--vmid-range",
+		fmt.Sprintf("%d-%d", vmidLo, vmidHi), "--bridge", bridge, "--pubkey", "x", "--yes"}
+	if out, err := dockerAs("pbp", setupArgv...); err == nil || strings.Contains(out, "pbp node setup on") {
+		t.Errorf("pbp ran setup through sudo: %v, %q", err, out)
+	}
+	if out, err := dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=" + setupCmd}, "pbp", "sudo", "-n", "/usr/bin/pbp", "node"); err == nil ||
+		!strings.Contains(out, "refused: bad-request") {
+		t.Errorf("setup through the sudo rule: %v, %q; want a bad-request refusal", err, out)
+	}
+
+	for _, line := range []string{setupCmd, "pbp node uninstall --yes"} {
+		cases := []struct {
+			name string
+			opts []string
+			why  string
+		}{
+			{"no terminal", nil, "stdin is not a terminal"},
+			{"ssh env", []string{"-t", "-e", "SSH_ORIGINAL_COMMAND=x"}, "SSH_ORIGINAL_COMMAND is set"},
+			{"pbp sudo env", []string{"-t", "-e", "SUDO_USER=pbp"}, "started through the pbp account's sudo rule"},
+			{"not root", []string{"-t", "-u", "pbp"}, "not root"},
+		}
+		for _, tc := range cases {
+			out, code, err := nodeSetup(line, tc.opts...)
+			t.Logf("%s (%s): exit %d\n%s", line, tc.name, code, out)
+			if err != nil || code != 2 || !strings.Contains(out, "refused: run it interactively as root") ||
+				!strings.Contains(out, tc.why) {
+				t.Errorf("%s (%s): exit %d, %v; want exit 2 and a refusal naming %q", line, tc.name, code, err, tc.why)
+			}
+			if strings.Contains(out, nodeproto.ReplyBegin) || strings.Contains(out, " on "+nodeName+":") {
+				t.Errorf("%s (%s): got past the gate", line, tc.name)
+			}
+		}
+	}
+	if after := snapshot(t); after != before {
+		t.Errorf("refused runs changed files:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestUninstallRemovesAccess must stay last: it removes the setup. After
+// `pbp node uninstall --yes` the PBP key gets nothing at all: every attacker
+// case and a valid version request fail at SSH authentication, and the sudo
+// rule is gone. --remove-token then removes the PVE token, ACLs, user and
+// role.
+func TestUninstallRemovesAccess(t *testing.T) {
+	beforePct := pctLog(t)
+	out, code, err := nodeSetup("pbp node uninstall --yes", "-t")
+	t.Logf("pbp node uninstall --yes: exit %d\n%s", code, out)
+	if err != nil || code != 0 || !strings.Contains(out, "pbp node uninstall: done") {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	gone, err := dockerOut("sh", "-c", `for f in "$@"; do test -e "$f" && echo "$f"; done; true`, "sh",
+		nodesetup.SudoersPath, nodesetup.AuthorizedKeys, nodesetup.SSHDir, nodesetup.NodeYAMLPath)
+	if err != nil || gone != "" {
+		t.Errorf("still present after uninstall: %q, %v", gone, err)
+	}
+	if shell, err := dockerOut("sh", "-c", "getent passwd pbp | cut -d: -f7"); err != nil || strings.TrimSpace(shell) != nodesetup.NoLogin {
+		t.Errorf("pbp shell = %q, %v; want %s", shell, err, nodesetup.NoLogin)
+	}
+	if toks, err := dockerOut("cat", "/var/lib/pbp-e2e/tokens"); err != nil || !strings.HasPrefix(toks, "pbp@pve\tproof\t") {
+		t.Errorf("tokens = %q, %v; want the token kept without --remove-token", toks, err)
+	}
+
+	for _, args := range [][]string{
+		{"127.0.0.1", "id"},
+		{"127.0.0.1", "bash"},
+		{"127.0.0.1", "pbp node install-templates"},
+		{"127.0.0.1", "sudo -l"},
+		{"127.0.0.1", env.rerunLine + " --yes"},
+		{"-t", "127.0.0.1"},
+		{"-tt", "127.0.0.1", "id"},
+		{"-W", "127.0.0.1:22", "127.0.0.1"},
+	} {
+		stdout, stderr, exit := attack(t, args...)
+		t.Logf("ssh %q: exit %d\nstdout: %q\nstderr: %q", args, exit, stdout, stderr)
+		if exit != 255 || stdout != "" || !strings.Contains(stderr, "Permission denied (publickey") {
+			t.Errorf("ssh %q: exit %d, stdout %q; want 255, nothing, and the key refused", args, exit, stdout)
+		}
+	}
+	c, err := sshx.Dial(config.SSH{Host: "127.0.0.1", Port: env.port, User: "pbp",
+		KeyFile: env.keyFile, KnownHostsFile: env.knownHost})
+	if err == nil {
+		v, verr := sshx.Helper{R: c}.Version(ctxT(t, 30*time.Second))
+		_ = c.Close()
+		if verr == nil {
+			t.Errorf("version request after uninstall answered %q", v)
+		}
+	}
+	if out, err := dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=version"}, "pbp", "sudo", "-n", "/usr/bin/pbp", "node"); err == nil {
+		t.Errorf("the pbp sudo rule still works after uninstall: %q", out)
+	}
+	if after := pctLog(t); !slices.Equal(beforePct, after) {
+		t.Errorf("a request after uninstall reached pct: log grew from %q to %q", beforePct, after)
+	}
+
+	out, code, err = nodeSetup("pbp node uninstall --remove-token --yes", "-t")
+	t.Logf("pbp node uninstall --remove-token --yes: exit %d\n%s", code, out)
+	if err != nil || code != 0 {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	state, err := dockerOut(append([]string{"sh", "-c", `grep -H . "$@"; true`, "sh"}, pbpE2EState...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{nodesetup.UserID, nodesetup.RoleName, nodesetup.TokenName} {
+		if strings.Contains(state, id) {
+			t.Errorf("PVE state still names %s after --remove-token:\n%s", id, state)
+		}
+	}
+	out, code, err = nodeSetup("pbp node uninstall --remove-token --yes", "-t")
+	if err != nil || code != 0 || !strings.Contains(out, "nothing to remove") {
+		t.Errorf("second uninstall: exit %d, %v\n%s; want nothing to remove", code, err, out)
+	}
 }
