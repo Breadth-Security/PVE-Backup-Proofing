@@ -106,33 +106,52 @@ func EncodeReply(r SetupReply) (string, error) {
 }
 
 // ReadReply finds the reply block in r, tolerating terminal noise: text
-// before the begin marker and after the end marker, CRLF, and surrounding
-// spaces. Errors never include reply content (it can hold the token secret).
+// before the begin marker and after the end marker (also on the markers'
+// own lines, such as a shell prompt), lines of any length outside the
+// block, CRLF, and surrounding spaces. Errors never include reply content
+// (it can hold the token secret).
 func ReadReply(r io.Reader) (SetupReply, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 4096), maxReply+1)
+	br := bufio.NewReader(r)
 	var body strings.Builder
+	add := func(s string) error {
+		s = strings.Join(strings.Fields(s), "")
+		if body.Len()+len(s) > maxReply {
+			return errors.New("node reply is too large")
+		}
+		body.WriteString(s)
+		return nil
+	}
 	state := 0 // 0 before begin, 1 in body, 2 done
-	for state < 2 && sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for state < 2 {
+		line, long, err := readCappedLine(br, maxReply)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return SetupReply{}, fmt.Errorf("reading the node reply: %w", err)
+		}
 		switch {
 		case state == 0:
-			if line == ReplyBegin {
+			// A line too long to be the marker line is noise.
+			if _, after, ok := strings.Cut(line, ReplyBegin); ok && !long {
 				state = 1
+				if aerr := add(after); aerr != nil {
+					return SetupReply{}, aerr
+				}
 			}
-		case line == ReplyEnd:
-			state = 2
+		case long:
+			return SetupReply{}, errors.New("node reply is too large")
 		default:
-			if body.Len()+len(line) > maxReply {
-				return SetupReply{}, errors.New("node reply is too large")
+			before, _, end := strings.Cut(line, ReplyEnd)
+			if aerr := add(before); aerr != nil {
+				return SetupReply{}, aerr
 			}
-			body.WriteString(strings.Join(strings.Fields(line), ""))
+			if end {
+				state = 2
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
 		}
 	}
 	if state != 2 {
-		if err := sc.Err(); err != nil && errors.Is(err, bufio.ErrTooLong) {
-			return SetupReply{}, errors.New("node reply is too large")
-		}
 		if state == 0 {
 			return SetupReply{}, errors.New("no node reply found: " + ReplyBegin + " marker missing")
 		}
@@ -182,4 +201,28 @@ func ParsePubKey(s string) (string, error) {
 		out += " " + comment
 	}
 	return out, nil
+}
+
+// readCappedLine reads one line (without its line ending) of any length,
+// keeping at most limit bytes of it; long reports that more was dropped.
+// At the end of input it returns what it has with io.EOF.
+func readCappedLine(br *bufio.Reader, limit int) (line string, long bool, err error) {
+	var sb strings.Builder
+	for {
+		frag, isPrefix, rerr := br.ReadLine()
+		if room := limit - sb.Len(); room > 0 {
+			if len(frag) > room {
+				frag, long = frag[:room], true
+			}
+			sb.Write(frag)
+		} else if len(frag) > 0 {
+			long = true
+		}
+		if rerr != nil {
+			return sb.String(), long, rerr
+		}
+		if !isPrefix {
+			return sb.String(), long, nil
+		}
+	}
 }

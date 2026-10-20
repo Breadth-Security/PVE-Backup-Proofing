@@ -3,6 +3,7 @@ package nodeproto
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -221,5 +222,64 @@ func TestParsePubKey(t *testing.T) {
 		if _, err := ParsePubKey(in); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// Paste noise the scanner used to choke on: a very long line before the
+// block (a terminal redraw), and prompts on the markers' own lines.
+func TestReadReplyLongNoiseAndPrompts(t *testing.T) {
+	s, _ := EncodeReply(sampleReply())
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	lines[0] = "root@pve1:~# " + lines[0]
+	lines[len(lines)-1] = lines[len(lines)-1] + " root@pve1:~# "
+	in := strings.Repeat("\x1b[K=", 300<<10) + "\n" + strings.Join(lines, "\n")
+	got, err := ReadReply(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != sampleReply() {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A body line over the cap is still refused, and a block with no end at
+// the end of input (no trailing newline) is incomplete.
+func TestReadReplyLongBodyAndNoNewline(t *testing.T) {
+	long := ReplyBegin + "\n" + strings.Repeat("A", maxReply+10) + "\n" + ReplyEnd + "\n"
+	if _, err := ReadReply(strings.NewReader(long)); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Errorf("long body line: %v, want too large", err)
+	}
+	s, _ := EncodeReply(sampleReply())
+	if _, err := ReadReply(strings.NewReader(strings.TrimRight(s, "\n"))); err != nil {
+		t.Errorf("no trailing newline: %v", err)
+	}
+	cut := s[:strings.Index(s, ReplyEnd)]
+	if _, err := ReadReply(strings.NewReader(cut)); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Errorf("no end marker: %v, want incomplete", err)
+	}
+}
+
+type failingReader struct{ data string }
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if f.data == "" {
+		return 0, errors.New("input/output error")
+	}
+	n := copy(p, f.data)
+	f.data = f.data[n:]
+	return n, nil
+}
+
+// A read error is reported as one, not as a missing marker, and carries no
+// reply content.
+func TestReadReplyIOError(t *testing.T) {
+	s, _ := EncodeReply(sampleReply())
+	half := s[:len(s)/2]
+	_, err := ReadReply(&failingReader{data: half})
+	if err == nil || !strings.Contains(err.Error(), "reading the node reply: input/output error") {
+		t.Fatalf("err %v, want the read error", err)
+	}
+	if strings.Contains(err.Error(), half[len(ReplyBegin)+1:len(ReplyBegin)+20]) {
+		t.Errorf("error carries reply content: %v", err)
 	}
 }
