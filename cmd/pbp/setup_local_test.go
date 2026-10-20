@@ -155,3 +155,33 @@ func (f *fakeNode) complete() {
 	f.users = append(f.users, nodesetup.UserID)
 	f.tokens[nodesetup.UserID] = append(f.tokens[nodesetup.UserID], nodesetup.TokenName)
 }
+
+// A node file that differs stops the on-node setup with the --replace
+// advice, which pbp setup --deb --replace then follows (after a backup).
+// Warnings are shown once, and not the "also runs a PBP daemon" one.
+func TestSetupOnNodeReplace(t *testing.T) {
+	r := newLocalRig(t)
+	r.f.write(nodesetup.SudoersPath, "pbp ALL=(ALL) NOPASSWD: ALL\n", 0o440)
+	if code := r.setup(localAnswers + "y\n"); code == exitOK {
+		t.Fatal("replaced a differing sudoers file without --replace")
+	}
+	if out := r.errOut.String(); !strings.Contains(out, "--replace") {
+		t.Fatalf("no --replace advice:\n%s", out)
+	}
+	if code := r.main("y\ny\n", "setup", "--deb", "--replace"); code != exitOK {
+		t.Fatalf("exit %d:\n%s%s", code, r.out, r.errOut)
+	}
+	ents, _ := os.ReadDir(filepath.Join(r.f.root, "etc/sudoers.d"))
+	backups := 0
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".pbp-backup-") {
+			backups++
+		}
+	}
+	if backups != 1 {
+		t.Errorf("%d sudoers backups, want 1", backups)
+	}
+	if strings.Contains(r.errOut.String(), "also runs a PBP daemon") {
+		t.Errorf("daemon warning in the on-node flow:\n%s", r.errOut)
+	}
+}

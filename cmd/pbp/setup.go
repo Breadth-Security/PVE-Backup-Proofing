@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	setupUsage     = "usage: pbp setup [--dir DIR] [--deb]\n"
+	setupUsage     = "usage: pbp setup [--dir DIR] [--deb [--replace]]\n"
 	msgPasteReply  = "Paste the reply printed by pbp node setup, then press Enter:"
 	msgInterrupted = "pbp setup: interrupted; everything written so far stays; run pbp setup again to continue"
 )
@@ -33,6 +33,7 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	flags.SetOutput(a.stderr)
 	dir := flags.String("dir", ".", "the Docker checkout directory to set up")
 	deb := flags.Bool("deb", false, "set up a .deb install (/etc/pbp) instead of a Docker directory")
+	replace := flags.Bool("replace", false, "when setting up this Proxmox VE node too: back up and replace node files that differ, as pbp node setup --replace")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -91,7 +92,7 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		return code
 	} else if local {
 		var code int
-		if rep, code = a.setUpLocalNode(ctx, in, l, cfg, pub); code != exitOK {
+		if rep, code = a.setUpLocalNode(ctx, in, l, cfg, pub, *replace); code != exitOK {
 			return code
 		}
 	} else {
@@ -293,9 +294,9 @@ func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
 // reply, as if it had been pasted. When the API token already exists and
 // this host has no secret for it, it offers to replace the token (PVE
 // cannot show an existing secret again).
-func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string) (nodeproto.SetupReply, int) {
+func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string, replace bool) (nodeproto.SetupReply, int) {
 	sa := hostsetup.SetupArgs(cfg, pub, version, l.HaveToken())
-	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in})
+	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in, replace: replace, local: true})
 	if code != exitOK {
 		return nodeproto.SetupReply{}, code
 	}
@@ -313,7 +314,7 @@ func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.
 		return nodeproto.SetupReply{}, exitFail
 	}
 	sa.CreateToken, sa.RotateToken = true, true
-	if res, code = a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: true}); code != exitOK {
+	if res, code = a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: true, replace: replace, local: true, quiet: true}); code != exitOK {
 		return nodeproto.SetupReply{}, code
 	}
 	return res.reply, exitOK

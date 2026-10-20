@@ -176,6 +176,10 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 type nodeRun struct {
 	in                   io.Reader
 	dryRun, yes, replace bool
+	// local: pbp setup runs this on the node it set PBP up on, by choice,
+	// so the "also runs a PBP daemon" warning is noise. quiet: a second
+	// pass of the same run, whose warnings were already shown.
+	local, quiet bool
 }
 
 // nodeResult is what a node setup run ends with: the reply for the PBP host
@@ -201,15 +205,19 @@ func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRu
 	if err != nil {
 		return nodeResult{}, a.stepFailed(sub, "check", err)
 	}
-	if w := nodesetup.DaemonWarning(ctx, env); w != "" {
-		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+	if !o.local && !o.quiet {
+		if w := nodesetup.DaemonWarning(ctx, env); w != "" {
+			fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+		}
 	}
 	plan, err := nodesetup.BuildPlan(ctx, env, sa, nodeName)
 	if err != nil {
 		return nodeResult{}, a.stepFailed(sub, "plan", err)
 	}
-	for _, w := range plan.Warnings {
-		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+	if !o.quiet {
+		for _, w := range plan.Warnings {
+			fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+		}
 	}
 	// The reply needs the node's ed25519 host key and API certificate, which
 	// setup does not create: prove they are readable before changing
