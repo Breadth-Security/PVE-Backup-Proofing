@@ -13,7 +13,8 @@ import (
 // NewLocal builds a Client that reads PVE through pvesh on the node itself
 // (as root, no token): every GET runs
 // `<pvesh> get <path> [--<k> <v>...] --output-format json`. Other methods
-// are refused.
+// are refused. The error run returns for a failed command must carry the
+// command's stderr (pvesh reports API errors there); callers match on it.
 func NewLocal(pvesh string, run func(ctx context.Context, name string, args []string) (stdout []byte, err error)) *Client {
 	return &Client{
 		local: func(ctx context.Context, path string, query url.Values) ([]byte, error) {

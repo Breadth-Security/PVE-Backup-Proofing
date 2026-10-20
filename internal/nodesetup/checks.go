@@ -48,8 +48,30 @@ func isMissing(err error) bool {
 	if errors.As(err, &ae) && ae.Status == 404 {
 		return true
 	}
-	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "not found") || strings.Contains(m, "does not exist") || strings.Contains(m, "no such")
+	// pvesh prints "400 Parameter verification failed.\niface: interface
+	// does not exist" (exit 255). Broader text such as "not found" would
+	// also match a failure to start pvesh.
+	return strings.Contains(strings.ToLower(err.Error()), "interface does not exist")
+}
+
+// PveshRun is the production run function for pve.NewLocal: it runs pvesh
+// through env.Run and, on a failure to start or a non-zero exit, returns an
+// error carrying the trimmed, bounded stderr (pvesh reports API errors there).
+func PveshRun(env Env) func(ctx context.Context, name string, args []string) ([]byte, error) {
+	return func(ctx context.Context, name string, args []string) ([]byte, error) {
+		stdout, stderr, exit, err := env.Run(ctx, name, args, nil)
+		if err != nil {
+			return nil, err
+		}
+		if exit != 0 {
+			msg := strings.TrimSpace(stderr)
+			if len(msg) > 512 {
+				msg = msg[:512]
+			}
+			return nil, fmt.Errorf("exit status %d: %s", exit, msg)
+		}
+		return []byte(stdout), nil
+	}
 }
 
 // Check runs the read-only phase-1 checks before setup changes anything and
@@ -124,8 +146,11 @@ func Check(ctx context.Context, env Env, api *pve.Client, sys node.System, a nod
 	}
 
 	out, stderr, exit, err := env.Run(ctx, "/usr/sbin/sshd", []string{"-T"}, nil)
-	if err != nil || exit != 0 {
-		return "", fmt.Errorf("cannot read the sshd configuration (sshd -T: %v %s): fix sshd, then run pbp node setup again", err, strings.TrimSpace(stderr))
+	if err != nil {
+		return "", fmt.Errorf("cannot read the sshd configuration (sshd -T: %v): fix sshd, then run pbp node setup again", err)
+	}
+	if exit != 0 {
+		return "", fmt.Errorf("cannot read the sshd configuration (sshd -T exited %d: %s): fix sshd, then run pbp node setup again", exit, strings.TrimSpace(stderr))
 	}
 	usePAM := false
 	for _, l := range strings.Split(out, "\n") {

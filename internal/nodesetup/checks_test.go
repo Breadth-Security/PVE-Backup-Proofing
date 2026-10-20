@@ -58,7 +58,7 @@ func (r *checkRig) env() (Env, *pve.Client) {
 			return []byte(r.nodes), nil
 		case strings.HasPrefix(path, "/nodes/pve1/network/"):
 			if r.iface == "" {
-				return nil, errors.New("exit status 2: Configuration for interface 'vmbr99' not found")
+				return nil, errors.New("exit status 2: 400 Parameter verification failed.\niface: interface does not exist")
 			}
 			return []byte(r.iface), nil
 		case path == "/cluster/resources":
@@ -171,5 +171,48 @@ func TestBridgeStanza(t *testing.T) {
 	want := "auto vmbr7\niface vmbr7 inet manual\n        bridge-ports none\n        bridge-stp off\n        bridge-fd 0\n        post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr7/disable_ipv6\n"
 	if got := BridgeStanza("vmbr7"); got != want {
 		t.Errorf("stanza = %q", got)
+	}
+}
+
+const realMissingStderr = "400 Parameter verification failed.\niface: interface does not exist\npvesh get <api_path> [OPTIONS] [FORMAT_OPTIONS]\n"
+
+// pveshEnv drives Check through the production wiring PveshRun, with fail
+// deciding what a pvesh network GET does.
+func pveshEnv(r *checkRig, fail func() (string, int, error)) (Env, *pve.Client) {
+	var env Env
+	env.Run = func(_ context.Context, name string, args []string, _ []byte) (string, string, int, error) {
+		if name == "/usr/sbin/sshd" {
+			return r.sshd, "", 0, nil
+		}
+		path := args[1]
+		switch {
+		case path == "/version":
+			return r.version, "", 0, nil
+		case path == "/nodes":
+			return r.nodes, "", 0, nil
+		case strings.Contains(path, "/network/"):
+			stderr, exit, err := fail()
+			return "", stderr, exit, err
+		}
+		return "", "unexpected " + path, 1, nil
+	}
+	return env, pve.NewLocal("/usr/bin/pvesh", PveshRun(env))
+}
+
+func TestCheckMissingBridge(t *testing.T) {
+	hostname = func() (string, error) { return "pve1", nil }
+	r := newRig()
+	env, api := pveshEnv(r, func() (string, int, error) { return realMissingStderr, 255, nil })
+	_, err := Check(context.Background(), env, api, rigSystem{r: r}, checkArgs(), "0.3.0")
+	if err == nil || !strings.Contains(err.Error(), BridgeStanza("vmbr99")) {
+		t.Fatalf("want the stanza, got %v", err)
+	}
+
+	env, api = pveshEnv(r, func() (string, int, error) {
+		return "", 0, errors.New(`exec: "/usr/bin/pvesh": executable file not found in $PATH`)
+	})
+	_, err = Check(context.Background(), env, api, rigSystem{r: r}, checkArgs(), "0.3.0")
+	if err == nil || strings.Contains(err.Error(), BridgeStanza("vmbr99")) || !strings.Contains(err.Error(), "executable file not found") {
+		t.Fatalf("exec failure must not look like a missing bridge: %v", err)
 	}
 }
