@@ -10,9 +10,15 @@ go test ./... && go vet ./...
 packaging/build.sh 1.2.3 dist           # .debs, tarballs and SHA256SUMS for amd64 and arm64
 ```
 
-The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build uses when no `--build-arg VERSION` is given. Bump it before tagging a release: the `release` workflow fails a tag `v<version>` whose `MAJOR.MINOR.PATCH` differs from it (`v0.3.0-rc1` needs `0.3.0`). A plain `go build` without `-ldflags "-X main.version=..."` is a `dev` build.
+The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build uses when no `--build-arg VERSION` is given. Bump it before tagging a release: the `release` workflow fails a tag `v<version>` whose `MAJOR.MINOR.PATCH` differs from it (`v0.3.0-rc.1` needs `0.3.0`). A plain `go build` without `-ldflags "-X main.version=..."` is a `dev` build.
 
 `packaging/build.sh` needs Go, `envsubst` (gettext-base) and network access for the pinned nfpm. The `release` workflow runs it when a tag `v<version>` is pushed, runs lintian on the packages (errors fail the job) and creates the Gitea release with the packages, tarballs and `SHA256SUMS` attached. Run it by hand (workflow dispatch) for a dry run that builds but publishes nothing. It authenticates with the job's automatic token; if your Gitea refuses that (HTTP 401/403), create a token with the `write:repository` scope and store it as the repository secret `RELEASE_TOKEN`, which is used in preference when set.
+
+## Tests
+
+- **Unit tests:** `go test -race ./...` (and `go vet` with the `integration` and `nodee2e` tags, which CI also runs).
+- **Node end-to-end test** (`test/nodee2e`): sets up a throwaway Debian container as a fake Proxmox node with the real `.deb`, `pbp setup` and `pbp node setup`, then attacks it over real SSH with PBP's key. It needs a Docker host with Go: `test/nodee2e/run.sh [ssh-host]` copies the checkout there and runs it. Never point it at a Proxmox node.
+- **Integration suite** (`test/integration`): proofs real backups on a real PVE node. See [`test/integration/README.md`](../test/integration/README.md) for what it needs and what it touches.
 
 ## Code scanning
 

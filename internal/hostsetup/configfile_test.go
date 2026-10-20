@@ -54,7 +54,7 @@ func TestWriteConfigLoads(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(d.ConfigPath())
 	text := string(raw)
-	for _, want := range []string{"# cron, container TZ", "# Units ignored when judging", "config.example.yaml"} {
+	for _, want := range []string{"# cron, in the container's TZ", "# Units ignored when judging", "config.example.yaml"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("written config lacks %q:\n%s", want, text)
 		}

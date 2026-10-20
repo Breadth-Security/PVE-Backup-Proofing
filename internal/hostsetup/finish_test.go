@@ -121,7 +121,7 @@ func TestFinishWritesFiles(t *testing.T) {
 		t.Errorf("after Finish: pending=%v err=%v", pending, err)
 	}
 	after, _ := os.ReadFile(l.ConfigPath())
-	if !strings.Contains(string(after), "# cron, container TZ") {
+	if !strings.Contains(string(after), "# cron, in the container's TZ") {
 		t.Errorf("comments lost:\n%s", after)
 	}
 
