@@ -686,7 +686,7 @@ docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redac
 go vet ./... && go vet -tags integration ./... && go test -race ./...
 ```
 
-An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site.
+An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site. An accepted gitleaks finding (a fake secret in a test) is listed by fingerprint in `.gitleaksignore`, and an accepted Trivy finding in `.trivyignore.yaml`.
 
 *Note that this repo is synced from a local Gitea repo, upon commits. This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
 
