@@ -22,6 +22,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/daemon"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
@@ -44,6 +45,10 @@ const (
 	exitFail  = 1
 	exitUsage = 2
 	exitBusy  = 3
+	// exitConfig is the daemon's exit for a config it cannot use (sysexits
+	// EX_CONFIG). pbp.service does not restart on it: restarting cannot fix
+	// a config, and pbp setup is what finishes one.
+	exitConfig = 78
 )
 
 const msgBusy = "a run is already in progress"
@@ -117,6 +122,12 @@ type app struct {
 	// isTerminal) and the default time zone offered.
 	echoOff   func() (restore func(), err error)
 	defaultTZ func() string
+	// probeHostKey reads the SSH host key at the configured node address,
+	// to catch an address that reaches another machine; nil skips it.
+	probeHostKey hostsetup.HostKeyProbe
+	// onPVENode reports whether this host is a Proxmox VE node, where pbp
+	// setup --deb can set the node up in the same run.
+	onPVENode func() bool
 }
 
 func newApp(stdout, stderr io.Writer) *app {
@@ -126,7 +137,9 @@ func newApp(stdout, stderr io.Writer) *app {
 		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
-		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") }}
+		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") },
+		probeHostKey: hostsetup.ProbeHostKey,
+		onPVENode:    func() bool { return exists("/etc/pve/local") }}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;
@@ -248,6 +261,9 @@ func (a *app) main(ctx context.Context, args []string) int {
 			fprintln(a.stdout, err)
 		} else {
 			fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
+		}
+		if cmd == "daemon" {
+			return exitConfig
 		}
 		return exitFail
 	}
@@ -409,7 +425,15 @@ const (
 func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.Store, c *checkOut) int {
 	w := a.connect(cfg)
 	defer w.close()
-	c.line("pve api "+cfg.Target.API.URL, w.apiErr)
+	// A real request: building the client alone proves nothing about the
+	// address, the TLS pin or the token.
+	apiErr := w.apiErr
+	if apiErr == nil {
+		if _, err := w.api.Version(ctx); err != nil {
+			apiErr = err
+		}
+	}
+	c.line("pve api "+cfg.Target.API.URL, apiErr)
 	c.line("ssh "+cfg.Target.SSH.Host, w.sshErr)
 	if !c.ok {
 		return exitFail

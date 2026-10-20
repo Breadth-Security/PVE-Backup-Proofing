@@ -16,6 +16,7 @@ docker compose logs -f pbp                        # logs; per-run files are in .
 | 1 | Failure: bad config, `check` found a problem, the run ended in `ERROR`, or `run --guest` found no backup |
 | 2 | Usage error (unknown subcommand or flag, or `--guest` that is not a positive integer) |
 | 3 | Busy: another run or check holds the run lock. `run` and `check` both exit 3 and print "a run is already in progress" |
+| 78 | `daemon` only: the config is missing or unusable (for example a `config.yaml` that `pbp setup` has not finished). `pbp.service` does not restart on it; fix the config (run `pbp setup` again) and start the service |
 
 Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp/state`, overridable with `PBP_STATE_DIR`. With no config mounted, the container exits non-zero and names `/etc/pbp/config.yaml`.
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,9 @@ type Env struct {
 	// error wrapping ErrNoSuchUser; any other error means the lookup failed.
 	Lookup func(user string) (uid, gid int, home, shell string, err error)
 	Now    func() time.Time
+	// Addrs lists the node's global IP addresses for the reply; nil means
+	// none are reported.
+	Addrs func() ([]string, error)
 }
 
 // ErrNoSuchUser is wrapped by Env.Lookup when the user does not exist.
@@ -52,7 +56,24 @@ func NewEnv() Env {
 		Fchown: unix.Fchown,
 		Lookup: passwdLookup("/etc/passwd"),
 		Now:    time.Now,
+		Addrs:  globalAddrs,
 	}
+}
+
+// globalAddrs lists this host's global unicast addresses (no loopback, no
+// link-local).
+func globalAddrs() ([]string, error) {
+	as, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, a := range as {
+		if n, ok := a.(*net.IPNet); ok && n.IP.IsGlobalUnicast() {
+			out = append(out, n.IP.String())
+		}
+	}
+	return out, nil
 }
 
 // passwdLookup reads user entries from a passwd(5) file. os/user has no

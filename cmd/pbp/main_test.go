@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -930,5 +931,43 @@ func TestNodeUsageAndExtraArgs(t *testing.T) {
 	}
 	if code := e.a.main(context.Background(), []string{"node", "bogus"}); code != exitUsage {
 		t.Errorf("exit %d", code)
+	}
+}
+
+// The check's "pve api" line makes a real request: a client that builds but
+// cannot reach the API (wrong address, TLS pin, token) is a failure, and
+// nothing after it runs.
+func TestCheckAPIIsARealRequest(t *testing.T) {
+	e := newEnv(t)
+	e.api.Fail = map[string]error{"Version": errors.New("dial tcp 10.10.0.1:8006: connection refused")}
+	code := e.run("check")
+	if code != exitFail || !strings.Contains(e.out.String(), "pve api : FAIL: dial tcp 10.10.0.1:8006: connection refused") {
+		t.Errorf("exit %d out %q", code, e.out)
+	}
+	if strings.Contains(e.out.String(), "preflight") {
+		t.Errorf("checks ran past a failing API: %q", e.out)
+	}
+}
+
+// The daemon exits 78 on a config it cannot use, which pbp.service does not
+// restart on; other commands keep exit 1.
+func TestDaemonConfigErrorExit(t *testing.T) {
+	e := newEnv(t)
+	bad := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(bad, []byte("target:\n  node: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.a.main(context.Background(), []string{"daemon", "--config", bad}); code != exitConfig {
+		t.Errorf("daemon exit %d, want %d", code, exitConfig)
+	}
+	if code := e.a.main(context.Background(), []string{"check", "--config", bad}); code != exitFail {
+		t.Errorf("check exit %d, want %d", code, exitFail)
+	}
+	unit, err := os.ReadFile("../../packaging/pbp.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), "RestartPreventExitStatus="+strconv.Itoa(exitConfig)) {
+		t.Errorf("pbp.service does not prevent restarts on exit %d", exitConfig)
 	}
 }

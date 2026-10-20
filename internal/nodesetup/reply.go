@@ -42,7 +42,14 @@ func BuildReply(env Env, a nodeproto.SetupArgs, nodeName, helperVersion, tokenSe
 	if err != nil {
 		return nodeproto.SetupReply{}, err
 	}
+	// Addresses only help the host explain a wrong address; a failure to
+	// list them is not a reason to stop.
+	var addrs []string
+	if env.Addrs != nil {
+		addrs, _ = env.Addrs()
+	}
 	return nodeproto.SetupReply{
+		Addresses:      strings.Join(addrs, " "),
 		Format:         ReplyFormat,
 		Node:           nodeName,
 		HelperVersion:  helperVersion,

@@ -76,6 +76,10 @@ type SetupReply struct {
 	APIFingerprint string `json:"api_fingerprint"`
 	TokenID        string `json:"token_id"`
 	TokenSecret    string `json:"token_secret,omitempty"`
+	// Addresses are the node's global IP addresses, space separated. They
+	// only make the host's message useful when its address for the node
+	// reaches another machine.
+	Addresses string `json:"addresses,omitempty"`
 }
 
 // Reply block markers.

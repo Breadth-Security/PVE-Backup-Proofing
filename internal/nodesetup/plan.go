@@ -657,7 +657,8 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 		// Rotation removes the token and adds it again with --privsep 1,
 		// which also fixes a privsep 0 token.
 		if tok.Status != Create && a.RotateToken {
-			tok.Status, tok.Diff = Create, "rotate: the existing "+TokenID+" is removed and created again with a new secret"
+			tok.Status, tok.Diff = Create, "rotate: the existing "+TokenID+" is removed and created again with a new secret;\n"+
+				"PVE drops a removed token's ACLs, so the new token gets only the paths below (storages: --storages)"
 		}
 		if token || tok.Status == Create {
 			items = append(items, tok)
