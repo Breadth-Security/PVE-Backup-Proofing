@@ -45,7 +45,7 @@ For each run, PBP:
   - a restore storage with room for your largest guest, for VM disks and container volumes;
   - an isolated bridge for the proof guests, which you create once ([Setup step 2](docs/setup.md#2-create-the-isolated-bridge));
   - a free range of VMIDs, which you only choose ([Setup step 1](docs/setup.md#1-choose-a-vmid-range));
-  - `sudo` (Proxmox VE does not install it: `apt install sudo`);
+  - `sudo` (Proxmox VE does not include it; the `pbp` package installs it as a recommended package, or run `apt install sudo` if apt is set not to install recommends);
   - a root shell, once, to run `pbp node setup`.
 - **A host for PBP** that reaches the node's API (port 8006) and SSH (port 22): any host with Docker and Compose, or a Debian-based host for the `.deb` package (amd64 or arm64). That can be the Proxmox node itself, though a separate host is preferred.
 

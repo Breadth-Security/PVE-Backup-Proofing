@@ -71,7 +71,7 @@ Done once, as root on the PVE node. Step 1 is the install line `pbp setup` print
 
    `restrict` turns off port, agent and X11 forwarding, the pty and `~/.ssh/rc`, and whatever a later OpenSSH adds to that list. The directory and the file belong to root, so the `pbp` user cannot rewrite its own forced command; sshd accepts a key file owned by root. Keep nothing else in `.ssh`, and make sure sshd reads no other key source for `pbp`: `sshd -T -C user=pbp,host=localhost,addr=127.0.0.1 | grep -i authorizedkeys` lists them, and Debian's default also reads `.ssh/authorized_keys2`, which must not exist. `TrustedUserCAKeys` and `AuthorizedPrincipalsCommand` must be `none` for `pbp` (a `Match User pbp` block can set that): a certificate from a user CA logs in without the forced command.
 
-5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp` (Proxmox VE does not install `sudo`: `apt install sudo` first). Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
+5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp`. Proxmox VE does not include `sudo`; the `pbp` package brings it along as a recommended package, but if you copied the binary instead, or apt is set not to install recommends, run `apt install sudo` first. Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
 
    ```
    f=$(mktemp)
