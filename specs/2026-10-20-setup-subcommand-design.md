@@ -156,7 +156,15 @@ questions, re-prints the node lines and waits again.
 From the reply it writes `known_hosts`, sets `target.node` and
 `target.api.tls_fingerprint` in `config.yaml` (an in-place edit of those two
 values only), writes the token secret file if the reply carries one, and runs
-the equivalent of `pbp check`, printing its result. A reply whose range,
+the equivalent of `pbp check`, printing its result.
+
+*Amended during the build:* setup's final check is `pbp check` without the
+janitor. The janitor needs the daemon's state store, which setup must not
+open, and with an empty store and no run lock it would destroy every
+PBP-owned guest in the range, including one a running daemon is proving
+during a re-pair. Setup runs the read-only preflight (node helper, node
+version, isolated bridge, restore storage, notification templates, VMID
+range); `pbp check` is unchanged. A reply whose range,
 bridge or public key do not match this host's config is refused.
 
 ## 5. Node side: `pbp node setup`
@@ -169,10 +177,17 @@ pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey 'ssh-ed25519 
                [--dry-run] [--yes] [--replace] [--rotate-token]
 ```
 
-Runs only as root, interactively: refused when `SSH_ORIGINAL_COMMAND` or
-`SUDO_USER` is set or stdin is not a terminal (the same gate as
-`install-templates`). `--yes` skips the confirmation prompt but not the
-terminal gate. *(My call.)*
+Runs only as root, interactively: refused when `SSH_ORIGINAL_COMMAND` is set
+(even empty), when `SUDO_USER` is `pbp` (started through the `pbp` account's
+sudo rule), when not root, or when stdin is not a terminal. `--yes` skips the
+confirmation prompt but not the terminal gate. *(My call.)*
+
+*Amended during the build (ruling R3):* the gate refuses only
+`SUDO_USER=pbp`, not any `SUDO_USER`. An admin who becomes root with
+`sudo -i` or `sudo pbp node setup` carries their own `SUDO_USER`, and refusing
+that would only push them to `su`; the attack the gate exists for is the
+`pbp` account reaching setup through its own sudo rule, which that rule does
+not allow anyway (it permits only `/usr/bin/pbp node` with no arguments).
 
 ### 5.2 Phase 1 — checks (read-only)
 
@@ -211,13 +226,19 @@ Compare the desired state with what is on disk and list every action:
 | notification templates | as `install-templates` writes them |
 | token (with `--create-token`) | role `PBPProofer` with exactly README's privilege list; user `pbp@pve`; token `pbp@pve!proof` with `--privsep 1`; ACLs on `/vms`, `/storage/<each>`, `/nodes/<this node>`, `/sdn/zones/localnetwork` |
 
+*Amended during the build:* an existing token counts as already correct only
+if it is privilege-separated (`privsep 1`). A token without privilege
+separation carries all of the user's permissions and is reported as differing.
+
 What "already correct" means, per item *(my call)*:
 - `node.yaml`: parsed and compared by value (`vmid_range`, `bridge`;
   `request_timeout` see below). Formatting and comments are ignored.
 - `authorized_keys`: exactly one non-empty, non-comment line, equal to the
   desired line after trimming surrounding whitespace.
 - sudoers: the same three directives, compared line by line after trimming
-  whitespace and dropping blank and `#` comment lines.
+  whitespace and dropping blank lines and comment lines as sudo parses them
+  (`#<digits>` user-ID rules and `#include`/`#includedir` are directives, not
+  comments).
 - templates: by content hash, as `CheckTemplates` does. They live on
   `/etc/pve` (pmxcfs), which fixes mode and owner, so they are excluded from
   every mode/owner check and written the way `install-templates` writes them,
@@ -278,6 +299,15 @@ the public key it authorized, the node's ed25519 SSH host key (from
 fingerprint (from `/etc/pve/local/pveproxy-ssl.pem` if present, else
 `pve-ssl.pem`), the token id, and the token secret when one was created.
 Above it: "Copy this block now; the token secret is not shown again."
+
+*Amended during the build:* the reply is built once as a preflight (with no
+secret) right after the plan, before anything is printed, prompted or
+applied, so a node whose host key or API certificate cannot be read fails
+with "nothing changed". A partial reply block is never printed. If the reply
+cannot be built after Apply while a new secret is in hand (a race), the
+secret is printed once, outside any reply markers, with the token id and the
+instruction to put it in the host's token file by hand, and the command exits
+non-zero.
 
 The host key and fingerprint arrive over the root shell the admin already
 trusts, which replaces `ssh-keyscan`'s trust-on-first-use.

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0
+
+**Guided setup.** Two commands now do what README "Setup" used to describe step by step. See README "Setup".
+
+- `pbp setup` on the PBP host (Docker: a one-shot `docker run`, see the README for the exact command; `.deb` hosts: `sudo pbp setup --deb`) asks a few questions, writes `config.yaml` from `config.example.yaml` with its comments, creates the SSH key, and prints two lines to run on the node: the checksum-verified install of the matching `.deb`, and `pbp node setup`. It then reads the node's reply (without echoing it) and writes `known_hosts`, the token secret, `target.node` and `target.api.tls_fingerprint`, and runs the check. Files get the owners and modes the README already required.
+- `pbp node setup`, as root in an interactive terminal on the node, checks the node, shows a plan, asks, and then sets up the helper exactly as the manual steps do (`node.yaml`, the `pbp` shell, the forced-command key, the sudo rule, the notification templates), plus the API role, user, privilege-separated token and ACLs (`--create-token`). It proves the result through the real sudo path and prints a reply block with the node's host key, the API certificate fingerprint and, once, the token secret. Options: `--dry-run`, `--yes`, `--replace` (a differing file is copied to `<file>.pbp-backup-<YYYYMMDDTHHMMSS>` first; without it setup stops), `--rotate-token`. It refuses to run over SSH, through the `pbp` sudo rule, or without a terminal, and never creates the bridge, reloads networking, or touches root's `authorized_keys`, `sshd_config` or any guest.
+- Both print `setup has already been completed` when there is nothing to do.
+- `pbp node uninstall` removes the sudo rule and the key first, then `node.yaml`, and sets the `pbp` shell back to `nologin`. `--remove-token` also removes the token, ACLs, user and role. `--dry-run` and `--yes` as for setup.
+- `docker-compose.yml` reads the time zone from `.env` (`TZ: ${TZ:-Europe/London}`), which `pbp setup` writes; `.env` is git-ignored.
+- The manual steps remain in README "Manual setup (what `pbp setup` does)", unchanged in substance.
+
+### Upgrading from 0.2
+
+The daemon and the node helper must share major.minor: **upgrade both to 0.3.x together**. Upgrade the daemon, run `pbp setup` in the checkout (or `sudo pbp setup --deb`), and run the two lines it prints on the node. A node set up by hand per the 0.2 README reports `setup has already been completed`; paste the reply back. See README "Upgrading from 0.2 to 0.3".
+
 ## v0.2.0
 
 **Breaking change: PBP no longer uses root SSH.** The daemon talks to a restricted `pbp node` helper on the PVE node, through an SSH forced command for the unprivileged `pbp` user and one sudo rule. The helper can run `pct exec` only in tagged containers inside the configured VMID range, report the isolated bridge's state, send `pbp` notifications and print its config. See README "Node setup".
