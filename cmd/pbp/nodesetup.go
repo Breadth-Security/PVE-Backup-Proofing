@@ -152,6 +152,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.stepFailed(sub, "check", err)
 	}
+	if w := nodesetup.DaemonWarning(ctx, env); w != "" {
+		fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+	}
 	plan, err := nodesetup.BuildPlan(ctx, env, sa, nodeName)
 	if err != nil {
 		return a.stepFailed(sub, "plan", err)

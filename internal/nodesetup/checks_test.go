@@ -273,3 +273,33 @@ func TestCheckSshdArgs(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestDaemonWarning(t *testing.T) {
+	root := t.TempDir()
+	var exit int
+	var runErr error
+	env := Env{Root: root, Run: func(_ context.Context, name string, args []string, _ []byte) (string, string, int, error) {
+		if name != "/usr/bin/systemctl" || strings.Join(args, " ") != "is-active --quiet pbp.service" {
+			t.Errorf("ran %s %q", name, args)
+		}
+		return "", "", exit, runErr
+	}}
+	exit = 3
+	if w := DaemonWarning(context.Background(), env); w != "" {
+		t.Errorf("inactive, no config: %q", w)
+	}
+	runErr = errors.New("no systemctl")
+	exit = 0
+	if w := DaemonWarning(context.Background(), env); w != "" {
+		t.Errorf("systemctl missing: %q", w)
+	}
+	runErr = nil
+	if w := DaemonWarning(context.Background(), env); !strings.Contains(w, "pbp.service is active") || !strings.Contains(w, "separate PBP host") {
+		t.Errorf("active: %q", w)
+	}
+	exit = 3
+	mustWrite(t, filepath.Join(root, "etc/pbp/config.yaml"), "x\n", 0o640)
+	if w := DaemonWarning(context.Background(), env); !strings.Contains(w, "/etc/pbp/config.yaml exists") || strings.Contains(w, "active") {
+		t.Errorf("config: %q", w)
+	}
+}

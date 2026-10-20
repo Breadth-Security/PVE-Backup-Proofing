@@ -45,6 +45,7 @@ type fakeNode struct {
 	events  []string // every non-query command, in order
 	failACL string   // `acl modify` on this path fails
 	onProbe func()   // runs on each self-test probe (after Apply)
+	active  bool     // pbp.service is active
 }
 
 type fakeBridgeSys struct{ node.System }
@@ -149,6 +150,14 @@ func (f *fakeNode) run(_ context.Context, name string, args []string, _ []byte) 
 		f.events = append(f.events, "usermod "+line)
 		f.shell = args[1]
 		return "", "", 0, nil
+	case "/usr/bin/systemctl":
+		if line != "is-active --quiet pbp.service" {
+			return "", "unexpected systemctl " + line, 2, nil
+		}
+		if f.active {
+			return "", "", 0, nil
+		}
+		return "", "", 3, nil
 	case "/usr/bin/sudo":
 		return f.probe(args)
 	case "/usr/sbin/pveum":
@@ -681,5 +690,39 @@ func TestNodeSetupReplyRacePrintsSecretOutsideBlock(t *testing.T) {
 	}
 	if !strings.Contains(r.errOut.String(), "FAILED at reply") {
 		t.Errorf("stderr %q", r.errOut)
+	}
+}
+
+// A PBP daemon on the node (config.yaml or an active pbp.service) gets a
+// warning, not a refusal: PBP may run on the PVE host itself.
+func TestNodeSetupWarnsAboutLocalDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mod    func(*fakeNode)
+		reason string
+	}{
+		{"none", func(*fakeNode) {}, ""},
+		{"config", func(f *fakeNode) {
+			if err := os.MkdirAll(filepath.Join(f.root, "etc/pbp"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			f.write("/etc/pbp/config.yaml", "target: {}\n", 0o640)
+		}, "/etc/pbp/config.yaml exists"},
+		{"active", func(f *fakeNode) { f.active = true }, "pbp.service is active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newSetupRig(t)
+			tc.mod(r.f)
+			if code := r.main("y\n", r.setupArgs()...); code != exitOK {
+				t.Fatalf("exit %d; stderr %q", code, r.errOut)
+			}
+			warned := strings.Contains(r.errOut.String(), "warning: this node also runs a PBP daemon as user pbp")
+			if warned != (tc.reason != "") || !strings.Contains(r.errOut.String(), tc.reason) {
+				t.Errorf("stderr %q, want warning %v (%s)", r.errOut, tc.reason != "", tc.reason)
+			}
+			if warned && !strings.Contains(r.errOut.String(), "owns /var/lib/pbp") {
+				t.Errorf("warning does not say why: %q", r.errOut)
+			}
+		})
 	}
 }

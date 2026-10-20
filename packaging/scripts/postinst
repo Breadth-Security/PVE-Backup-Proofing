@@ -24,15 +24,12 @@ if [ "$1" = "configure" ]; then
             systemctl enable pbp.service || true
             rm -f /var/lib/pbp/.disabled-by-remove
         fi
-        # Never start without a config; the unit's ConditionPathExists would
-        # skip it anyway, but stay explicit.
-        if [ -f /etc/pbp/config.yaml ]; then
-            if [ -n "$2" ]; then
-                systemctl try-restart pbp.service || true
-            fi
-            if systemctl is-enabled --quiet pbp.service && ! systemctl is-active --quiet pbp.service; then
-                systemctl start pbp.service || true
-            fi
+        # Never start the service here. On a PVE node the package is only the
+        # helper, and a stray /etc/pbp/config.yaml must not start a daemon as
+        # pbp there. A daemon host starts it once (README: systemctl start
+        # pbp); an upgrade restarts it only if it is running now.
+        if [ -n "$2" ]; then
+            systemctl try-restart pbp.service || true
         fi
     fi
 fi

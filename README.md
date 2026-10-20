@@ -353,7 +353,7 @@ ssh-keyscan -t ed25519 pve1.example.lan > known_hosts
 
 Done once, as root on the PVE node. Step 1 is the install line `pbp setup` prints; steps 2 to 6 are what `pbp node setup` does. The daemon never does it, because the node is where the restriction lives. Replace `<PBP public key>` with the content of `secrets/pve_ssh_key.pub` (one line: `ssh-ed25519 AAAA... pbp`).
 
-1. **Install the helper.** The helper is `pbp node`, the same binary as the daemon. Install the `.deb` (the `pbp` service stays inactive without `/etc/pbp/config.yaml`; see "Install from the .deb" for downloading it), or copy `/usr/bin/pbp` and create the `pbp` user yourself:
+1. **Install the helper.** The helper is `pbp node`, the same binary as the daemon. Install the `.deb` (the package never starts the `pbp` service; see "Install from the .deb" for downloading it), or copy `/usr/bin/pbp` and create the `pbp` user yourself:
 
    ```
    apt install ./pbp_<version>_<arch>.deb
@@ -458,7 +458,7 @@ Then start PBP and check it as in [Setup step 6](#6-start).
 
 ## Install from the .deb
 
-As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same `.deb` is also the node helper: `pbp setup` prints the line that installs it on the PVE node, where the `pbp` service stays inactive without a config.
+As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs. The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same `.deb` is also the node helper: `pbp setup` prints the line that installs it on the PVE node, where the package never starts the `pbp` service.
 
 1. Download the `.deb` and `SHA256SUMS` from the release and verify:
 
@@ -496,13 +496,13 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
    sudo systemctl start pbp
    ```
 
-   `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished. The unit is enabled on install but only starts once `/etc/pbp/config.yaml` exists.
+   `pbp check` takes the run lock, so it exits 3 ("a run is already in progress") while the daemon is mid-run; try again when the run has finished. The package enables the unit on install but never starts it: you start it, once, with `systemctl start pbp` (it does nothing without `/etc/pbp/config.yaml`). After that it starts at boot.
 
 Logs: `journalctl -u pbp -f`, and the per-run files in `/var/log/pbp` (read them as root or `pbp`). State is in `/var/lib/pbp`.
 
 Releases tagged `v1.2.0` produce version `1.2.0`; a pre-release tag such as `v1.2.0-rc1` produces `1.2.0~rc1`, which sorts before `1.2.0`. File names carry that Debian version (`pbp_1.2.0~rc1_amd64.deb`).
 
-**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched and the running service is restarted. **On a PVE node** the same package is the helper (see [Node setup](#node-setup)). Its postinst creates the `pbp` user with the `nologin` shell and never touches sshd, sudo or `authorized_keys`; the node-only steps (`usermod -s /bin/sh pbp`, the forced-command key, the sudoers rule, `node.yaml`) are done by `pbp node setup` or by hand, never by the package, so daemon-only hosts never get a login shell. Installing a newer `.deb` on the node upgrades the helper and keeps that setup, but the daemon and the helper must share major.minor, so upgrade both.
+**Upgrade** by installing a newer `.deb` with `apt install ./pbp_<new>.deb`; the config and state are untouched, and the service is restarted if it is running (a stopped one stays stopped). **On a PVE node** the same package is the helper (see [Node setup](#node-setup)). Its postinst creates the `pbp` user with the `nologin` shell and never touches sshd, sudo or `authorized_keys`; the node-only steps (`usermod -s /bin/sh pbp`, the forced-command key, the sudoers rule, `node.yaml`) are done by `pbp node setup` or by hand, never by the package, so daemon-only hosts never get a login shell. Installing a newer `.deb` on the node upgrades the helper and keeps that setup, but the daemon and the helper must share major.minor, so upgrade both. `pbp node setup` warns when the node also runs a PBP daemon (`/etc/pbp/config.yaml` exists or `pbp.service` is active): the daemon runs as `pbp`, which owns `/var/lib/pbp`.
 
 **Remove** (`apt remove pbp`) stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp` and `/var/log/pbp` and the `pbp` user. **Purge** (`apt purge pbp`) deletes all three directories and the user. On a node that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs.
 

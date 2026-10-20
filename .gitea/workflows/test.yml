@@ -50,6 +50,7 @@ jobs:
         run: |
           packaging/versionfile_test.sh
           packaging/debversion_test.sh
+          packaging/postinst_test.sh
       - name: go vet
         run: |
           go vet ./...

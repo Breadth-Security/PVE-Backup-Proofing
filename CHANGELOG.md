@@ -9,6 +9,7 @@
 - Both print `setup has already been completed` when there is nothing to do.
 - `pbp node uninstall` removes the sudo rule and the key first, then `node.yaml`, and sets the `pbp` shell back to `nologin`. `--remove-token` also removes the token, ACLs, user and role. `--dry-run` and `--yes` as for setup.
 - `docker-compose.yml` reads the time zone from `.env` (`TZ: ${TZ:-Europe/London}`), which `pbp setup` writes; `.env` is git-ignored.
+- The `.deb` no longer starts `pbp.service` from its postinst: an install only enables it (start it once with `systemctl start pbp`), and an upgrade restarts it only if it is running. Before, an upgrade started an enabled, stopped service whenever `/etc/pbp/config.yaml` existed, which on a node could start a daemon from a stray config. `pbp node setup` warns when the node also runs a PBP daemon.
 - The manual steps remain in README "Manual setup (what `pbp setup` does)", unchanged in substance.
 
 ### Upgrading from 0.2

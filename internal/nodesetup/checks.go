@@ -253,3 +253,28 @@ func expandKeysFile(f string, uid int) (string, bool) {
 	}
 	return filepath.Clean(p), true
 }
+
+const systemctl = "/usr/bin/systemctl"
+
+// DaemonConfigPath is the PBP daemon's config on a .deb host.
+const DaemonConfigPath = "/etc/pbp/config.yaml"
+
+// DaemonWarning returns a warning when this node also runs (or is set up to
+// run) a PBP daemon: /etc/pbp/config.yaml exists or pbp.service is active.
+// The daemon runs as pbp, which owns /var/lib/pbp, the home that holds the
+// forced-command key's directory. PBP may run on the PVE host itself, so
+// this is only a warning; "" means none applies.
+func DaemonWarning(ctx context.Context, env Env) string {
+	var why []string
+	if _, err := os.Lstat(env.path(DaemonConfigPath)); err == nil {
+		why = append(why, DaemonConfigPath+" exists")
+	}
+	if _, _, exit, err := env.Run(ctx, systemctl, []string{"is-active", "--quiet", "pbp.service"}, nil); err == nil && exit == 0 {
+		why = append(why, "pbp.service is active")
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	return "this node also runs a PBP daemon as user pbp (" + strings.Join(why, ", ") + "), and pbp owns " + PbpHome +
+		", the home of the account the PBP host logs in as; prefer running the daemon on a separate PBP host"
+}
