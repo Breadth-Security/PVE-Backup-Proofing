@@ -197,7 +197,7 @@ What setup writes, and who owns it:
 In a root shell on the node (the console, or SSH as root), run the two lines `pbp setup` printed: first the install line, then the `pbp node setup` line. `pbp node setup`:
 
 1. **Checks**, changing nothing: PVE 9 or later; the daemon's version is compatible with this helper; the key is `ssh-ed25519`; the bridge exists and is isolated (by the same rule as preflight, so it can be rerun on a node in use); the VMID range holds no guest PBP does not own; sshd has `UsePAM yes`; and each named storage exists. A failure stops it with a sentence saying what to do. A missing bridge is reported with the stanza from step 2: setup never creates a bridge or reloads networking.
-2. **Shows a plan.** Every item from [Node setup](#node-setup) steps 1 to 6 (the helper config, the `pbp` shell, the sudo rule, the notification templates, the forced-command key) and the API token (role, user, token and ACLs), each marked `already correct`, `create` or `differs`, with the difference shown.
+2. **Shows a plan.** Every item from [Node setup](#node-setup) steps 2 to 6 (the helper config, the `pbp` shell, the sudo rule, the notification templates, the forced-command key) and the API token (role, user, token and ACLs), each marked `already correct`, `create` or `differs`, with the difference shown.
 3. **Asks** `Apply these changes? [y/N]`. Anything but `y` or `yes` changes nothing.
 4. **Applies** the plan, writing each file to a temporary file and renaming it into place. The sudo rule is checked with `visudo` first. The key goes in last, so an interrupted run never leaves a working key without its restriction.
 5. **Proves it**, the way the daemon will use it: as `pbp`, through the sudo rule, the helper must answer a version request and refuse a command for a VMID just above the range. It also re-reads every file.
@@ -351,7 +351,7 @@ ssh-keyscan -t ed25519 pve1.example.lan > known_hosts
 
 ### Node setup
 
-Done once, as root on the PVE node: steps 1 to 6 are what `pbp node setup` does. The daemon never does it, because the node is where the restriction lives. Replace `<PBP public key>` with the content of `secrets/pve_ssh_key.pub` (one line: `ssh-ed25519 AAAA... pbp`).
+Done once, as root on the PVE node. Step 1 is the install line `pbp setup` prints; steps 2 to 6 are what `pbp node setup` does. The daemon never does it, because the node is where the restriction lives. Replace `<PBP public key>` with the content of `secrets/pve_ssh_key.pub` (one line: `ssh-ed25519 AAAA... pbp`).
 
 1. **Install the helper.** The helper is `pbp node`, the same binary as the daemon. Install the `.deb` (the `pbp` service stays inactive without `/etc/pbp/config.yaml`; see "Install from the .deb" for downloading it), or copy `/usr/bin/pbp` and create the `pbp` user yourself:
 
