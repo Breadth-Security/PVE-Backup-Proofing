@@ -1285,12 +1285,15 @@ func TestUninstallRemovesAccess(t *testing.T) {
 	}
 	c, err := sshx.Dial(config.SSH{Host: "127.0.0.1", Port: env.port, User: "pbp",
 		KeyFile: env.keyFile, KnownHostsFile: env.knownHost})
-	if err == nil {
+	// Dial authenticates at once, so after uninstall it must fail there:
+	// the key itself is refused, not merely the request.
+	switch {
+	case err == nil:
 		v, verr := sshx.Helper{R: c}.Version(ctxT(t, 30*time.Second))
 		_ = c.Close()
-		if verr == nil {
-			t.Errorf("version request after uninstall answered %q", v)
-		}
+		t.Errorf("PBP's key still logs in after uninstall (version request: %q, %v)", v, verr)
+	case !strings.Contains(err.Error(), "unable to authenticate"):
+		t.Errorf("dial after uninstall: %v; want the key refused (unable to authenticate)", err)
 	}
 	if out, err := dockerOutEnv([]string{"SSH_ORIGINAL_COMMAND=version"}, "pbp", "sudo", "-n", "/usr/bin/pbp", "node"); err == nil {
 		t.Errorf("the pbp sudo rule still works after uninstall: %q", out)

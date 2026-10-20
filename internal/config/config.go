@@ -196,7 +196,7 @@ func (c Config) validate() error {
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported; run pbp setup to finish)")
 	}
 	if t.SSH.User == "root" {
-		bad("target.ssh.user", `root is no longer supported; set up the pbp node helper (see docs/setup.md)`)
+		bad("target.ssh.user", `root is not allowed: PBP connects as the restricted pbp user (see docs/setup.md)`)
 	}
 	if t.SSH.KnownHostsFile == "" {
 		bad("target.ssh.known_hosts_file", "required")

@@ -154,7 +154,7 @@ func TestValidateErrors(t *testing.T) {
 func TestRootSSHUserIsRejected(t *testing.T) {
 	for _, user := range []string{"root", `"root"`} {
 		_, err := loadStr(t, strings.Replace(minimal, "ssh: {known_hosts_file: /kh}", "ssh: {user: "+user+", known_hosts_file: /kh}", 1))
-		want := `target.ssh.user: root is no longer supported; set up the pbp node helper (see docs/setup.md)`
+		want := `target.ssh.user: root is not allowed: PBP connects as the restricted pbp user (see docs/setup.md)`
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("user %s: err = %v, want it to contain %q", user, err, want)
 		}

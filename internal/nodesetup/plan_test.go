@@ -561,6 +561,11 @@ func TestPlanKeySources(t *testing.T) {
 		{"unknown token", "authorizedkeysfile .ssh/authorized_keys /etc/ssh/%C\n", nil, "cannot tell which file"},
 		{"key file not read", "authorizedkeysfile none\n", nil, "does not read /var/lib/pbp/.ssh/authorized_keys"},
 		{"keys command", "authorizedkeysfile .ssh/authorized_keys\nauthorizedkeyscommand /usr/bin/fetch-keys %u\n", nil, "AuthorizedKeysCommand /usr/bin/fetch-keys %u applies"},
+		// pve1's real output, with the certificate settings sshd prints.
+		{"no user CA", "trustedusercakeys none\nauthorizedprincipalsfile none\nauthorizedprincipalscommand none\nauthorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n", nil, ""},
+		{"user CA", "trustedusercakeys /etc/ssh/user_ca.pub\nauthorizedkeysfile .ssh/authorized_keys\n", nil, "TrustedUserCAKeys /etc/ssh/user_ca.pub applies to pbp"},
+		{"user CA with a principals file", "trustedusercakeys /etc/ssh/user_ca.pub\nauthorizedprincipalsfile /etc/ssh/principals/%u\nauthorizedkeysfile .ssh/authorized_keys\n", nil, "TrustedUserCAKeys"},
+		{"principals command", "authorizedprincipalscommand /usr/bin/principals %u\nauthorizedkeysfile .ssh/authorized_keys\n", nil, "AuthorizedPrincipalsCommand /usr/bin/principals %u applies"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

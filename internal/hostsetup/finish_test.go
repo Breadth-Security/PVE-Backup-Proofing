@@ -1,7 +1,10 @@
 package hostsetup
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -275,12 +278,24 @@ func TestFinishRefusesMismatch(t *testing.T) {
 	}
 	sp, _ := ssh.NewPublicKey(otherPub.Public())
 	other := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sp)))
+	// A real, parseable host key of another type, so the type check (not
+	// the parser) is what refuses it.
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ssh.NewPublicKey(&ec.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecdsaHostKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(ecKey)))
 	cases := map[string]func(*nodeproto.SetupReply){
 		"range":            func(r *nodeproto.SetupReply) { r.VMIDRange = [2]int{990000, 990049} },
 		"bridge":           func(r *nodeproto.SetupReply) { r.Bridge = "vmbr99" },
 		"pubkey":           func(r *nodeproto.SetupReply) { r.PubKey = other + " pbp" },
 		"empty host key":   func(r *nodeproto.SetupReply) { r.HostKey = "" },
-		"rsa host key":     func(r *nodeproto.SetupReply) { r.HostKey = "ssh-rsa AAAAB3NzaC1yc2E=" },
+		"garbled host key": func(r *nodeproto.SetupReply) { r.HostKey = "ssh-rsa AAAAB3NzaC1yc2E=" },
+		"ecdsa host key":   func(r *nodeproto.SetupReply) { r.HostKey = ecdsaHostKey },
 		"bad fingerprint":  func(r *nodeproto.SetupReply) { r.APIFingerprint = strings.ToLower(fp) },
 		"short fp":         func(r *nodeproto.SetupReply) { r.APIFingerprint = "AB:CD" },
 		"token id":         func(r *nodeproto.SetupReply) { r.TokenID = "root@pam!x" },
@@ -295,6 +310,9 @@ func TestFinishRefusesMismatch(t *testing.T) {
 		need, err := Finish(l, cfg, r)
 		if err == nil || need {
 			t.Errorf("%s: need=%v err=%v, want refusal", name, need, err)
+		}
+		if name == "ecdsa host key" && (err == nil || !strings.Contains(err.Error(), "want ssh-ed25519")) {
+			t.Errorf("%s: err %v, want the type check's refusal", name, err)
 		}
 		if err != nil && strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("%s: error leaks the secret: %v", name, err)

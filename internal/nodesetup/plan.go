@@ -447,6 +447,15 @@ func planKeySources(ctx context.Context, env Env, ids ids) Item {
 	if c := cfg["authorizedkeyscommand"]; c != "" && c != "none" {
 		bad = append(bad, "AuthorizedKeysCommand "+c+" applies to pbp: sshd would accept keys it prints; set it to none for pbp in /etc/ssh/sshd_config")
 	}
+	// A user CA bypasses authorized_keys altogether: a certificate from it
+	// naming the principal pbp (or one the principals file or command
+	// allows) logs in without the forced command, with pbp's /bin/sh.
+	if c := cfg["trustedusercakeys"]; c != "" && c != "none" {
+		bad = append(bad, "TrustedUserCAKeys "+c+" applies to pbp: a certificate from that CA logs in as pbp without the forced command; add \"Match User pbp\" with \"TrustedUserCAKeys none\" to /etc/ssh/sshd_config")
+	}
+	if c := cfg["authorizedprincipalscommand"]; c != "" && c != "none" {
+		bad = append(bad, "AuthorizedPrincipalsCommand "+c+" applies to pbp: set it to none for pbp in /etc/ssh/sshd_config")
+	}
 	if len(bad) > 0 {
 		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
 	}
