@@ -45,7 +45,7 @@ func exitedNormally(t *testing.T, err error) int {
 	}
 	if ee != nil {
 		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			t.Fatalf("pbp node was killed by %v; it must ignore it and finish", ws.Signal())
+			t.Fatalf("pbp node was killed by %v; it must survive it and finish", ws.Signal())
 		}
 		return ee.ExitCode()
 	}
@@ -80,14 +80,15 @@ func TestNodeSurvivesClosedOutput(t *testing.T) {
 	exitedNormally(t, cmd.Wait())
 }
 
-// sigIgnored reports whether pid's ignored-signal mask contains sig.
-func sigIgnored(pid int, sig syscall.Signal) (bool, error) {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+// sigMask reports whether the given mask line (SigIgn, SigCgt) of pid's
+// /proc status contains sig.
+func sigMask(pid, field string, sig syscall.Signal) (bool, error) {
+	b, err := os.ReadFile("/proc/" + pid + "/status")
 	if err != nil {
 		return false, err
 	}
 	for _, l := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(l, "SigIgn:"); ok {
+		if v, ok := strings.CutPrefix(l, field+":"); ok {
 			mask, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
 			if err != nil {
 				return false, err
@@ -95,7 +96,42 @@ func sigIgnored(pid int, sig syscall.Signal) (bool, error) {
 			return mask&(1<<(uint(sig)-1)) != 0, nil
 		}
 	}
-	return false, errors.New("no SigIgn line")
+	return false, errors.New("no " + field + " line")
+}
+
+// TestNodeSignalsNotInherited: the helper catches SIGPIPE and SIGHUP rather
+// than ignoring them, because an ignored disposition survives exec — pct,
+// lxc-attach and the guest's check commands would start with them ignored,
+// changing how pipelines like "producer | head" behave in a guest check.
+// Caught signals are reset to the default in an exec'd child.
+func TestNodeSignalsNotInherited(t *testing.T) {
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		t.Skip("needs /proc")
+	}
+	stop := catchNodeSignals()
+	t.Cleanup(stop)
+	for _, sig := range []syscall.Signal{syscall.SIGPIPE, syscall.SIGHUP} {
+		if ign, err := sigMask("self", "SigIgn", sig); err != nil || ign {
+			t.Fatalf("helper ignores %v (err %v); it must catch it instead", sig, err)
+		}
+		if cgt, err := sigMask("self", "SigCgt", sig); err != nil || !cgt {
+			t.Fatalf("helper does not catch %v (err %v)", sig, err)
+		}
+	}
+	// A child exec'd now must see neither signal ignored.
+	out, err := exec.Command("/bin/sh", "-c", "grep '^SigIgn:' /proc/self/status").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mask, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(out)), "SigIgn:")), 16, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sig := range []syscall.Signal{syscall.SIGPIPE, syscall.SIGHUP} {
+		if mask&(1<<(uint(sig)-1)) != 0 {
+			t.Errorf("child inherited %v as ignored (SigIgn %x)", sig, mask)
+		}
+	}
 }
 
 // TestNodeSurvivesHangup: a hangup (the SSH session going away) must not
@@ -120,15 +156,16 @@ func TestNodeSurvivesHangup(t *testing.T) {
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	ready := false
 	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
-		hup, err1 := sigIgnored(cmd.Process.Pid, syscall.SIGHUP)
-		pipe, err2 := sigIgnored(cmd.Process.Pid, syscall.SIGPIPE)
+		pid := strconv.Itoa(cmd.Process.Pid)
+		hup, err1 := sigMask(pid, "SigCgt", syscall.SIGHUP)
+		pipe, err2 := sigMask(pid, "SigCgt", syscall.SIGPIPE)
 		if err1 == nil && err2 == nil && hup && pipe {
 			ready = true
 			break
 		}
 	}
 	if !ready {
-		t.Fatal("pbp node never ignored SIGHUP and SIGPIPE")
+		t.Fatal("pbp node never caught SIGHUP and SIGPIPE")
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)

@@ -53,14 +53,38 @@ func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) 
 func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
 
+// catchNodeSignals keeps a hangup, or a write to a closed stdout or stderr,
+// from killing the node helper: it must reach its own deadline handling
+// (kill the guest command's process group, audit the outcome) after the SSH
+// client is gone. The signals are caught and dropped, not ignored: an
+// ignored disposition survives exec, so pct, lxc-attach and the guest's
+// check commands would inherit it, while a caught one resets to the default
+// in the child. With SIGPIPE caught, writes to a closed stdout or stderr fail
+// with EPIPE instead of killing the process. stop restores the defaults.
+func catchNodeSignals() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGPIPE, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ch:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "node" {
-		// The helper outlives a vanished SSH client on purpose: it must reach
-		// its own deadline handling (kill the guest command's process group,
-		// audit the outcome). A hangup, or a write to the closed session's
-		// stdout or stderr, must not kill it first; such writes now fail
-		// with EPIPE instead.
-		signal.Ignore(syscall.SIGPIPE, syscall.SIGHUP)
+		// The helper outlives a vanished SSH client on purpose (see
+		// catchNodeSignals); it runs until the process exits.
+		catchNodeSignals()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
