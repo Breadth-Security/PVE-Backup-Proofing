@@ -330,3 +330,47 @@ func TestHostTZ(t *testing.T) {
 		t.Errorf("TZ: %q", got)
 	}
 }
+
+// A config.yaml naming other key, token or known_hosts files (a 0.2 .deb
+// host, say) is refused before the key is created or any node line is
+// printed.
+func TestSetupRefusesOtherConfigPaths(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.run(answers + e.reply(nil)); code != exitOK {
+		t.Fatalf("first run: exit %d err %s", code, e.errOut)
+	}
+	l := hostsetup.Layout{Dir: e.dir}
+	b, err := os.ReadFile(l.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(b), "/run/secrets/pve_ssh_key", "/run/secrets/id_ed25519", 1)
+	if edited == string(b) {
+		t.Fatal("key_file not found in config.yaml")
+	}
+	if err := os.Chmod(l.ConfigPath(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(l.ConfigPath(), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(l.SecretsDir()); err != nil {
+		t.Fatal(err)
+	}
+	e.checked = nil
+	code := e.run("")
+	if code != exitFail {
+		t.Errorf("exit %d, want %d", code, exitFail)
+	}
+	for _, want := range []string{`target.ssh.key_file is "/run/secrets/id_ed25519", expected /run/secrets/pve_ssh_key`, "sudoedit " + l.ConfigPath()} {
+		if !strings.Contains(e.errOut.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, e.errOut)
+		}
+	}
+	if strings.Contains(e.out.String(), "pbp node setup") || len(e.checked) != 0 {
+		t.Errorf("went on after the refusal:\n%s", e.out)
+	}
+	if exists(l.KeyPath()) {
+		t.Error("created a key after the refusal")
+	}
+}

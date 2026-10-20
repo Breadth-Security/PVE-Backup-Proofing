@@ -13,7 +13,7 @@
 
 ### Upgrading from 0.2
 
-The daemon and the node helper must share major.minor: **upgrade both to 0.3.x together**. If you changed `TZ` in `docker-compose.yml`, first put `TZ=<your zone>` in a `.env` file next to it and run `git checkout docker-compose.yml` before pulling: the compose file now reads the zone from `.env`, which `pbp setup` writes only when it creates `config.yaml`, so otherwise the schedule falls back to `Europe/London`. Then upgrade the daemon, run `pbp setup` in the checkout (or `sudo pbp setup --deb`), and run the two lines it prints on the node. A node set up by hand per the 0.2 README reports `setup has already been completed`; paste the reply back. See README "Upgrading from 0.2 to 0.3".
+The daemon and the node helper must share major.minor: **upgrade both to 0.3.x together**. If you changed `TZ` in `docker-compose.yml`, first put `TZ=<your zone>` in a `.env` file next to it and run `git checkout docker-compose.yml` before pulling: the compose file now reads the zone from `.env`, which `pbp setup` writes only when it creates `config.yaml`, so otherwise the schedule falls back to `Europe/London`. Then upgrade the daemon, run `pbp setup` in the checkout (or `sudo pbp setup --deb`), and run the two lines it prints on the node. A node set up by hand per the 0.2 README reports `setup has already been completed`; paste the reply back. `pbp setup` uses only its own file names for the key, the token secret and `known_hosts` (`/etc/pbp/secrets/pve_ssh_key`, `/etc/pbp/secrets/pve_token`, `/etc/pbp/known_hosts` on a `.deb` host); if `config.yaml` names other files it stops and says which, so move them there and update `config.yaml` first. See README "Upgrading from 0.2 to 0.3".
 
 ## v0.2.0
 

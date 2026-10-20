@@ -61,6 +61,9 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	if err := l.CheckPaths(cfg); err != nil {
+		return fail(err)
+	}
 	pub, created, err := hostsetup.EnsureKey(l)
 	if err != nil {
 		return fail(err)

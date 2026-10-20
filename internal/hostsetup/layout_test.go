@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
 
 type owned struct{ uid, gid int }
@@ -165,5 +167,40 @@ func TestHaveTokenEmpty(t *testing.T) {
 	}
 	if d.HaveToken() {
 		t.Fatal("empty token file is no token")
+	}
+}
+
+func TestCheckPaths(t *testing.T) {
+	for _, l := range []Layout{{Dir: "/srv/pbp"}, {Deb: true}} {
+		var good config.Config
+		good.Target.SSH.KeyFile = l.InConfigKeyPath()
+		good.Target.API.TokenSecretFile = l.InConfigTokenPath()
+		good.Target.SSH.KnownHostsFile = l.InConfigKnownHostsPath()
+		if err := l.CheckPaths(good); err != nil {
+			t.Errorf("deb=%v: %v", l.Deb, err)
+		}
+
+		bad := good
+		bad.Target.SSH.KeyFile = "/etc/pbp/id_ed25519"
+		bad.Target.SSH.KnownHostsFile = "/etc/pbp/ssh_known_hosts"
+		err := l.CheckPaths(bad)
+		if err == nil {
+			t.Fatalf("deb=%v: mismatch accepted", l.Deb)
+		}
+		for _, want := range []string{
+			`target.ssh.key_file is "/etc/pbp/id_ed25519", expected ` + l.InConfigKeyPath(),
+			`target.ssh.known_hosts_file is "/etc/pbp/ssh_known_hosts", expected ` + l.InConfigKnownHostsPath(),
+			"sudoedit " + l.ConfigPath(), "Move those files",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("deb=%v: error lacks %q:\n%v", l.Deb, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "token_secret_file") {
+			t.Errorf("deb=%v: names a matching field: %v", l.Deb, err)
+		}
+		if !l.Deb && !strings.Contains(err.Error(), "(on this host "+l.KeyPath()+")") {
+			t.Errorf("docker: on-disk path missing: %v", err)
+		}
 	}
 }

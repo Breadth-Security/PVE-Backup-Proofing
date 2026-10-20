@@ -10,6 +10,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
+
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
 
 // Layout says where setup writes (spec §4.1). Docker (Deb false) writes under
@@ -98,6 +101,35 @@ func (l Layout) InConfigTokenPath() string {
 
 // InConfigKnownHostsPath is target.ssh.known_hosts_file (the same for both).
 func (l Layout) InConfigKnownHostsPath() string { return debConfigDir + "/known_hosts" }
+
+// CheckPaths refuses a config.yaml whose key, token or known_hosts path is
+// not where this layout keeps that file: setup writes and checks only the
+// layout's files, so a config naming others (a 0.2 .deb host may use other
+// names) would be set up against files the daemon never reads.
+func (l Layout) CheckPaths(cfg config.Config) error {
+	type field struct{ name, have, want, disk string }
+	var bad []string
+	for _, f := range []field{
+		{"target.ssh.key_file", cfg.Target.SSH.KeyFile, l.InConfigKeyPath(), l.KeyPath()},
+		{"target.api.token_secret_file", cfg.Target.API.TokenSecretFile, l.InConfigTokenPath(), l.TokenPath()},
+		{"target.ssh.known_hosts_file", cfg.Target.SSH.KnownHostsFile, l.InConfigKnownHostsPath(), l.KnownHostsPath()},
+	} {
+		if f.have == f.want {
+			continue
+		}
+		where := ""
+		if f.disk != f.want {
+			where = " (on this host " + f.disk + ")"
+		}
+		bad = append(bad, fmt.Sprintf("%s is %q, expected %s%s", f.name, f.have, f.want, where))
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s names files where pbp setup does not keep them: %s. "+
+		"Move those files to the expected paths and update config.yaml to match (sudoedit %s), then run pbp setup again",
+		l.ConfigPath(), strings.Join(bad, "; "), l.ConfigPath())
+}
 
 // HaveToken reports whether a non-empty token secret file exists.
 func (l Layout) HaveToken() bool {
