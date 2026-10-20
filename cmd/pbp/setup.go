@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
@@ -215,12 +216,20 @@ func exists(p string) bool {
 }
 
 // hostTZ is the time zone offered by default: $TZ, else /etc/timezone, else
-// the zone the /etc/localtime symlink points at, else Etc/UTC.
+// the zone the /etc/localtime symlink points at, else Etc/UTC. A source
+// whose zone does not load (a POSIX rule such as EST5EDT,M3.2.0,M11.1.0 in
+// $TZ, say) is skipped, since the question would reject it as its default.
 func hostTZ(getenv func(string) string, timezoneFile, localtime string) string {
 	zone := func(s string) string {
 		s = strings.TrimPrefix(strings.TrimSpace(s), ":")
 		if i := strings.Index(s, "zoneinfo/"); i >= 0 {
 			s = s[i+len("zoneinfo/"):]
+		}
+		if s == "" {
+			return ""
+		}
+		if _, err := time.LoadLocation(s); err != nil {
+			return ""
 		}
 		return s
 	}

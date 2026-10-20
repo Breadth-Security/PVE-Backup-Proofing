@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
@@ -301,5 +302,23 @@ func TestDaemonWarning(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "etc/pbp/config.yaml"), "x\n", 0o640)
 	if w := DaemonWarning(context.Background(), env); !strings.Contains(w, "/etc/pbp/config.yaml exists") || strings.Contains(w, "active") {
 		t.Errorf("config: %q", w)
+	}
+}
+
+// PveshRun bounds stderr at 512 bytes without cutting a UTF-8 character.
+func TestPveshRunBoundsStderr(t *testing.T) {
+	stderr := strings.Repeat("a", 511) + "é" + strings.Repeat("b", 100)
+	env := Env{Run: func(context.Context, string, []string, []byte) (string, string, int, error) {
+		return "", stderr, 255, nil
+	}}
+	_, err := PveshRun(env)(context.Background(), "/usr/bin/pvesh", []string{"get", "/x"})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error is not valid UTF-8: %q", err.Error()[len(err.Error())-8:])
+	}
+	if !strings.HasSuffix(err.Error(), strings.Repeat("a", 511)) {
+		t.Errorf("error does not end at the cut: %q", err.Error()[len(err.Error())-8:])
 	}
 }

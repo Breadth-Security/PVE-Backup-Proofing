@@ -67,7 +67,7 @@ func PveshRun(env Env) func(ctx context.Context, name string, args []string) ([]
 		if exit != 0 {
 			msg := strings.TrimSpace(stderr)
 			if len(msg) > 512 {
-				msg = msg[:512]
+				msg = strings.ToValidUTF8(msg[:512], "")
 			}
 			return nil, fmt.Errorf("exit status %d: %s", exit, msg)
 		}

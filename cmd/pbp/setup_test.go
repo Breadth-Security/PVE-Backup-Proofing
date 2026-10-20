@@ -28,11 +28,18 @@ const (
 	answers     = "pve1.example.lan\n990000-990009\nvmbr77\nlocal-lvm\npbs-a\n\n\n"
 )
 
-// fakeTerm records echo changes on a fake terminal.
-type fakeTerm struct{ off, restored int }
+// fakeTerm records echo changes on a fake terminal. onOff, if set, runs
+// once echo is off (the reply is being read).
+type fakeTerm struct {
+	off, restored int
+	onOff         func()
+}
 
 func (f *fakeTerm) echoOff() (func(), error) {
 	f.off++
+	if f.onOff != nil {
+		f.onOff()
+	}
 	return func() { f.restored++ }, nil
 }
 
@@ -54,7 +61,7 @@ type setupEnv struct {
 // a fake terminal and a fake node behind connect.
 func newSetupEnv(t *testing.T) *setupEnv {
 	t.Helper()
-	t.Cleanup(hostsetup.TestHooks(func(string, int, int) error { return nil },
+	t.Cleanup(hostsetup.SetTestHooks(func(string, int, int) error { return nil },
 		func(string) (int, error) { return 4242, nil }, t.TempDir()))
 	e := &setupEnv{t: t, dir: t.TempDir(), stateDir: filepath.Join(t.TempDir(), "state"),
 		out: &bytes.Buffer{}, errOut: &bytes.Buffer{}, term: &fakeTerm{}, tgt: targetfake.New(990000, 990009)}
@@ -276,17 +283,20 @@ func TestSetupInterruptRestoresEcho(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	e.a.stdin = pr
-	go func() {
-		_, _ = io.WriteString(pw, answers)
-		cancel()
-	}()
+	// The interrupt arrives while echo is off and setup waits for the reply.
+	e.term.onOff = cancel
+	go func() { _, _ = io.WriteString(pw, answers) }()
 	code := e.a.main(ctx, []string{"setup", "--dir", e.dir})
 	if code == exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if e.term.off != e.term.restored {
-		t.Errorf("echo off %d, restored %d", e.term.off, e.term.restored)
+	if e.term.off != 1 || e.term.restored != 1 {
+		t.Errorf("echo off %d, restored %d; want the reply read interrupted with echo off, then restored", e.term.off, e.term.restored)
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "config.yaml")); err != nil {
+		t.Errorf("config.yaml written before the interrupt is gone: %v", err)
 	}
 	if !strings.Contains(e.errOut.String(), "interrupted") {
 		t.Errorf("err %q", e.errOut)
@@ -328,6 +338,17 @@ func TestHostTZ(t *testing.T) {
 	env["TZ"] = ":Asia/Tokyo"
 	if got := hostTZ(getenv, tzFile, lt); got != "Asia/Tokyo" {
 		t.Errorf("TZ: %q", got)
+	}
+	// A zone that does not load is skipped for the next source.
+	env["TZ"] = "EST5EDT,M3.2.0,M11.1.0"
+	if got := hostTZ(getenv, tzFile, lt); got != "Europe/Paris" {
+		t.Errorf("POSIX TZ: %q, want the timezone file's zone", got)
+	}
+	if err := os.WriteFile(tzFile, []byte("Not/AZone\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostTZ(getenv, tzFile, lt); got != "America/New_York" {
+		t.Errorf("bad timezone file: %q, want the localtime link's zone", got)
 	}
 }
 

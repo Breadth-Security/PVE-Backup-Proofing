@@ -233,10 +233,12 @@ func (l Layout) writeFile(path string, data []byte, mode os.FileMode) (err error
 	return nil
 }
 
-// TestHooks replaces the ownership change, the pbp group lookup and the deb
-// root, so callers' tests run unprivileged. It returns the restore function.
+// SetTestHooks is for tests only: it replaces the package-level ownership
+// change, pbp group lookup and deb root, so tests in other packages run
+// unprivileged, and returns the function that restores them. It is not
+// safe for parallel tests (callers use t.Setenv, which forbids t.Parallel).
 // Production code never calls it.
-func TestHooks(chownFn func(string, int, int) error, group func(string) (int, error), root string) (restore func()) {
+func SetTestHooks(chownFn func(string, int, int) error, group func(string) (int, error), root string) (restore func()) {
 	oldChown, oldGroup, oldRoot := chown, lookupGroup, debRoot
 	chown, lookupGroup, debRoot = chownFn, group, root
 	return func() { chown, lookupGroup, debRoot = oldChown, oldGroup, oldRoot }
