@@ -52,6 +52,7 @@ for arch in amd64 arm64; do
     tdir="$stage/pbp_${version}_linux_${arch}"
     mkdir -p "$tdir"
     cp "$bin" packaging/pbp.service README.md LICENSE config.example.yaml "$tdir/"
+    cp -r docs "$tdir/"
     tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 1970-01-01' \
         -czf "$outdir/pbp_${version}_linux_${arch}.tar.gz" -C "$stage" "pbp_${version}_linux_${arch}"
 done

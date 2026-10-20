@@ -87,3 +87,11 @@ func TestLoadConfigRangeTop(t *testing.T) {
 		t.Errorf("hi = %d, want 999999998", c.VMIDRange[1])
 	}
 }
+
+func TestValidBridge(t *testing.T) {
+	for s, want := range map[string]bool{"vmbr99": true, "br_pbp.1": true, "": false, "-x": false, ".x": false, "a/b": false, "abcdefghijklmnop": false} {
+		if got := ValidBridge(s); got != want {
+			t.Errorf("ValidBridge(%q) = %v, want %v", s, got, want)
+		}
+	}
+}

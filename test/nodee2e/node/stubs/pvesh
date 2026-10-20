@@ -1,0 +1,66 @@
+#!/bin/sh
+# Stub /usr/bin/pvesh for the node e2e test: answers the GETs `pbp node
+# setup` makes, with the shapes real pvesh prints (PVE 9.2), and logs argv.
+# The node name is the container's hostname, as on a real node.
+for a in "$@"; do printf '<%s> ' "$a"; done >> /var/log/pbp-e2e/pvesh.log
+echo >> /var/log/pbp-e2e/pvesh.log
+
+node=$(uname -n)
+node=${node%%.*}
+
+if [ "$1" != get ] || [ $# -lt 2 ]; then
+    echo "pvesh stub: only get <path> is supported: $*" >&2
+    exit 255
+fi
+path=$2
+shift 2
+type=
+while [ $# -gt 0 ]; do
+    case $1 in
+    --output-format) [ "$2" = json ] || { echo "pvesh stub: output format $2" >&2; exit 255; } ;;
+    --type) type=$2 ;;
+    *) echo "pvesh stub: unsupported option $1" >&2; exit 255 ;;
+    esac
+    shift 2
+done
+
+case $path in
+/version)
+    echo '{"release":"9.2","repoid":"e2e00000","version":"9.2.18"}'
+    ;;
+/nodes)
+    printf '[{"id":"node/%s","level":"","node":"%s","status":"online","type":"node"}]\n' "$node" "$node"
+    ;;
+"/nodes/$node/network/vmbr99")
+    echo '{"active":1,"autostart":1,"bridge_fd":"0","bridge_ports":"none","bridge_stp":"off","families":["inet"],"iface":"vmbr99","method":"manual","method6":"manual","priority":5,"type":"bridge"}'
+    ;;
+"/nodes/$node/network/"*)
+    printf '400 Parameter verification failed.\niface: interface does not exist\n\nget /nodes/{node}/network/{iface}\n' >&2
+    exit 255
+    ;;
+/cluster/resources)
+    # 990002 (in range, untagged) is only a config file for the helper's
+    # own refusal test: listed here it would make setup refuse the range.
+    if [ "$type" != vm ]; then
+        echo "pvesh stub: /cluster/resources needs --type vm" >&2
+        exit 255
+    fi
+    printf '[{"id":"lxc/101","maxmem":2147483648,"name":"production","node":"%s","status":"running","tags":"pbp;prod","type":"lxc","vmid":101},' "$node"
+    printf '{"id":"lxc/990001","maxmem":536870912,"name":"pbp-e2e-restore","node":"%s","status":"running","tags":"pbp","type":"lxc","vmid":990001}]\n' "$node"
+    ;;
+"/nodes/$node/storage/local-zfs/status")
+    echo '{"active":1,"avail":107374182400,"content":"images,rootdir","enabled":1,"shared":0,"total":214748364800,"type":"zfspool","used":107374182400}'
+    ;;
+"/nodes/$node/storage/pbs-e2e/status")
+    echo '{"active":1,"avail":536870912000,"content":"backup","enabled":1,"shared":1,"total":1073741824000,"type":"pbs","used":536870912000}'
+    ;;
+"/nodes/$node/storage/"*/status)
+    s=${path#"/nodes/$node/storage/"}
+    printf "storage '%s' does not exist\n" "${s%/status}" >&2
+    exit 255
+    ;;
+*)
+    printf "No 'get' handler defined for '%s'\n" "$path" >&2
+    exit 255
+    ;;
+esac

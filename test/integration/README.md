@@ -52,7 +52,7 @@ own backup and deletes exactly that backup again.
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
-The values above are pve1's: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
+The values above are from the author's test node: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
 `delta1` (VM with a working agent, 33 GB), 138 `netbootTesting` (VM without
 `agent`). VM 125 has `agent: 1` but no agent running inside, so it gives
 `BOOTED` and is not a valid `PBP_IT_VM_AGENT`.
@@ -140,7 +140,7 @@ Only while live tests run, and only with the owner's approval at the time:
 The admin key is not PBP's key. PBP's own key stays the forced-command `pbp`
 key, and root's `authorized_keys` must hold no PBP key between runs.
 
-## Node setup (done once on pve1, 2026-10-19)
+## Node setup (done once on pve-node, 2026-10-19)
 
 **Node helper** (prerequisite): the `pbp` user, forced command, sudoers rule and
 `/etc/pbp/node.yaml` exactly as in the main README "Node setup" (the node
@@ -153,16 +153,16 @@ the network config first, then:
 
 ```
 cp -p /etc/network/interfaces /root/interfaces.pbp-backup-<timestamp>
-pvesh create /nodes/pve1/network --iface vmbr99 --type bridge --autostart 1
+pvesh create /nodes/pve-node/network --iface vmbr99 --type bridge --autostart 1
 diff -u /etc/network/interfaces /etc/network/interfaces.new   # only the vmbr99 stanza
-pvesh set /nodes/pve1/network                                  # applies with ifreload
+pvesh set /nodes/pve-node/network                                  # applies with ifreload
 ```
 
 The API reports it as `type: bridge`, `bridge_ports: ""`, no address.
 
 Preflight also requires IPv6 disabled on the bridge (see the main README):
 add `post-up echo 1 > /proc/sys/net/ipv6/conf/vmbr99/disable_ipv6` to the
-`vmbr99` stanza and run that `echo` once. **Not yet done on pve1**: until it
+`vmbr99` stanza and run that `echo` once. **Not yet done on pve-node**: until it
 is, `pbp check` and the suite refuse the bridge with `bridge is not isolated`.
 
 **User, role, token.** User `pbp@pve`, role `PBPProofer`, token
@@ -174,7 +174,7 @@ granted to both:
 pveum user add pbp@pve
 pveum role add PBPProofer --privs "VM.Allocate,VM.Audit,VM.Backup,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt,VM.GuestAgent.Audit,VM.GuestAgent.Unrestricted,Datastore.AllocateSpace,Datastore.Audit,Sys.Audit,SDN.Use"
 pveum user token add pbp@pve proof --privsep 1
-for p in /vms /storage/pool_qemu /storage/PBS-qemu /storage/PBS-Baremetal /nodes/pve1 /sdn/zones/localnetwork; do
+for p in /vms /storage/pool_qemu /storage/PBS-qemu /storage/PBS-Baremetal /nodes/pve-node /sdn/zones/localnetwork; do
   pveum acl modify $p --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer
 done
 ```

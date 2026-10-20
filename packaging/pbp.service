@@ -9,7 +9,7 @@ ConditionPathExists=/etc/pbp/config.yaml
 Type=simple
 User=pbp
 Group=pbp
-Environment=PBP_CONFIG=/etc/pbp/config.yaml PBP_STATE_DIR=/var/lib/pbp
+Environment=PBP_CONFIG=/etc/pbp/config.yaml PBP_STATE_DIR=/var/lib/pbp/state
 ExecStart=/usr/bin/pbp daemon
 Restart=on-failure
 RestartSec=30s
@@ -21,7 +21,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=-/var/lib/pbp -/var/log/pbp
+ReadWritePaths=-/var/lib/pbp/state -/var/log/pbp
 ReadOnlyPaths=/etc/pbp
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

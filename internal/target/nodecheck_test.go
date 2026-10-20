@@ -63,16 +63,16 @@ func TestCheckNode(t *testing.T) {
 	}{
 		{name: "healthy"},
 		{name: "incompatible version", mod: func(h *nodeHelper) { h.version = "0.3.0" },
-			want: []string{"0.3.0", "0.2.0", "not compatible", `README "Node setup"`}},
+			want: []string{"0.3.0", "0.2.0", "not compatible", `docs/setup.md`}},
 		{name: "dev helper, release daemon", mod: func(h *nodeHelper) { h.version = "dev" },
-			want: []string{"dev build is compatible only with a dev build", `README "Node setup"`}},
+			want: []string{"dev build is compatible only with a dev build", `docs/setup.md`}},
 		{name: "vmid range mismatch", mod: func(h *nodeHelper) { h.cfg.VMIDRange = [2]int{lo, hi + 10} },
-			want: []string{"vmid_range", "[990000, 990059]", "[990000, 990049]", `README "Node setup"`}},
+			want: []string{"vmid_range", "[990000, 990059]", "[990000, 990049]", `docs/setup.md`}},
 		{name: "bridge mismatch", mod: func(h *nodeHelper) { h.cfg.Bridge = "vmbr0" },
-			want: []string{"bridge", `"vmbr0"`, `"pbpiso0"`, `README "Node setup"`}},
+			want: []string{"bridge", `"vmbr0"`, `"pbpiso0"`, `docs/setup.md`}},
 		{name: "helper does not refuse", mod: func(h *nodeHelper) {
 			h.exec = func(nodeproto.Request) sshx.Result { return sshx.Result{} }
-		}, want: []string{"helper did not refuse an out-of-range exec", `README "Node setup"`}},
+		}, want: []string{"helper did not refuse an out-of-range exec", `docs/setup.md`}},
 		{name: "refused for another reason", mod: func(h *nodeHelper) {
 			h.exec = func(req nodeproto.Request) sshx.Result { return helperfake.Refuse(req, "untagged", "x") }
 		}, want: []string{"helper did not refuse an out-of-range exec", "untagged"}},
@@ -141,7 +141,7 @@ func TestCheckNodeUnreachable(t *testing.T) {
 		return sshx.Result{}, errors.New("ssh: connection refused")
 	}}})
 	err := n.CheckNode(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "connection refused") || !strings.Contains(err.Error(), `README "Node setup"`) {
+	if err == nil || !strings.Contains(err.Error(), "connection refused") || !strings.Contains(err.Error(), `docs/setup.md`) {
 		t.Errorf("err = %v", err)
 	}
 }

@@ -128,22 +128,33 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	return parse(data, "config "+path)
+}
+
+// Parse is Load for YAML already in memory; its errors name no file.
+func Parse(data []byte) (Config, error) {
+	return parse(data, "config")
+}
+
+// parse decodes, defaults and validates data; name ("config <path>") goes
+// into the error messages.
+func parse(data []byte, name string) (Config, error) {
 	if err := unitlessDurations(data); err != nil {
-		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
+		return Config{}, fmt.Errorf("invalid %s: %w", name, err)
 	}
 	c := defaults()
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		if errors.Is(err, io.EOF) {
-			return Config{}, fmt.Errorf("config %s is empty", path)
+			return Config{}, fmt.Errorf("%s is empty", name)
 		}
-		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+		return Config{}, fmt.Errorf("parse %s: %w", name, err)
 	}
 	c.Checks.IgnoreUnits = orDefault(c.Checks.IgnoreUnits, DefaultIgnoreUnits)
 	c.Checks.WindowsIgnoreServices = orDefault(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore)
 	if err := c.validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid config %s: %w", path, err)
+		return Config{}, fmt.Errorf("invalid %s: %w", name, err)
 	}
 	return c, nil
 }
@@ -173,21 +184,19 @@ func (c Config) validate() error {
 		bad("target.type", "must be \"existing-node\", got %q", t.Type)
 	}
 	if t.Node == "" {
-		bad("target.node", "required")
+		bad("target.node", "required (run pbp setup to finish)")
 	}
 	if t.Bridge == "" {
 		bad("target.bridge", "required")
 	}
-	// hi stays below maxVMID so hi+1 (the out-of-range refusal probe) is
-	// still a valid VMID.
-	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi >= maxVMID {
-		bad("target.vmid_range", "need 100 <= lo <= hi < %d, got [%d, %d]", maxVMID, lo, hi)
+	if err := ValidateVMIDRange(t.VMIDRange[0], t.VMIDRange[1]); err != nil {
+		bad("target.vmid_range", "%v", err)
 	}
 	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
-		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported)")
+		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported; run pbp setup to finish)")
 	}
 	if t.SSH.User == "root" {
-		bad("target.ssh.user", `root is no longer supported; set up the pbp node helper (README "Node setup")`)
+		bad("target.ssh.user", `root is not allowed: PBP connects as the restricted pbp user (see docs/setup.md)`)
 	}
 	if t.SSH.KnownHostsFile == "" {
 		bad("target.ssh.known_hosts_file", "required")
@@ -216,6 +225,15 @@ func (c Config) validate() error {
 	}
 	c.validateChecks(bad)
 	return errors.Join(errs...)
+}
+
+// ValidateVMIDRange applies the target.vmid_range rule. hi stays below
+// maxVMID so hi+1 (the out-of-range refusal probe) is still a valid VMID.
+func ValidateVMIDRange(lo, hi int) error {
+	if lo < 100 || hi < lo || hi >= maxVMID {
+		return fmt.Errorf("need 100 <= lo <= hi < %d, got [%d, %d]", maxVMID, lo, hi)
+	}
+	return nil
 }
 
 // reporter records one validation error against a config key path.

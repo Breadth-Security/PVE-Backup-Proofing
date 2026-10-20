@@ -152,6 +152,15 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
+// Capture runs name (an absolute path) with the helper's minimal
+// environment (never the caller's), in its own process group, and captures
+// stdout and stderr separately (each bounded). err is set only when the
+// command could not be run or was killed, never for a non-zero exit, and it
+// never carries the command's output.
+func Capture(ctx context.Context, name string, args []string, stdin []byte) (stdout, stderr string, exit int, err error) {
+	return capture(ctx, name, args, stdin)
+}
+
 func capture(ctx context.Context, name string, args []string, stdin []byte) (string, string, int, error) {
 	var out, errb limitedBuffer
 	cmd := command(ctx, name, args)

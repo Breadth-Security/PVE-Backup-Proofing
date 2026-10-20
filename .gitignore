@@ -7,6 +7,7 @@ coverage.out
 secrets/
 /config.yaml
 /known_hosts
+/.env
 /logs/
 *.pem
 *.key

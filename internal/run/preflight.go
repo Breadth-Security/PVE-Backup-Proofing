@@ -13,7 +13,14 @@ import (
 // the janitor first removes the untagged leftovers of recorded restores,
 // which only Target.Destroy, given the record, accepts as PBP's (design
 // section 11.2). Any failure aborts the run.
-func Preflight(ctx context.Context, d Deps) error {
+func Preflight(ctx context.Context, d Deps) error { return preflight(ctx, d, true) }
+
+// PreflightReadOnly is Preflight without the janitor: it changes nothing on
+// the node and needs no state store. pbp setup runs it without the run lock,
+// where a janitor could destroy the guest of a run in progress.
+func PreflightReadOnly(ctx context.Context, d Deps) error { return preflight(ctx, d, false) }
+
+func preflight(ctx context.Context, d Deps, janitor bool) error {
 	if err := d.Target.CheckNode(ctx); err != nil {
 		return fmt.Errorf("node helper: %w", err)
 	}
@@ -23,8 +30,10 @@ func Preflight(ctx context.Context, d Deps) error {
 	if err := d.Notifier.CheckTemplates(ctx); err != nil {
 		return fmt.Errorf("notification templates: %w", err)
 	}
-	if err := Janitor(ctx, d); err != nil {
-		return fmt.Errorf("janitor: %w", err)
+	if janitor {
+		if err := Janitor(ctx, d); err != nil {
+			return fmt.Errorf("janitor: %w", err)
+		}
 	}
 	if err := d.Target.CheckRangeClear(ctx); err != nil {
 		return fmt.Errorf("target: %w", err)

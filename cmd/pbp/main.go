@@ -24,6 +24,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
@@ -32,7 +33,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp node [install-templates]\n"
+const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp setup [--dir DIR] [--deb]\n       pbp node [install-templates|setup|uninstall]\n"
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
@@ -106,12 +107,26 @@ type app struct {
 	audit       auditLog
 	euid        func() int
 	templateDir string
+
+	// pbp node setup and uninstall: whether stdin is a terminal, and every
+	// outside effect of the node setup library.
+	isTerminal   func() bool
+	nodeSetupEnv nodesetup.Env
+
+	// pbp setup: turning off terminal echo for the reply (only called when
+	// isTerminal) and the default time zone offered.
+	echoOff   func() (restore func(), err error)
+	defaultTZ func() string
 }
 
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
 		stdin: os.Stdin, nodeSys: node.NewSystem(),
-		euid: os.Geteuid, templateDir: node.DefaultTemplateDir}
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir,
+		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
+		nodeSetupEnv: nodesetup.NewEnv(),
+		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
+		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") }}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;
@@ -191,8 +206,11 @@ func (a *app) main(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 	cmd := args[0]
-	if cmd == "node" {
+	switch cmd {
+	case "node":
 		return a.nodeMain(ctx, args[1:])
+	case "setup":
+		return a.setupMain(ctx, args[1:])
 	}
 	fs := flag.NewFlagSet("pbp "+cmd, flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
@@ -355,43 +373,69 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 	}
 	defer release()
 	fprintf(a.stdout, "config %s: ok\n", path)
-	ok := true
-	line := func(name string, err error) {
-		if err != nil {
-			ok = false
-			fprintf(a.stdout, "%s: FAIL: %v\n", name, err)
-			return
-		}
-		fprintf(a.stdout, "%s: ok\n", name)
-	}
+	c := &checkOut{w: a.stdout, ok: true}
 	store, err := state.Open(statePath())
-	line("state "+statePath(), err)
+	c.line("state "+statePath(), err)
+	return a.checkSteps(ctx, cfg, store, c)
+}
+
+// checkOut prints check lines and remembers whether any failed.
+type checkOut struct {
+	w  io.Writer
+	ok bool
+}
+
+func (c *checkOut) line(name string, err error) {
+	if err != nil {
+		c.ok = false
+		fprintf(c.w, "%s: FAIL: %v\n", name, err)
+		return
+	}
+	fprintf(c.w, "%s: ok\n", name)
+}
+
+// Preflight line names for pbp check and for pbp setup (no janitor).
+const (
+	preflightName         = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)"
+	preflightReadOnlyName = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, VMID range)"
+)
+
+// checkSteps runs everything pbp check does after the state line: the API
+// and SSH connections, the node helper steps and the preflight. With a nil
+// store (pbp setup, which runs as root without the run lock and must not
+// create files in the state dir) the preflight skips the janitor: it needs
+// the state store, and without the lock it could destroy a running proof's
+// guest.
+func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.Store, c *checkOut) int {
 	w := a.connect(cfg)
 	defer w.close()
-	line("pve api "+cfg.Target.API.URL, w.apiErr)
-	line("ssh "+cfg.Target.SSH.Host, w.sshErr)
-	if !ok {
+	c.line("pve api "+cfg.Target.API.URL, w.apiErr)
+	c.line("ssh "+cfg.Target.SSH.Host, w.sshErr)
+	if !c.ok {
 		return exitFail
 	}
 	if st, isStepper := w.target.(target.NodeStepper); isStepper {
 		for _, s := range st.CheckNodeSteps(ctx) {
 			if s.Err != nil {
-				line(s.Name, s.Err)
+				c.line(s.Name, s.Err)
 			} else if s.Detail != "" {
-				fprintf(a.stdout, "%s: ok (%s)\n", s.Name, s.Detail)
+				fprintf(c.w, "%s: ok (%s)\n", s.Name, s.Detail)
 			} else {
-				line(s.Name, nil)
+				c.line(s.Name, nil)
 			}
 		}
-		if !ok {
+		if !c.ok {
 			return exitFail
 		}
 	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store,
 		Log: report.NewLogger(a.stderr, nil), Now: a.now, Notifier: w.notifier}
-	line("preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
-		run.Preflight(ctx, d))
-	if !ok {
+	if store != nil {
+		c.line(preflightName, run.Preflight(ctx, d))
+	} else {
+		c.line(preflightReadOnlyName, run.PreflightReadOnly(ctx, d))
+	}
+	if !c.ok {
 		return exitFail
 	}
 	return exitOK
