@@ -40,8 +40,11 @@ func NodeLines(cfg config.Config, pub, version string, haveToken bool) string {
 		base := releaseURL + "v" + strings.ReplaceAll(v, "~", "-") + "/"
 		deb := "pbp_" + v + "_${a}.deb"
 		b.WriteString("1. Install pbp " + v + " (checksum verified):\n\n")
-		b.WriteString(`a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base + deb +
-			`" && curl -fsSLO "` + base + `SHA256SUMS" && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./` + deb + "\"\n\n")
+		// A subshell, so the admin's shell keeps its directory and the
+		// download dir is removed whatever happens.
+		b.WriteString(`(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base + deb +
+			`" && curl -fsSLO "` + base + `SHA256SUMS" && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./` + deb +
+			`"; rc=$?; rm -rf "$d"; exit $rc)` + "\n\n")
 	} else {
 		b.WriteString("1. Note: this PBP is a dev build: install a matching dev build of pbp on the node.\n\n")
 	}

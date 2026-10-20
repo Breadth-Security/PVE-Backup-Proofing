@@ -167,7 +167,7 @@ On the node, as root:
 
 1. Install pbp 0.3.0 (checksum verified):
 
-a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v0.3.0/pbp_0.3.0_${a}.deb" && ...
+(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v0.3.0/pbp_0.3.0_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
 
 2. Set up the node:
 
@@ -176,7 +176,7 @@ pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey 'ssh-ed25519 
 Paste the reply printed by pbp node setup, then press Enter:
 ```
 
-Line 1 downloads the `.deb` of exactly your daemon's version from the public release page, checks it against `SHA256SUMS` and installs it. A `dev` build prints a note instead: install a matching `dev` build on the node yourself.
+Line 1 downloads the `.deb` of exactly your daemon's version from the public release page into a temporary directory, checks it against `SHA256SUMS`, installs it and removes the directory. It runs in a subshell, so your shell stays where it was. A `dev` build prints a note instead: install a matching `dev` build on the node yourself.
 
 What setup writes, and who owns it:
 
@@ -269,7 +269,7 @@ On a `.deb` host: `sudo systemctl start pbp`, and `sudo -u pbp PBP_CONFIG=/etc/p
 
 The image runs as the non-root uid/gid **65532** (distroless `nonroot`), which is why setup gives that uid the files it writes. `/var/lib/pbp` and `/var/log/pbp` are created in the image owned by 65532, so the named volume `pbp-state` works as is; the bind-mounted `logs/` is created by setup with that owner. Run logs are created readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root or as that uid, for example `sudo less logs/run-*.log`.
 
-The time zone of the schedule is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Change it there (`sudoedit .env`: setup leaves it read-only and owned by uid 65532), not in the compose file, and run `docker compose up -d` again.
+The time zone of the schedule is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Change it there (`sudoedit .env`: setup leaves it read-only and owned by uid 65532), not in the compose file, and run `docker compose up -d` again. A `TZ` exported in the shell that runs `docker compose` takes precedence over `.env`, so unset it there (or make it match).
 
 The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
