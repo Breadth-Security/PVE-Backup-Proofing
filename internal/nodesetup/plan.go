@@ -31,6 +31,7 @@ const (
 	Correct Status = iota // already correct
 	Create                // absent; setup creates it
 	Differs               // present but different; changed only with --replace
+	Remove                // present; uninstall removes it (or, for the shell, revokes it)
 )
 
 func (s Status) String() string {
@@ -41,6 +42,8 @@ func (s Status) String() string {
 		return "create"
 	case Differs:
 		return "differs"
+	case Remove:
+		return "remove"
 	}
 	return fmt.Sprintf("Status(%d)", int(s))
 }
@@ -82,6 +85,9 @@ type Item struct {
 	// CheckOnly items are reported, never changed: Apply refuses to proceed
 	// while one is not Correct.
 	CheckOnly bool
+	// Backup marks an uninstall item whose file is not what setup writes:
+	// Uninstall copies it to <file>.pbp-backup-<ts> before removing it.
+	Backup bool
 }
 
 // Plan lists every item in apply order.
