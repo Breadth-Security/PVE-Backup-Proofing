@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -159,5 +160,21 @@ func TestBuildReplyErrors(t *testing.T) {
 				t.Errorf("error carries the secret: %v", err)
 			}
 		})
+	}
+}
+
+// The reply lists the node's addresses when Env can, and a failure to list
+// them does not stop the reply.
+func TestBuildReplyAddresses(t *testing.T) {
+	env := replyEnv(t)
+	mustWrite(t, env.path(PveCertPath), pemOf("CERTIFICATE", testCert(t, "pve1")), 0o640)
+	env.Addrs = func() ([]string, error) { return []string{"10.0.0.1", "fd00::1"}, nil }
+	r, err := BuildReply(env, testArgs(), "pve1", "0.3.0", "")
+	if err != nil || r.Addresses != "10.0.0.1 fd00::1" {
+		t.Fatalf("addresses %q err %v", r.Addresses, err)
+	}
+	env.Addrs = func() ([]string, error) { return nil, errors.New("no netlink") }
+	if r, err := BuildReply(env, testArgs(), "pve1", "0.3.0", ""); err != nil || r.Addresses != "" {
+		t.Fatalf("addresses %q err %v", r.Addresses, err)
 	}
 }

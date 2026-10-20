@@ -88,9 +88,12 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		return code
 	}
 	changes := hostsetup.Changes(cfg, rep)
-	needRotate, err := hostsetup.Finish(l, cfg, rep)
+	needRotate, warning, err := hostsetup.FinishChecked(ctx, l, cfg, rep, a.probeHostKey)
 	if err != nil {
 		return fail(err)
+	}
+	if warning != "" {
+		fprintf(a.stderr, "pbp setup: warning: %s\n", warning)
 	}
 	if needRotate {
 		sa := hostsetup.SetupArgs(cfg, pub, version, false)

@@ -170,7 +170,11 @@ followed by the reply block again, without a token secret.
 
 Copy the whole block, including the `BEGIN` and `END` lines, into the waiting `pbp setup` and press Enter. What you paste is not echoed.
 
-Setup refuses a reply whose range, bridge or key does not match this host's config, and then writes nothing. Otherwise it writes:
+Setup refuses a reply whose range, bridge or key does not match this host's config, and then writes nothing.
+
+It also checks that the node address you gave reaches that node: it connects to it on the SSH port and compares the host key it sees with the one in the reply, without logging in. If they differ, the address (through DNS or `/etc/hosts`) leads to another machine; setup then writes nothing but the token secret (shown only once), names the address, what it resolves to and the node's own addresses, and asks you to fix `target.ssh.host` and `target.api.url`. If nothing answers on the address, setup carries on and the check at the end shows the failure.
+
+Otherwise it writes:
 
 - `known_hosts`, from the host key in the reply. The key arrives over the root shell you already trust, which replaces `ssh-keyscan`'s trust on first use.
 - the token secret file, when the reply carries a secret.

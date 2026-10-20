@@ -22,6 +22,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/daemon"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
@@ -121,6 +122,9 @@ type app struct {
 	// isTerminal) and the default time zone offered.
 	echoOff   func() (restore func(), err error)
 	defaultTZ func() string
+	// probeHostKey reads the SSH host key at the configured node address,
+	// to catch an address that reaches another machine; nil skips it.
+	probeHostKey hostsetup.HostKeyProbe
 }
 
 func newApp(stdout, stderr io.Writer) *app {
@@ -130,7 +134,8 @@ func newApp(stdout, stderr io.Writer) *app {
 		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
-		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") }}
+		defaultTZ:    func() string { return hostTZ(os.Getenv, "/etc/timezone", "/etc/localtime") },
+		probeHostKey: hostsetup.ProbeHostKey}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;
