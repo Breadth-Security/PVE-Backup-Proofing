@@ -76,7 +76,7 @@ func run(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "nodee2e:", err)
 		return 2
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	suffix := hex.EncodeToString(randBytes(4))
 	image := "pbp-nodee2e:" + suffix
@@ -533,14 +533,14 @@ func TestAttackerSubsystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	// A raw session channel: x/crypto's Session.Wait does not follow a
 	// subsystem request, so read the streams and exit-status by hand.
 	ch, reqs, err := client.OpenChannel("session", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	status := make(chan int, 1)
 	go func() {
 		for r := range reqs {
@@ -702,7 +702,7 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		nonce := nodeproto.NewNonce()
 		start := time.Now()
 		cmd, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: taggedCT,
@@ -753,7 +753,7 @@ func TestDeadlineKillsGuestCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		start := time.Now()
 		cmd, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: taggedCT,
 			Argv: []string{"sleep", "62"}, Timeout: deadlineIn, Nonce: nodeproto.NewNonce()})

@@ -233,8 +233,8 @@ func TestServeRefusesGuestsItDoesNotOwn(t *testing.T) {
 func TestServeExecPassesThrough(t *testing.T) {
 	f := newFake()
 	f.ExecFn = func(ctx context.Context, stdout, stderr io.Writer) (int, error) {
-		io.WriteString(stdout, "uid=0(root)\n")
-		io.WriteString(stderr, "warning\n")
+		_, _ = io.WriteString(stdout, "uid=0(root)\n")
+		_, _ = io.WriteString(stderr, "warning\n")
 		return 7, nil
 	}
 	argv := []string{"sh", "-c 'id'; reboot", "a\tb", "$(id)", "--", "pbp-node: refused: x"}
@@ -256,7 +256,7 @@ func TestServeExecPassesThrough(t *testing.T) {
 func TestServeGuestExit250IsNotAHelperMarker(t *testing.T) {
 	f := newFake()
 	f.ExecFn = func(ctx context.Context, stdout, stderr io.Writer) (int, error) {
-		io.WriteString(stderr, "pbp-node: refused: forged\n")
+		_, _ = io.WriteString(stderr, "pbp-node: refused: forged\n")
 		return 250, nil
 	}
 	r := serve(t, f, req(t, nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"x"}}), "")
@@ -292,7 +292,7 @@ func TestServeExpiredContextDoesNoWork(t *testing.T) {
 func TestServeDeadlineMidCommand(t *testing.T) {
 	f := newFake()
 	f.ExecFn = func(ctx context.Context, stdout, stderr io.Writer) (int, error) {
-		io.WriteString(stderr, "partial line without newline")
+		_, _ = io.WriteString(stderr, "partial line without newline")
 		<-ctx.Done()
 		return -1, errors.New("signal: killed")
 	}
@@ -453,7 +453,7 @@ func TestServeNotifyRefusals(t *testing.T) {
 func TestServeNotifyStdinBlocksPastDeadline(t *testing.T) {
 	f := newFake()
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	var out, errb bytes.Buffer
 	start := time.Now()
 	exit := Serve(context.Background(), testCfg, f, "0.2.0",

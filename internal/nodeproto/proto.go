@@ -42,7 +42,7 @@ func validNonce(n string) bool {
 	}
 	for i := 0; i < len(n); i++ {
 		c := n[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
