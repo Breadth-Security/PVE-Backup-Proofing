@@ -47,7 +47,7 @@ For each run, PBP:
   - a free range of VMIDs, which you only choose ([Setup step 1](docs/setup.md#1-choose-a-vmid-range));
   - `sudo` (Proxmox VE does not include it; the `pbp` package installs it as a recommended package, or run `apt install sudo` if apt is set not to install recommends);
   - a root shell, once, to run `pbp node setup`.
-- **A host for PBP** that reaches the node's API (port 8006) and SSH (port 22): any host with Docker and Compose, or a Debian-based host for the `.deb` package (amd64 or arm64). That can be the Proxmox node itself, though a separate host is preferred.
+- **A host for PBP** that reaches the node's API (port 8006) and SSH (port 22): any host with Docker and Compose, or a Debian-based host for the `.deb` package (amd64 or arm64). **For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs** ([why](docs/security.md#where-to-run-pbp)). Running it on the node itself works and is supported for a single-node lab or a trial.
 
 PBP never logs in to the node as root. It uses an API token with a narrow role, and SSH only as an unprivileged `pbp` user that is locked to one restricted helper command. What that means, and what a stolen key could and could not do: [Security model](docs/security.md).
 
@@ -71,7 +71,7 @@ Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 
 | [Manual setup](docs/manual-setup.md) | What `pbp setup` and `pbp node setup` do, as commands you can run by hand |
 | [Operating](docs/operating.md) | Everyday commands, a run on demand, exit codes, the health check, notifications, backup notes |
 | [Checks inside the guest](docs/checks.md) | The ignore list, service profiles and per-guest checks, "not covered by backup" |
-| [Security model](docs/security.md) | What PBP may touch, the isolated bridge, the restricted node helper, the API token's privileges |
+| [Security model](docs/security.md) | What PBP may touch, the isolated bridge, the restricted node helper, the API token's privileges, where to run PBP |
 | [Troubleshooting](docs/troubleshooting.md) | What setup and `pbp check` errors mean and how to fix them |
 | [Upgrading](docs/upgrading.md) | Upgrading the daemon and the node helper together |
 | [Development](docs/development.md) | Building, tests, releases and the code scanners |

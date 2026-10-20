@@ -2,8 +2,10 @@
 
 Two guided commands set PBP up: `pbp setup` on the host that runs PBP, and `pbp node setup` on the Proxmox node. `pbp setup` prints the `pbp node setup` line for you; you run it on the node, and paste the block it prints back into `pbp setup`. That copy and paste carries everything each side needs from the other (the SSH key, the node's host key and certificate fingerprint, the API token secret), so nothing is typed twice and no secret ends up in a command line or your shell history.
 
-- **PBP on its own host** (recommended): two shells, one on the PBP host and a root shell on the node. Follow steps 1 to 6 below.
-- **PBP on the Proxmox node itself**: one shell. Do steps 1 and 2, then see [PBP on the Proxmox node itself](#pbp-on-the-proxmox-node-itself).
+- **PBP on its own host** (recommended for production): two shells, one on the PBP host and a root shell on the node. Follow steps 1 to 6 below.
+- **PBP on the Proxmox node itself** (a single-node lab or a trial): one shell. Do steps 1 and 2, then see [PBP on the Proxmox node itself](#pbp-on-the-proxmox-node-itself).
+
+For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs: [Where to run PBP](security.md#where-to-run-pbp) explains why.
 
 Before you start, get PBP onto the PBP host: a checkout of this repository (Docker), or the `.deb` package ([Install from the .deb](install-deb.md)). If you would rather do everything by hand, or want to see exactly what the two commands change, see [Manual setup](manual-setup.md); the guided commands produce that same end state. Why the setup looks the way it does is in [Security model](security.md).
 
@@ -194,6 +196,8 @@ sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
 
 ## PBP on the Proxmox node itself
 
+This suits a single-node lab or a trial; for production, run PBP on a separate host ([Where to run PBP](security.md#where-to-run-pbp)).
+
 PBP can run on the node it proofs on: install the `.deb` there ([Install from the .deb](install-deb.md)), do steps 1 and 2, then run, in a root shell on the node:
 
 ```
@@ -210,7 +214,6 @@ It does both halves in that one shell:
 
 A node file that differs from what setup writes stops it, as with `pbp node setup`; `sudo pbp setup --deb --replace` then backs it up and replaces it. The node-side rules still apply (root, an interactive terminal, not from an SSH forced command or the `pbp` sudo rule); where they do not hold, setup says so and falls back to printing the two lines. Answer no to keep the two-shell flow.
 
-Running PBP on the node means the proofs share a host with the guests they restore; a separate PBP host is still preferred.
 
 ## If something goes wrong
 
