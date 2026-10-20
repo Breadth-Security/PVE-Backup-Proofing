@@ -77,6 +77,9 @@ func TestFinishCheckedWrongAddress(t *testing.T) {
 					t.Errorf("error lacks %q: %s", want, msg)
 				}
 			}
+			if wantWritten := map[bool]string{true: "Only the token secret was written", false: "Nothing was written."}[secret != ""]; !strings.Contains(msg, wantWritten) {
+				t.Errorf("error lacks %q: %s", wantWritten, msg)
+			}
 			if strings.Contains(msg, "not-an-ip") || strings.Contains(msg, "s3cret") {
 				t.Errorf("error carries reply text it should not: %s", msg)
 			}

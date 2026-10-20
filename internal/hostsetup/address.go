@@ -126,12 +126,12 @@ func wrongAddress(host, addr string, r nodeproto.SetupReply, l Layout) error {
 	if len(own) > 0 {
 		hint = "one of its addresses (" + strings.Join(own, ", ") + ")"
 	}
-	saved := ""
+	written := "Nothing was written."
 	if r.TokenSecret != "" {
-		saved = " The token secret was saved to " + l.TokenPath() + "."
+		written = "Only the token secret was written, to " + l.TokenPath() + " (PVE shows it once)."
 	}
 	return fmt.Errorf("%w: %s%s answers SSH with a different host key than node %s, which printed this reply, so it is another machine. "+
-		"Nothing else was written.%s Set target.ssh.host and the host in target.api.url in %s to %s "+
+		"%s Set target.ssh.host and the host in target.api.url in %s to %s "+
 		"(or 127.0.0.1 when PBP runs on the node itself), then run pbp setup again",
-		ErrWrongAddress, addr, resolved, r.Node, saved, l.ConfigPath(), hint)
+		ErrWrongAddress, addr, resolved, r.Node, written, l.ConfigPath(), hint)
 }
