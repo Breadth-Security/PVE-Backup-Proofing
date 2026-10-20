@@ -414,10 +414,28 @@ func TestUninstallSSHDirNotEmpty(t *testing.T) {
 	}
 }
 
+// gone reports whether path (under Root) no longer exists.
+func gone(env Env, path string) bool {
+	_, err := os.Lstat(env.path(path))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// otherAccessGone checks that the sudo rule and the key not at path were
+// still removed (the key only when .ssh itself is usable).
+func otherAccessGone(t *testing.T, env Env, path string) {
+	t.Helper()
+	if path != SudoersPath && !gone(env, SudoersPath) {
+		t.Errorf("sudoers left while %s was refused", path)
+	}
+	if path != AuthorizedKeys && path != SSHDir && !gone(env, AuthorizedKeys) {
+		t.Errorf("authorized_keys left while %s was refused", path)
+	}
+}
+
 func TestUninstallRefusesNonRegular(t *testing.T) {
 	for _, path := range []string{SudoersPath, AuthorizedKeys, NodeYAMLPath, SSHDir} {
 		t.Run(path, func(t *testing.T) {
-			f, env := newUninstallFake(t)
+			_, env := newUninstallFake(t)
 			// For .ssh the symlink points at a directory holding an
 			// authorized_keys, which must survive.
 			victim, victimFile := filepath.Join(env.Root, "victim"), filepath.Join(env.Root, "victim")
@@ -425,43 +443,138 @@ func TestUninstallRefusesNonRegular(t *testing.T) {
 				victimFile = filepath.Join(victim, "authorized_keys")
 			}
 			mustWrite(t, victimFile, "keep\n", 0o600)
-			if err := os.RemoveAll(env.path(path)); err != nil {
-				t.Fatal(err)
+			swap := func() {
+				t.Helper()
+				if err := os.RemoveAll(env.path(path)); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(victim, env.path(path)); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := os.Symlink(victim, env.path(path)); err != nil {
-				t.Fatal(err)
+			check := func(err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), path) {
+					t.Fatalf("Uninstall err %v, want a refusal naming %s", err, path)
+				}
+				if fi, err := os.Lstat(env.path(path)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("symlink at %s was changed: %v", path, err)
+				}
+				if got := readFile(t, victimFile); got != "keep\n" {
+					t.Errorf("victim changed: %q", got)
+				}
+				if b := backups(t, env.Root); len(b) != 0 {
+					t.Errorf("backups %q", b)
+				}
+				otherAccessGone(t, env, path)
 			}
-			_, err := BuildUninstallPlan(context.Background(), env, false)
-			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "not a regular file") && !strings.Contains(err.Error(), "not a directory") {
-				t.Fatalf("err %v, want a refusal naming %s", err, path)
+
+			// At plan time: a Refused item, not a failed plan.
+			swap()
+			p := buildUninstallPlan(t, env, false)
+			var found bool
+			for _, it := range p.Items {
+				if it.Path == path && it.Status == Refused {
+					found = true
+					if !strings.Contains(it.Diff, "not a regular file") && !strings.Contains(it.Diff, "not a directory") {
+						t.Errorf("refusal %q", it.Diff)
+					}
+				}
 			}
-			// Uninstall re-checks: a plan built before the swap is refused too.
+			if !found {
+				t.Fatalf("no refused item for %s in %q", path, planKeys(p))
+			}
+			check(Uninstall(context.Background(), env, p, false))
+
+			// Swapped in after planning: Uninstall checks again.
 			if err := os.Remove(env.path(path)); err != nil {
 				t.Fatal(err)
 			}
 			layoutComplete(t, env.Root)
-			p := buildUninstallPlan(t, env, false)
-			if err := os.RemoveAll(env.path(path)); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(victim, env.path(path)); err != nil {
-				t.Fatal(err)
-			}
+			p = buildUninstallPlan(t, env, false)
+			swap()
+			check(Uninstall(context.Background(), env, p, false))
+		})
+	}
+}
+
+func TestUninstallAccessBestEffort(t *testing.T) {
+	const ts = ".pbp-backup-20261020T120000"
+	for _, path := range []string{SudoersPath, AuthorizedKeys} {
+		t.Run(path, func(t *testing.T) {
+			f, env := newUninstallFake(t)
+			// An edited file whose backup name is taken: the O_EXCL backup
+			// fails, so this file stays.
+			mustWrite(t, env.path(path), "edited\n", 0o440)
+			mustWrite(t, env.path(path+ts), "earlier backup\n", 0o600)
 			f.events = nil
-			err = Uninstall(context.Background(), env, p, false)
+			err := uninstall(t, env, true)
 			if err == nil || !strings.Contains(err.Error(), path) {
-				t.Fatalf("Uninstall err %v, want a refusal naming %s", err, path)
+				t.Fatalf("err %v, want a failure naming %s", err, path)
 			}
-			if fi, err := os.Lstat(env.path(path)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-				t.Errorf("symlink at %s was changed: %v", path, err)
+			if gone(env, path) {
+				t.Errorf("%s removed without a backup", path)
 			}
-			if got := readFile(t, victimFile); got != "keep\n" {
-				t.Errorf("victim changed: %q", got)
+			otherAccessGone(t, env, path)
+			// Then it stops: node.yaml, the shell and PVE are untouched.
+			if gone(env, NodeYAMLPath) {
+				t.Error("continued to node.yaml after an access failure")
 			}
-			if b := backups(t, env.Root); len(b) != 0 {
-				t.Errorf("backups %q", b)
+			for _, e := range f.changes() {
+				if !strings.HasPrefix(e, "/usr/sbin/visudo") && !strings.HasPrefix(e, "chown ") {
+					t.Errorf("continued after an access failure: %s", e)
+				}
 			}
 		})
+	}
+}
+
+func TestUninstallSymlinkedNodeYAML(t *testing.T) {
+	f, env := newUninstallFake(t)
+	victim := filepath.Join(env.Root, "victim")
+	mustWrite(t, victim, "keep\n", 0o600)
+	if err := os.Remove(env.path(NodeYAMLPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, env.path(NodeYAMLPath)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildUninstallPlan(context.Background(), env, true)
+	if err != nil {
+		t.Fatalf("BuildUninstallPlan: %v", err)
+	}
+	err = Uninstall(context.Background(), env, p, true)
+	if err == nil || !strings.Contains(err.Error(), NodeYAMLPath) {
+		t.Fatalf("err %v, want a refusal naming %s", err, NodeYAMLPath)
+	}
+	for _, path := range []string{SudoersPath, AuthorizedKeys, SSHDir} {
+		if !gone(env, path) {
+			t.Errorf("%s left", path)
+		}
+	}
+	if f.shell != NoLogin || len(f.users) != 0 {
+		t.Errorf("shell %s users %v: the rest of uninstall did not run", f.shell, f.users)
+	}
+	if got := readFile(t, victim); got != "keep\n" {
+		t.Errorf("victim changed: %q", got)
+	}
+}
+
+func TestUninstallNoPbpUser(t *testing.T) {
+	_, env := newUninstallFake(t)
+	lookup := env.Lookup
+	env.Lookup = func(user string) (int, int, string, string, error) {
+		if user == PbpUser {
+			return 0, 0, "", "", errors.New("user: unknown user pbp")
+		}
+		return lookup(user)
+	}
+	p := buildUninstallPlan(t, env, false)
+	if slices.Contains(planKeys(p), "shell pbp") {
+		t.Errorf("shell item without a pbp user: %q", planKeys(p))
+	}
+	if err := Uninstall(context.Background(), env, p, false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
 	}
 }
 

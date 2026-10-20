@@ -20,12 +20,28 @@ const (
 	maxProbeStderr = 512
 )
 
-// SelfTest proves the setup through the path the daemon uses, minus SSH:
-// as pbp, with SSH_ORIGINAL_COMMAND set, through the installed sudo rule.
-// A version request must succeed and print a version; an exec just above
-// the range must be refused with out-of-range. Then BuildPlan must find
-// every item correct. The error names the failing probe or items.
+// SelfTest proves the setup. First BuildPlan must find every item correct.
+// Then it goes through the path the daemon uses, minus SSH: as pbp, with
+// SSH_ORIGINAL_COMMAND set, through the installed sudo rule. A version
+// request must succeed and print a version; an exec just above the range
+// must be refused with out-of-range. The error names the failing probe or items.
 func SelfTest(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string) error {
+	// The check comes first: it proves node.yaml holds a's range, so the
+	// exec probe at a.VMIDRange[1]+1 is outside the range the helper uses.
+	p, err := BuildPlan(ctx, env, a, nodeName)
+	if err != nil {
+		return fmt.Errorf("self-test: check: %w", err)
+	}
+	if !p.Complete() {
+		var bad []string
+		for _, it := range p.Items {
+			if it.Status != Correct {
+				bad = append(bad, fmt.Sprintf("%s (%s): %s", it.Name, it.Path, it.Status))
+			}
+		}
+		return fmt.Errorf("self-test: check: not as setup left it: %s", strings.Join(bad, "; "))
+	}
+
 	out, stderr, exit, nonce, err := probe(ctx, env, nodeproto.Request{Op: "version"})
 	switch {
 	case err != nil:
@@ -48,19 +64,6 @@ func SelfTest(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName stri
 			vmid, exit, boundStderr(stderr))
 	}
 
-	p, err := BuildPlan(ctx, env, a, nodeName)
-	if err != nil {
-		return fmt.Errorf("self-test: check: %w", err)
-	}
-	if !p.Complete() {
-		var bad []string
-		for _, it := range p.Items {
-			if it.Status != Correct {
-				bad = append(bad, fmt.Sprintf("%s (%s): %s", it.Name, it.Path, it.Status))
-			}
-		}
-		return fmt.Errorf("self-test: check: not as setup left it: %s", strings.Join(bad, "; "))
-	}
 	return nil
 }
 

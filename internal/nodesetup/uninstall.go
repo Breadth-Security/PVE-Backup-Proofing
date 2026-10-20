@@ -55,41 +55,42 @@ func setupsAuthorizedKeys(b []byte) bool {
 // token, its ACL entries, the user and the role. Every item has Status
 // Remove; Backup marks a file that is not what setup writes. /etc/pbp, the
 // templates and the package are never listed. A clean node gives an empty
-// plan. A setup path that is not a regular file (or, for .ssh, a directory)
-// is refused.
+// plan. A setup path that is not a regular file (or, for .ssh, a directory),
+// or cannot be read, gets a Refused item (Diff says why) instead of failing
+// the plan, so the sudo rule and the key are still removed. A missing pbp
+// user gives no shell item. Only a failing pveum query fails the plan.
 func BuildUninstallPlan(ctx context.Context, env Env, removeToken bool) (Plan, error) {
 	var p Plan
-	sshDir, err := lstatSSHDir(env)
-	if err != nil {
-		return Plan{}, err
+	refuse := func(kind Kind, name, path string, err error) {
+		p.Items = append(p.Items, Item{Kind: kind, Name: name, Path: path, Status: Refused, Diff: err.Error()})
 	}
+	sshDir, sshErr := lstatSSHDir(env)
 	for _, f := range uninstallFiles {
-		if f.path == AuthorizedKeys && !sshDir {
-			continue
+		if f.path == AuthorizedKeys {
+			if sshErr != nil {
+				refuse(KindDir, "pbp .ssh dir", SSHDir, sshErr)
+			}
+			if !sshDir {
+				continue
+			}
 		}
 		it, err := planRemoveFile(env, f.name, f.path, f.setups)
 		if err != nil {
-			return Plan{}, err
+			refuse(KindFile, f.name, f.path, err)
+			continue
 		}
 		if it != nil {
 			p.Items = append(p.Items, *it)
 		}
-		if f.path == AuthorizedKeys && sshDir {
-			empty, err := emptyAfter(env, it)
-			if err != nil {
-				return Plan{}, err
-			}
-			if empty {
+		if f.path == AuthorizedKeys {
+			if empty, err := emptyAfter(env, it); err == nil && empty {
 				p.Items = append(p.Items, Item{Kind: KindDir, Name: "pbp .ssh dir", Path: SSHDir, Status: Remove, Diff: "-dir (empty)"})
 			}
 		}
 	}
 
-	_, _, _, shell, err := env.Lookup(PbpUser)
-	if err != nil {
-		return Plan{}, fmt.Errorf("look up user %s: %w", PbpUser, err)
-	}
-	if shell != NoLogin && shell != "/sbin/nologin" {
+	// No pbp user: nothing can log in as it, so there is no shell to change.
+	if _, _, _, shell, err := env.Lookup(PbpUser); err == nil && shell != NoLogin && shell != "/sbin/nologin" {
 		p.Items = append(p.Items, Item{Kind: KindShell, Name: "pbp login shell", Path: PbpUser, Status: Remove,
 			Content: []byte(NoLogin), Diff: "-" + shell + "\n+" + NoLogin})
 	}
@@ -263,18 +264,34 @@ func planRemovePVE(ctx context.Context, env Env) ([]Item, error) {
 	return items, nil
 }
 
+// isAccess: the sudo rule and the key, removed best-effort together.
+func isAccess(it Item) bool {
+	return it.Kind == KindFile && (it.Path == SudoersPath || it.Path == AuthorizedKeys)
+}
+
 // Uninstall carries out p (from BuildUninstallPlan) in order. Each file is
 // checked again as it is removed: a non-regular file is refused, and one
 // that is not what setup writes (now, or when planned) is backed up first.
-// After the sudo rule is removed `visudo -c` runs; its failure is reported
-// in the returned error, but uninstall goes on (there is nothing to
-// restore, and removing access matters more). Any other failure stops it.
-// PVE items run only with removeToken; each acts only on what is present.
+//
+// The sudo rule and the key are access, and go best-effort: a failure on
+// one still tries the other, and only then does uninstall stop with the
+// errors. After the sudo rule is removed `visudo -c` runs; its failure is
+// reported in the returned error, but uninstall goes on (there is nothing
+// to restore). Refused items are skipped and reported in the error at the
+// end. Any other failure stops it. PVE items run only with removeToken;
+// each acts only on what is present.
 func Uninstall(ctx context.Context, env Env, p Plan, removeToken bool) error {
-	var visudoErr error
+	var visudoErr, accessErr, refused error
 	for _, it := range p.Items {
+		if it.Status == Refused {
+			refused = errors.Join(refused, fmt.Errorf("%s (%s) not removed: %s", it.Name, it.Path, it.Diff))
+			continue
+		}
 		if it.Status != Remove {
 			continue
+		}
+		if accessErr != nil && !isAccess(it) {
+			return errors.Join(accessErr, visudoErr, refused)
 		}
 		var err error
 		switch it.Kind {
@@ -284,6 +301,10 @@ func Uninstall(ctx context.Context, env Env, p Plan, removeToken bool) error {
 				if verr := runCmd(ctx, env, visudo, "-c"); verr != nil {
 					visudoErr = fmt.Errorf("after removing %s, the sudo configuration does not check; fix it now: %w", SudoersPath, verr)
 				}
+			}
+			if err != nil && isAccess(it) {
+				accessErr = errors.Join(accessErr, fmt.Errorf("%s: %w", it.Name, err))
+				continue
 			}
 		case KindDir:
 			err = removeEmptyDir(env, it.Path)
@@ -297,10 +318,10 @@ func Uninstall(ctx context.Context, env Env, p Plan, removeToken bool) error {
 			err = fmt.Errorf("unknown item kind %q", it.Kind)
 		}
 		if err != nil {
-			return errors.Join(fmt.Errorf("%s: %w", it.Name, err), visudoErr)
+			return errors.Join(accessErr, fmt.Errorf("%s: %w", it.Name, err), visudoErr, refused)
 		}
 	}
-	return visudoErr
+	return errors.Join(accessErr, visudoErr, refused)
 }
 
 // removeFile removes a setup file, after a backup unless it is exactly what

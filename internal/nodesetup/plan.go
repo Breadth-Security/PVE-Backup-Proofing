@@ -32,6 +32,7 @@ const (
 	Create                // absent; setup creates it
 	Differs               // present but different; changed only with --replace
 	Remove                // present; uninstall removes it (or, for the shell, revokes it)
+	Refused               // uninstall cannot remove it safely (Diff says why); left for the admin
 )
 
 func (s Status) String() string {
@@ -44,6 +45,8 @@ func (s Status) String() string {
 		return "differs"
 	case Remove:
 		return "remove"
+	case Refused:
+		return "refused"
 	}
 	return fmt.Sprintf("Status(%d)", int(s))
 }

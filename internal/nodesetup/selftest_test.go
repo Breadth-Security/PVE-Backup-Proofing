@@ -173,6 +173,9 @@ func TestSelfTestFails(t *testing.T) {
 			if strings.Contains(err.Error(), "SECRET-STDOUT") {
 				t.Errorf("error carries stdout: %q", err)
 			}
+			if name == "plan incomplete" && len(f.reqs) != 0 {
+				t.Errorf("probes ran before the check passed: %+v", f.reqs)
+			}
 			if len(err.Error()) > 1500 {
 				t.Errorf("error is %d bytes long; stderr is not bounded", len(err.Error()))
 			}

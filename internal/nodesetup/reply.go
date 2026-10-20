@@ -5,9 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strings"
 
@@ -19,7 +17,8 @@ import (
 // Files the reply block is built from.
 const (
 	HostKeyPath      = "/etc/ssh/ssh_host_ed25519_key.pub"
-	PveproxyCertPath = "/etc/pve/local/pveproxy-ssl.pem" // a custom API certificate, when present
+	PveproxyCertPath = "/etc/pve/local/pveproxy-ssl.pem" // a custom API certificate...
+	PveproxyKeyPath  = "/etc/pve/local/pveproxy-ssl.key" // ...served only together with its key
 	PveCertPath      = "/etc/pve/local/pve-ssl.pem"      // the node's own certificate
 )
 
@@ -74,16 +73,17 @@ func hostKey(env Env) (string, error) {
 	return k.Type() + " " + base64.StdEncoding.EncodeToString(k.Marshal()), nil
 }
 
-// apiFingerprint is the SHA-256 of the first certificate in
-// pveproxy-ssl.pem, or in pve-ssl.pem when there is no custom one, as
-// uppercase hex bytes joined by ':' (the form openssl prints).
+// apiFingerprint is the SHA-256 of the first certificate of the file
+// pveproxy serves, as uppercase hex bytes joined by ':' (the form openssl
+// prints). pveproxy serves pveproxy-ssl.pem only when it and
+// pveproxy-ssl.key are both regular files (PVE::Service::pveproxy uses
+// `-f` on both), else pve-ssl.pem.
 func apiFingerprint(env Env) (string, error) {
-	path := PveproxyCertPath
-	b, err := os.ReadFile(env.path(path))
-	if errors.Is(err, fs.ErrNotExist) {
-		path = PveCertPath
-		b, err = os.ReadFile(env.path(path))
+	path := PveCertPath
+	if regularFile(env.path(PveproxyCertPath)) && regularFile(env.path(PveproxyKeyPath)) {
+		path = PveproxyCertPath
 	}
+	b, err := os.ReadFile(env.path(path))
 	if err != nil {
 		return "", fmt.Errorf("API certificate: %w", err)
 	}
@@ -106,4 +106,10 @@ func apiFingerprint(env Env) (string, error) {
 		}
 		return strings.Join(hexes, ":"), nil
 	}
+}
+
+// regularFile is perl's -f: path (symlinks followed) is a regular file.
+func regularFile(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }

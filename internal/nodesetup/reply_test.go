@@ -67,6 +67,7 @@ func TestBuildReply(t *testing.T) {
 	// pveproxy-ssl.pem may hold a chain; the first CERTIFICATE is the leaf.
 	mustWrite(t, env.path(PveproxyCertPath), pemOf("EC PARAMETERS", []byte{6, 1, 0})+pemOf("CERTIFICATE", leaf)+pemOf("CERTIFICATE", issuer), 0o640)
 	mustWrite(t, env.path(PveCertPath), pemOf("CERTIFICATE", issuer), 0o640)
+	mustWrite(t, env.path(PveproxyKeyPath), "key\n", 0o600)
 
 	a := testArgs()
 	a.PubKey = "  " + testKey + "  \n"
@@ -87,16 +88,45 @@ func TestBuildReply(t *testing.T) {
 		t.Errorf("fingerprint %q is not 32 colon-separated bytes", r.APIFingerprint)
 	}
 
-	// Without pveproxy-ssl.pem, pve-ssl.pem; no secret is allowed.
-	if err := os.Remove(env.path(PveproxyCertPath)); err != nil {
+	// pveproxy serves pveproxy-ssl.pem only with its key; a stray .pem, or
+	// no .pem, means pve-ssl.pem. No secret is allowed.
+	for _, rm := range []string{PveproxyKeyPath, PveproxyCertPath} {
+		if err := os.Remove(env.path(rm)); err != nil {
+			t.Fatal(err)
+		}
+		r, err = BuildReply(env, a, "pve1", "0.3.0", "")
+		if err != nil {
+			t.Fatalf("BuildReply without %s: %v", rm, err)
+		}
+		if r.APIFingerprint != fingerprint(issuer) || r.TokenSecret != "" {
+			t.Errorf("without %s: fingerprint %q secret %q, want %q and none", rm, r.APIFingerprint, r.TokenSecret, fingerprint(issuer))
+		}
+	}
+}
+
+// TestBuildReplyOpensslFixture checks the fingerprint against the value
+// `openssl x509 -noout -fingerprint -sha256 -in testdata/api-cert.crt`
+// printed (OpenSSL 3.6.5) for a fixed certificate.
+func TestBuildReplyOpensslFixture(t *testing.T) {
+	const want = "46:C1:0B:4F:57:92:57:99:F6:BF:9E:58:81:3E:52:A0:FF:7D:D0:4E:A0:BE:57:1F:F2:4D:32:33:68:B0:48:98"
+	cert, err := os.ReadFile("testdata/api-cert.crt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	r, err = BuildReply(env, a, "pve1", "0.3.0", "")
-	if err != nil {
-		t.Fatalf("BuildReply: %v", err)
-	}
-	if r.APIFingerprint != fingerprint(issuer) || r.TokenSecret != "" {
-		t.Errorf("fallback reply fingerprint %q secret %q, want %q and none", r.APIFingerprint, r.TokenSecret, fingerprint(issuer))
+	for _, path := range []string{PveproxyCertPath, PveCertPath} {
+		env := replyEnv(t)
+		mustWrite(t, env.path(path), string(cert), 0o640)
+		if path == PveproxyCertPath {
+			mustWrite(t, env.path(PveproxyKeyPath), "key\n", 0o600)
+			mustWrite(t, env.path(PveCertPath), pemOf("CERTIFICATE", testCert(t, "other")), 0o640)
+		}
+		r, err := BuildReply(env, testArgs(), "pve1", "0.3.0", "")
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if r.APIFingerprint != want {
+			t.Errorf("%s: fingerprint %s, want %s", path, r.APIFingerprint, want)
+		}
 	}
 }
 
