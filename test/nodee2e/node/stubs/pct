@@ -1,0 +1,23 @@
+#!/bin/sh
+# Stub /usr/sbin/pct for the node e2e test. It logs its argv, one <arg> per
+# argument, and for `pct exec <vmid> -- <argv...>` runs argv locally as a
+# child (not exec), so a deadline kill has to reach a grandchild of the
+# helper through the process group. Output and exit code pass through.
+for a in "$@"; do printf '<%s> ' "$a"; done >> /var/log/pbp-e2e/pct.log
+echo >> /var/log/pbp-e2e/pct.log
+case "$1" in
+exec)
+    shift 2 # exec <vmid>
+    if [ "$1" != "--" ]; then
+        echo "pct stub: missing --" >&2
+        exit 2
+    fi
+    shift
+    "$@"
+    exit $?
+    ;;
+*)
+    echo "pct stub: unsupported subcommand $1" >&2
+    exit 2
+    ;;
+esac

@@ -2,8 +2,8 @@ package target
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,10 +12,12 @@ import (
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/bridgetest"
 )
 
@@ -43,18 +45,10 @@ func healthyFake() *pvefake.Fake {
 	return f
 }
 
-// Live bridge-state commands Prepare runs over SSH.
-var (
-	cmdIPv6   = bridgetest.For(bridge).IPv6
-	cmdAddr   = bridgetest.For(bridge).Addr
-	cmdMaster = bridgetest.For(bridge).Master
-	cmdOVS    = bridgetest.For(bridge).OVS
-)
-
-// isolatedBridge answers the live bridge checks as an isolated bridge with
-// IPv6 disabled, no addresses and no members; overrides replace answers.
-func isolatedBridge(overrides map[string]sshx.Result) *sshx.Fake {
-	return bridgetest.Isolated(bridge, overrides)
+// isolatedBridge answers the helper's bridge request as an isolated bridge
+// with IPv6 disabled, no addresses and no members; mods change the reply.
+func isolatedBridge(mods ...func(*nodeproto.BridgeState)) *helperfake.Fake {
+	return bridgetest.Isolated(bridge, mods...)
 }
 
 // newTarget builds an ExistingNode with fast polling and registers the safety
@@ -62,9 +56,11 @@ func isolatedBridge(overrides map[string]sshx.Result) *sshx.Fake {
 func newTarget(t *testing.T, api pve.API, fake *pvefake.Fake, ssh sshx.Runner) *ExistingNode {
 	t.Helper()
 	if ssh == nil {
-		ssh = isolatedBridge(nil)
+		// The node reports the bridge kind the API shows.
+		ovs := fake.Ifaces[bridge].Type == "OVSBridge"
+		ssh = isolatedBridge(func(st *nodeproto.BridgeState) { st.OVS = ovs })
 	}
-	n := NewExistingNode(testConfig(), api, ssh)
+	n := NewExistingNode(testConfig(), api, sshx.Helper{R: ssh})
 	n.statusPoll, n.agentPoll, n.lxcExecPoll, n.execPoll = time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond
 	t.Cleanup(func() { assertNoMutationOutsideRange(t, fake.CallLog()) })
 	return n
@@ -186,63 +182,84 @@ func TestPrepare(t *testing.T) {
 }
 
 // The API shows configuration only. Prepare also checks the bridge's live
-// state on the node: IPv6 disabled (no link-local address a guest could use
-// to reach the node, no SLAAC from a restored router), no addresses at all,
-// and no members but proof-guest interfaces.
+// state on the node, as the helper's bridge request reports it: IPv6
+// disabled (no link-local address a guest could use to reach the node, no
+// SLAAC from a restored router), no addresses at all, and no members but
+// proof-guest interfaces. These are the cases the per-command SSH checks had,
+// with the same verdicts, plus the helper-only ones.
 func TestPrepareLiveIsolation(t *testing.T) {
 	ctx := context.Background()
-	members := func(names ...string) sshx.Result {
-		var parts []string
-		for i, n := range names {
-			parts = append(parts, fmt.Sprintf(`{"ifindex":%d,"ifname":"%s","master":"%s"}`, 20+i, n, bridge))
-		}
-		return sshx.Result{Stdout: "[" + strings.Join(parts, ",") + "]\n"}
+	members := func(names ...string) func(*nodeproto.BridgeState) {
+		return func(st *nodeproto.BridgeState) { st.Members = append([]string{}, names...) }
+	}
+	addrs := func(js string) func(*nodeproto.BridgeState) {
+		return func(st *nodeproto.BridgeState) { st.Addrs = json.RawMessage(js) }
+	}
+	fail := func(reason string) func(nodeproto.Request) sshx.Result {
+		return func(req nodeproto.Request) sshx.Result { return helperfake.Fail(req, reason) }
 	}
 	tests := []struct {
 		name     string
-		ovs      bool
-		answers  map[string]sshx.Result
+		ovs      bool // the API and the node report an OVS bridge
+		mod      func(*nodeproto.BridgeState)
+		reply    func(nodeproto.Request) sshx.Result // replaces the helper's reply
 		sshErr   error
 		wantErr  bool
 		isolated bool // the error is ErrNotIsolated
+		timeout  bool // the error is a timeout
 		text     string
 	}{
 		{name: "isolated, no members"},
-		{name: "proof guest members", answers: map[string]sshx.Result{
-			cmdMaster: members("tap990000i0", "veth990001i0", "fwpr990002p0", "fwln990002i0")}},
-		{name: "empty member output", answers: map[string]sshx.Result{cmdMaster: {Stdout: ""}}},
-		{name: "ipv6 enabled", answers: map[string]sshx.Result{cmdIPv6: {Stdout: "0\n"}},
+		{name: "proof guest members", mod: members("tap990000i0", "veth990001i0", "fwpr990002p0", "fwln990002i0")},
+		{name: "empty member output", mod: members()},
+		{name: "ipv6 enabled", mod: func(st *nodeproto.BridgeState) { st.DisableIPv6 = "0" },
 			wantErr: true, isolated: true, text: "IPv6"},
-		{name: "ipv6 state unreadable", answers: map[string]sshx.Result{cmdIPv6: {ExitCode: 1, Stderr: "No such file or directory"}},
-			wantErr: true, isolated: true, text: "No such file"},
-		{name: "link-local address", answers: map[string]sshx.Result{cmdAddr: {Stdout: `[{"ifname":"` + bridge + `","addr_info":[{"family":"inet6","local":"fe80::1","prefixlen":64,"scope":"link"}]}]`}},
+		{name: "ipv6 state unreadable", reply: fail("bridge pbpiso0: read disable_ipv6: open /proc/sys/net/ipv6/conf/pbpiso0/disable_ipv6: No such file or directory"),
+			wantErr: true, isolated: true, text: "cannot be verified"},
+		{name: "link-local address", mod: addrs(`[{"ifname":"` + bridge + `","addr_info":[{"family":"inet6","local":"fe80::1","prefixlen":64,"scope":"link"}]}]`),
 			wantErr: true, isolated: true, text: "fe80::1"},
-		{name: "ipv4 address", answers: map[string]sshx.Result{cmdAddr: {Stdout: `[{"ifname":"` + bridge + `","addr_info":[{"family":"inet","local":"10.9.9.1","prefixlen":24}]}]`}},
+		{name: "ipv4 address", mod: addrs(`[{"ifname":"` + bridge + `","addr_info":[{"family":"inet","local":"10.9.9.1","prefixlen":24}]}]`),
 			wantErr: true, isolated: true, text: "10.9.9.1"},
-		{name: "physical uplink", answers: map[string]sshx.Result{cmdMaster: members("tap990000i0", "eno1")},
+		{name: "physical uplink", mod: members("tap990000i0", "eno1"),
 			wantErr: true, isolated: true, text: "eno1"},
-		{name: "bond uplink", answers: map[string]sshx.Result{cmdMaster: members("bond0")},
+		{name: "bond uplink", mod: members("bond0"),
 			wantErr: true, isolated: true, text: "bond0"},
-		{name: "vlan uplink", answers: map[string]sshx.Result{cmdMaster: members("eno1.20")},
+		{name: "vlan uplink", mod: members("eno1.20"),
 			wantErr: true, isolated: true, text: "eno1.20"},
-		{name: "production guest plugged in", answers: map[string]sshx.Result{cmdMaster: members("tap100i0")},
+		{name: "production guest plugged in", mod: members("tap100i0"),
 			wantErr: true, isolated: true, text: "tap100i0"},
-		{name: "unparseable member list", answers: map[string]sshx.Result{cmdMaster: {Stdout: "garbage"}},
+		{name: "unparseable member list", reply: fail("bridge pbpiso0: parse ip link output: invalid character 'g' looking for beginning of value"),
 			wantErr: true, isolated: true},
-		{name: "ip fails", answers: map[string]sshx.Result{cmdAddr: {ExitCode: 1, Stderr: "Device does not exist"}},
-			wantErr: true, isolated: true, text: "Device does not exist"},
+		{name: "ip fails", reply: fail("bridge pbpiso0: /usr/bin/ip -j addr show dev pbpiso0 exited 1: Device does not exist"),
+			wantErr: true, isolated: true, text: "cannot be verified"},
 		{name: "ssh transport error", sshErr: errors.New("ssh: connection lost"), wantErr: true, text: "connection lost"},
 		{name: "ovs isolated", ovs: true},
 		// On OVS, PVE plugs a NIC with firewall=1 in as the internal port
 		// fwln<vmid>o<n> (PVE::Network compute_fwbr_names); without the
 		// firewall it is the plain tap.
-		{name: "ovs proof guest ports", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nfwln990001o0\nfwln990002o1\n"}}},
-		{name: "ovs production guest firewall port", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "fwln100o0\n"}},
+		{name: "ovs proof guest ports", ovs: true, mod: members("tap990000i0", "fwln990001o0", "fwln990002o1")},
+		{name: "ovs production guest firewall port", ovs: true, mod: members("fwln100o0"),
 			wantErr: true, isolated: true, text: "fwln100o0"},
-		{name: "ovs firewall port out of range", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "fwln990050o0\n"}},
+		{name: "ovs firewall port out of range", ovs: true, mod: members("fwln990050o0"),
 			wantErr: true, isolated: true, text: "fwln990050o0"},
-		{name: "ovs internal port", ovs: true, answers: map[string]sshx.Result{cmdOVS: {Stdout: "tap990000i0\nmgmt0\n"}},
+		{name: "ovs internal port", ovs: true, mod: members("tap990000i0", "mgmt0"),
 			wantErr: true, isolated: true, text: "mgmt0"},
+
+		// Helper-only cases.
+		{name: "unparseable address list", mod: addrs(`{"addr_info":[]}`),
+			wantErr: true, isolated: true, text: "cannot be verified"},
+		{name: "helper reports another bridge", mod: func(st *nodeproto.BridgeState) { st.Name = "vmbr0" },
+			wantErr: true, isolated: true, text: "vmbr0"},
+		{name: "api says ovs, node says linux", ovs: true, mod: func(st *nodeproto.BridgeState) { st.OVS = false },
+			wantErr: true, isolated: true, text: "OVS"},
+		{name: "api says linux, node says ovs", mod: func(st *nodeproto.BridgeState) { st.OVS = true },
+			wantErr: true, isolated: true, text: "OVS"},
+		{name: "helper refuses", reply: func(req nodeproto.Request) sshx.Result { return helperfake.Refuse(req, "bad-request", "nope") },
+			wantErr: true, isolated: true, text: "nope"},
+		{name: "unusable helper reply", reply: func(nodeproto.Request) sshx.Result { return sshx.Result{Stdout: `{"name":"pbpiso0"}`} },
+			wantErr: true, isolated: true, text: "cannot be verified"},
+		{name: "helper timeout", reply: helperfake.Timeout,
+			wantErr: true, timeout: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,11 +267,24 @@ func TestPrepareLiveIsolation(t *testing.T) {
 			if tc.ovs {
 				f.Ifaces[bridge] = pve.NetIface{Iface: bridge, Type: "OVSBridge"}
 			}
-			ssh := isolatedBridge(tc.answers)
+			var mods []func(*nodeproto.BridgeState)
+			if tc.ovs {
+				mods = append(mods, func(st *nodeproto.BridgeState) { st.OVS = true })
+			}
+			if tc.mod != nil {
+				mods = append(mods, tc.mod)
+			}
+			ssh := isolatedBridge(mods...)
+			if tc.reply != nil {
+				ssh.Handler = func(req nodeproto.Request, _ []byte) (sshx.Result, error) { return tc.reply(req), nil }
+			}
 			if tc.sshErr != nil {
-				ssh.Handler = func(string, []byte) (sshx.Result, error) { return sshx.Result{}, tc.sshErr }
+				ssh.Handler = func(nodeproto.Request, []byte) (sshx.Result, error) { return sshx.Result{}, tc.sshErr }
 			}
 			err := newTarget(t, f, f, ssh).Prepare(ctx)
+			if ops := ssh.Ops(); !slices.Equal(ops, []string{"bridge"}) {
+				t.Errorf("helper requests = %q, want one bridge request", ops)
+			}
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("Prepare: %v", err)
@@ -266,6 +296,9 @@ func TestPrepareLiveIsolation(t *testing.T) {
 			}
 			if errors.Is(err, ErrNotIsolated) != tc.isolated {
 				t.Errorf("err = %v, ErrNotIsolated = %v, want %v", err, errors.Is(err, ErrNotIsolated), tc.isolated)
+			}
+			if errors.Is(err, context.DeadlineExceeded) != tc.timeout {
+				t.Errorf("err = %v, timeout = %v, want %v", err, errors.Is(err, context.DeadlineExceeded), tc.timeout)
 			}
 			if !strings.Contains(err.Error(), tc.text) {
 				t.Errorf("err %q does not mention %q", err, tc.text)
@@ -371,7 +404,7 @@ func TestAllocateVMID(t *testing.T) {
 			}
 			cfg := testConfig()
 			cfg.Target.VMIDRange = tc.rng
-			n := NewExistingNode(cfg, f, &sshx.Fake{})
+			n := NewExistingNode(cfg, f, sshx.Helper{R: &helperfake.Fake{}})
 			t.Cleanup(func() { assertNoMutationOutsideRange(t, f.CallLog()) })
 			got, err := n.AllocateVMID(ctx, inUse)
 			if tc.wantErr {

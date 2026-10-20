@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,7 +20,11 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/daemon"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/targetfake"
@@ -32,7 +37,7 @@ type fakeNotifier struct {
 	sent []model.RunSummary
 }
 
-func (n *fakeNotifier) EnsureTemplates(context.Context) error { return nil }
+func (n *fakeNotifier) CheckTemplates(context.Context) error { return nil }
 
 func (n *fakeNotifier) Send(_ context.Context, s model.RunSummary) error {
 	n.mu.Lock()
@@ -338,6 +343,83 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// stepTarget is a fake target that reports its node helper checks step by
+// step, as target.ExistingNode does.
+type stepTarget struct {
+	*targetfake.Fake
+	steps []target.NodeStep
+}
+
+func (s stepTarget) CheckNodeSteps(context.Context) []target.NodeStep { return s.steps }
+
+func TestCheckPrintsNodeHelperSteps(t *testing.T) {
+	e := newEnv(t)
+	st := stepTarget{Fake: e.tgt, steps: []target.NodeStep{
+		{Name: "node helper version", Detail: "0.2.0"},
+		{Name: "node helper config", Detail: "range [990000, 990049], bridge vmbr-pbp"},
+		{Name: "node helper request_timeout", Detail: "15m0s"},
+		{Name: "node helper refusal", Detail: "exec in 990050 refused"},
+	}}
+	e.a.connect = func(config.Config) wiring {
+		return wiring{api: e.api, target: st, notifier: e.notif, close: func() {}}
+	}
+	if code := e.run("check"); code != exitOK {
+		t.Fatalf("exit %d out %q", code, e.out)
+	}
+	for _, want := range []string{"node helper version: ok (0.2.0)\n", "node helper config: ok (range [990000, 990049], bridge vmbr-pbp)\n",
+		"node helper request_timeout: ok (15m0s)\n", "node helper refusal: ok (exec in 990050 refused)\n"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("missing %q in %q", want, e.out)
+		}
+	}
+
+	st.steps = []target.NodeStep{{Name: "node helper version", Detail: "0.2.0"},
+		{Name: "node helper config", Err: errors.New("bridge differs (see README \"Node setup\")")}}
+	e.a.connect = func(config.Config) wiring {
+		return wiring{api: e.api, target: st, notifier: e.notif, close: func() {}}
+	}
+	code := e.run("check")
+	if code != exitFail || !strings.Contains(e.out.String(), `node helper config: FAIL: bridge differs (see README "Node setup")`) ||
+		strings.Contains(e.out.String(), "preflight") {
+		t.Errorf("exit %d out %q", code, e.out)
+	}
+}
+
+// assemble wires the real target with the daemon's own version, and check
+// walks the real helper checks.
+func TestCheckRealNodeHelperUsesDaemonVersion(t *testing.T) {
+	helperVer := func(v string) *helperfake.Fake {
+		return &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+			switch req.Op {
+			case "version":
+				return sshx.Result{Stdout: v + "\n"}, nil
+			case "config":
+				return helperfake.JSON(nodeproto.NodeConfig{VMIDRange: [2]int{990000, 990049}, Bridge: "vmbr-pbp",
+					RequestTimeout: 15 * time.Minute, Version: v}), nil
+			case "exec":
+				return helperfake.Refuse(req, "out-of-range", "outside the range"), nil
+			}
+			return sshx.Result{ExitCode: 127}, nil
+		}}
+	}
+	e := newEnv(t)
+	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, helperVer(version), nil) }
+	e.run("check")
+	for _, want := range []string{"node helper version: ok (" + version + ")", "node helper config: ok", "node helper refusal: ok"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("missing %q in %q", want, e.out)
+		}
+	}
+
+	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, helperVer("9.9.9"), nil) }
+	code := e.run("check")
+	if code != exitFail || !strings.Contains(e.out.String(), "node helper version: FAIL") ||
+		!strings.Contains(e.out.String(), "9.9.9") || !strings.Contains(e.out.String(), "Node setup") ||
+		strings.Contains(e.out.String(), "preflight") {
+		t.Errorf("exit %d out %q", code, e.out)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	e := newEnv(t)
 	if code := e.run("health"); code != exitOK || e.out.String() != "ok\n" {
@@ -474,5 +556,379 @@ func TestDaemonWritesStartTime(t *testing.T) {
 	}
 	if !strings.Contains(e.out.String(), "version="+version) {
 		t.Errorf("daemon start does not log the version: %q", e.out)
+	}
+}
+
+type captureAudit struct{ got []auditEntry }
+
+func (c *captureAudit) Log(e auditEntry) { c.got = append(c.got, e) }
+
+// nodeEnv wires `pbp node` to a temp helper config, a capturing audit log
+// and a non-root euid.
+func nodeEnv(t *testing.T) (*env, *captureAudit) {
+	t.Helper()
+	e := newEnv(t)
+	cfgPath := filepath.Join(t.TempDir(), "node.yaml")
+	if err := os.WriteFile(cfgPath, []byte("vmid_range: [990000, 990049]\nbridge: vmbr-pbp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PBP_NODE_CONFIG", cfgPath)
+	t.Setenv("SSH_CONNECTION", "192.0.2.7 50000 192.0.2.1 22")
+	au := &captureAudit{}
+	e.a.audit = au
+	e.a.stdin = strings.NewReader("")
+	e.a.euid = func() int { return 1000 }
+	e.a.templateDir = filepath.Join(t.TempDir(), "tmpl")
+	return e, au
+}
+
+func nodeRequest(t *testing.T, op string, timeout time.Duration) (string, string) {
+	t.Helper()
+	nonce := nodeproto.NewNonce()
+	s, err := nodeproto.Encode(nodeproto.Request{Op: op, Timeout: timeout, Nonce: nonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, nonce
+}
+
+func TestNodeNoRequest(t *testing.T) {
+	for _, set := range []bool{false, true} {
+		e, au := nodeEnv(t)
+		if set {
+			t.Setenv("SSH_ORIGINAL_COMMAND", "")
+		} else {
+			unsetenv(t, "SSH_ORIGINAL_COMMAND")
+		}
+		if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+			t.Errorf("set=%v: exit %d", set, code)
+		}
+		want := "pbp-node: refused: no request (pbp node runs only as an SSH forced command)\n"
+		if e.errOut.String() != want || e.out.Len() != 0 {
+			t.Errorf("set=%v: stderr %q stdout %q", set, e.errOut, e.out)
+		}
+		if len(au.got) != 0 {
+			t.Errorf("set=%v: audited a non-request: %v", set, au.got)
+		}
+	}
+}
+
+// unsetenv removes key for the test and restores it afterwards.
+func unsetenv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	_ = os.Unsetenv(key)
+}
+
+// stubSys is a node.System whose failures echo secrets, as subprocess stderr
+// can.
+type stubSys struct {
+	secret    string
+	ctConfErr bool
+}
+
+func (s stubSys) CTConfig(context.Context, int) (map[string]string, error) {
+	if s.ctConfErr {
+		return nil, errors.New("open /etc/pve/lxc/990001.conf: " + s.secret)
+	}
+	return map[string]string{"tags": "pbp"}, nil
+}
+func (s stubSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, errors.New("pct failed running " + s.secret)
+}
+func (s stubSys) BridgeState(context.Context, string) (nodeproto.BridgeState, error) {
+	return nodeproto.BridgeState{}, errors.New("ovs: " + s.secret)
+}
+func (s stubSys) Notify(context.Context, []byte) error { return errors.New("ERROR: " + s.secret) }
+func (s stubSys) TemplateHashes() (map[string]string, error) {
+	return nil, errors.New("hash " + s.secret)
+}
+
+func TestNodeErrorReasonsNotAudited(t *testing.T) {
+	const secret = "hunter2-secret"
+	cases := map[string]struct {
+		req   nodeproto.Request
+		stdin string
+	}{
+		"notify": {nodeproto.Request{Op: "notify"}, `{"severity":"info"}`},
+		"pct":    {nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}}, ""},
+		"bridge": {nodeproto.Request{Op: "bridge"}, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, au := nodeEnv(t)
+			e.a.nodeSys = stubSys{secret: secret}
+			e.a.stdin = strings.NewReader(c.stdin)
+			c.req.Timeout, c.req.Nonce = time.Minute, nodeproto.NewNonce()
+			enc, err := nodeproto.Encode(c.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+			if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+				t.Fatalf("exit %d, stderr %q", code, e.errOut)
+			}
+			if len(au.got) != 2 || au.got[0].Outcome != "received" || au.got[1].Outcome != "error" {
+				t.Fatalf("audit %+v", au.got)
+			}
+			for _, g := range au.got {
+				if strings.Contains(formatAudit(g), secret) {
+					t.Errorf("audit leaks subprocess text: %+v", g)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeRefusalAuditCodesOmitPayloadText(t *testing.T) {
+	const secret = "hunter2-secret"
+	cases := map[string]struct {
+		req   nodeproto.Request
+		stdin string
+		sys   stubSys
+		code  string
+	}{
+		"severity":      {nodeproto.Request{Op: "notify"}, `{"severity":"` + secret + `"}`, stubSys{}, "bad-severity"},
+		"unknown field": {nodeproto.Request{Op: "notify"}, `{"severity":"info","` + secret + `":1}`, stubSys{}, "bad-payload"},
+		"not container": {nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"id"}}, "", stubSys{secret: secret, ctConfErr: true}, "not-container"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, au := nodeEnv(t)
+			e.a.nodeSys = c.sys
+			e.a.stdin = strings.NewReader(c.stdin)
+			c.req.Timeout, c.req.Nonce = time.Minute, nodeproto.NewNonce()
+			enc, err := nodeproto.Encode(c.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+			if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+				t.Fatalf("exit %d", code)
+			}
+			if len(au.got) != 2 || au.got[1].Outcome != "refused" || au.got[1].Reason != c.code {
+				t.Fatalf("audit %+v, want reason %q", au.got, c.code)
+			}
+			for _, g := range au.got {
+				if strings.Contains(formatAudit(g), secret) {
+					t.Errorf("audit leaks text: %+v", g)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeExit250WithoutMarkerIsError(t *testing.T) {
+	e, au := nodeEnv(t)
+	e.a.nodeSys = execSys{stubSys{}, 250}
+	req := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"x"},
+		Timeout: time.Minute, Nonce: nodeproto.NewNonce()}
+	enc, _ := nodeproto.Encode(req)
+	t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(au.got) != 2 || au.got[1].Outcome != "error" || au.got[1].Reason == "" {
+		t.Errorf("audit %+v", au.got)
+	}
+}
+
+type execSys struct {
+	stubSys
+	exit int
+}
+
+func (s execSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return s.exit, nil
+}
+
+func TestNodeConfigOverrideIgnoredAsRoot(t *testing.T) {
+	for _, root := range []bool{false, true} {
+		e, au := nodeEnv(t)
+		if root {
+			e.a.euid = func() int { return 0 }
+		}
+		req, _ := nodeRequest(t, "version", time.Minute)
+		t.Setenv("SSH_ORIGINAL_COMMAND", req)
+		code := e.a.main(context.Background(), []string{"node"})
+		if root {
+			// /etc/pbp/node.yaml is used; the temp override must not be.
+			if _, err := os.Stat(node.DefaultConfigPath); err == nil {
+				t.Skip("host has a real /etc/pbp/node.yaml")
+			}
+			if code != 250 || len(au.got) != 1 || au.got[0].Outcome != "refused" {
+				t.Errorf("root: exit %d audit %+v", code, au.got)
+			}
+		} else if code != 0 {
+			t.Errorf("non-root: exit %d", code)
+		}
+	}
+}
+
+func TestNodeUnparseableRequestMissingConfig(t *testing.T) {
+	e, au := nodeEnv(t)
+	t.Setenv("PBP_NODE_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	t.Setenv("SSH_ORIGINAL_COMMAND", "rm -rf /")
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.HasPrefix(e.errOut.String(), "pbp-node: refused: ") || strings.Count(e.errOut.String(), "\n") != 1 {
+		t.Errorf("stderr %q", e.errOut)
+	}
+	if len(au.got) != 1 || au.got[0].Outcome != "refused" {
+		t.Errorf("audit %+v", au.got)
+	}
+}
+
+func TestNodeVersionRequest(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v0.2.1"
+	e, au := nodeEnv(t)
+	req, _ := nodeRequest(t, "version", time.Minute)
+	t.Setenv("SSH_ORIGINAL_COMMAND", req)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, e.errOut)
+	}
+	if e.out.String() != "v0.2.1\n" || e.errOut.Len() != 0 {
+		t.Errorf("stdout %q stderr %q", e.out, e.errOut)
+	}
+	want := []auditEntry{{Outcome: "received", Op: "version", Client: "192.0.2.7"},
+		{Outcome: "ok", Op: "version", Client: "192.0.2.7"}}
+	if !slices.Equal(au.got, want) {
+		t.Errorf("audit %+v, want %+v", au.got, want)
+	}
+}
+
+func TestNodeRefusalsAreAudited(t *testing.T) {
+	e, au := nodeEnv(t)
+	secret := "hunter2-secret"
+	t.Setenv("SSH_ORIGINAL_COMMAND", "exec 5 -- "+secret)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(au.got) != 1 || au.got[0].Outcome != "refused" || au.got[0].Client != "192.0.2.7" {
+		t.Fatalf("audit %+v", au.got)
+	}
+	if strings.Contains(formatAudit(au.got[0]), secret) {
+		t.Errorf("audit leaks request text: %+v", au.got[0])
+	}
+
+	// A valid request the helper itself refuses: out-of-range VMID.
+	au.got = nil
+	nonce := nodeproto.NewNonce()
+	req, err := nodeproto.Encode(nodeproto.Request{Op: "exec", VMID: 101, Argv: []string{"echo", secret},
+		Timeout: time.Minute, Nonce: nonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_ORIGINAL_COMMAND", req)
+	e.errOut.Reset()
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	kind, _, ok := nodeproto.HelperFailure(250, e.errOut.String(), nonce)
+	if !ok || kind != "refused" {
+		t.Errorf("stderr %q", e.errOut)
+	}
+	if len(au.got) != 2 || au.got[0].Outcome != "received" || au.got[0].VMID != 101 {
+		t.Fatalf("audit %+v", au.got)
+	}
+	if g := au.got[1]; g.Outcome != "refused" || g.Op != "exec" || g.VMID != 101 || g.Reason == "" {
+		t.Fatalf("audit %+v", au.got)
+	}
+	for _, g := range au.got {
+		if strings.Contains(formatAudit(g), secret) {
+			t.Errorf("audit leaks argv: %+v", g)
+		}
+	}
+}
+
+func TestNodeMissingConfigRefuses(t *testing.T) {
+	e, au := nodeEnv(t)
+	t.Setenv("PBP_NODE_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	req, nonce := nodeRequest(t, "version", time.Minute)
+	t.Setenv("SSH_ORIGINAL_COMMAND", req)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 250 {
+		t.Fatalf("exit %d", code)
+	}
+	if kind, _, ok := nodeproto.HelperFailure(250, e.errOut.String(), nonce); !ok || kind != "refused" {
+		t.Errorf("stderr %q", e.errOut)
+	}
+	if len(au.got) != 1 || au.got[0].Outcome != "refused" {
+		t.Errorf("audit %+v", au.got)
+	}
+}
+
+func TestNodeInstallTemplates(t *testing.T) {
+	t.Run("refused over ssh", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		t.Setenv("SSH_ORIGINAL_COMMAND", "version")
+		if code := e.a.main(context.Background(), []string{"node", "install-templates"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates despite SSH_ORIGINAL_COMMAND")
+		}
+		if !strings.Contains(e.errOut.String(), "usage:") {
+			t.Errorf("stderr %q", e.errOut)
+		}
+	})
+	t.Run("refused over ssh with empty command as root", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		t.Setenv("SSH_ORIGINAL_COMMAND", "")
+		if code := e.a.main(context.Background(), []string{"node", "install-templates"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates")
+		}
+	})
+	t.Run("extra argument refused", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		if code := e.a.main(context.Background(), []string{"node", "install-templates", "extra"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates")
+		}
+	})
+	t.Run("refused as non-root", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		if code := e.a.main(context.Background(), []string{"node", "install-templates"}); code != exitUsage {
+			t.Errorf("exit %d", code)
+		}
+		if _, err := os.Stat(e.a.templateDir); err == nil {
+			t.Error("wrote templates as non-root")
+		}
+	})
+	t.Run("root installs and lists paths", func(t *testing.T) {
+		e, _ := nodeEnv(t)
+		e.a.euid = func() int { return 0 }
+		if code := e.a.main(context.Background(), []string{"node", "install-templates"}); code != exitOK {
+			t.Fatalf("exit %d, stderr %q", code, e.errOut)
+		}
+		entries, err := os.ReadDir(e.a.templateDir)
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("no templates written: %v", err)
+		}
+		for _, en := range entries {
+			if !strings.Contains(e.out.String(), filepath.Join(e.a.templateDir, en.Name())+"\n") {
+				t.Errorf("stdout %q omits %s", e.out, en.Name())
+			}
+		}
+	})
+}
+
+func TestNodeUsageAndExtraArgs(t *testing.T) {
+	e, _ := nodeEnv(t)
+	if !strings.Contains(usage, "pbp node") {
+		t.Errorf("usage omits node: %q", usage)
+	}
+	if code := e.a.main(context.Background(), []string{"node", "bogus"}); code != exitUsage {
+		t.Errorf("exit %d", code)
 	}
 }

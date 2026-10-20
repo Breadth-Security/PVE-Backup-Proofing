@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,20 +30,38 @@ func (r refused) Exec(context.Context, []string) (probe.ExecResult, error) {
 	return probe.ExecResult{}, r.err
 }
 
-// lxcExec runs commands with "pct exec" over SSH.
+// lxcExec runs commands through the helper's exec request, which runs
+// "pct exec" on the node only for a pbp-tagged container in the range.
 type lxcExec struct {
 	n    *ExistingNode
 	vmid int
 }
 
 func (e lxcExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
-	// ctx's deadline bounds the command on the node too (sshx.Runner).
-	cmd := fmt.Sprintf("pct exec %d -- %s", e.vmid, sshx.Quote(argv...))
-	res, err := e.n.ssh.Run(ctx, cmd, nil)
+	// The time ctx still allows travels in the request; the helper bounds
+	// the command on the node by it.
+	res, err := e.n.helper.Exec(ctx, e.vmid, argv)
 	if err != nil {
-		return probe.ExecResult{}, fmt.Errorf("pct exec %d: %w", e.vmid, err)
+		return probe.ExecResult{}, execErr(e.vmid, err)
 	}
 	return probe.ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}, nil
+}
+
+// execErr maps a helper refusal by its code: out-of-range is ErrOutOfRange,
+// untagged and not-container are ErrNotOwned. Any other error, including
+// any other refusal, stays a plain error, which a probe treats as a
+// transport fault (ERROR, never FAILED).
+func execErr(vmid int, err error) error {
+	var re *sshx.RefusedError
+	if errors.As(err, &re) {
+		switch re.Code {
+		case "out-of-range":
+			return fmt.Errorf("exec in container %d: %w: %w", vmid, ErrOutOfRange, err)
+		case "untagged", "not-container":
+			return fmt.Errorf("exec in container %d: %w: %w", vmid, ErrNotOwned, err)
+		}
+	}
+	return fmt.Errorf("exec in container %d: %w", vmid, err)
 }
 
 // vmExec runs commands through the QEMU guest agent.

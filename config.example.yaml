@@ -15,7 +15,9 @@ target:
     # ca_file: /etc/pbp/pve-ca.pem
   ssh:
     host: pve1.example.lan
-    user: root                 # default
+    user: pbp                  # default; the restricted node helper user. root is rejected
+                               # (README "Node setup"). The key must be installed on the
+                               # node with a forced command, not in root's authorized_keys
     port: 22                   # default
     key_file: /run/secrets/pve_ssh_key
     known_hosts_file: /etc/pbp/known_hosts

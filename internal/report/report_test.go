@@ -3,18 +3,23 @@ package report
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 )
 
 func failedSummary() model.RunSummary {
@@ -137,20 +142,25 @@ func TestTemplateData(t *testing.T) {
 	}
 }
 
+// notifier returns a PVENotifier whose helper answers with fn.
+func notifier(node string, fn func(req nodeproto.Request, stdin []byte) (sshx.Result, error)) (*PVENotifier, *helperfake.Fake) {
+	f := &helperfake.Fake{Handler: fn}
+	return &PVENotifier{Helper: f.Helper(), Node: node}, f
+}
+
+// Send hands the payload to the helper's notify request; no script travels
+// over SSH (the helper owns NotifyScript).
 func TestSend(t *testing.T) {
-	var gotCmd string
 	var gotIn []byte
-	f := &sshx.Fake{Handler: func(cmd string, stdin []byte) (sshx.Result, error) {
-		gotCmd, gotIn = cmd, stdin
+	n, f := notifier("pve1", func(_ nodeproto.Request, stdin []byte) (sshx.Result, error) {
+		gotIn = stdin
 		return sshx.Result{}, nil
-	}}
-	n := &PVENotifier{SSH: f, Node: "pve1"}
+	})
 	if err := n.Send(context.Background(), failedSummary()); err != nil {
 		t.Fatal(err)
 	}
-	const wantCmd = `perl -e 'use PVE::Notify; use JSON; my $in = decode_json(do { local $/; <STDIN> }); PVE::Notify::notify($in->{severity}, '\''pbp'\'', $in->{data}, $in->{fields});'`
-	if gotCmd != wantCmd {
-		t.Fatalf("command = %s\nwant      %s", gotCmd, wantCmd)
+	if ops := f.Ops(); !slices.Equal(ops, []string{"notify"}) {
+		t.Fatalf("helper requests = %q, want one notify", ops)
 	}
 	var in struct {
 		Severity string
@@ -166,111 +176,115 @@ func TestSend(t *testing.T) {
 }
 
 func TestSendError(t *testing.T) {
-	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
-		return sshx.Result{ExitCode: 255, Stderr: "  no such module\n"}, nil
-	}}
-	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
-	if err == nil || !strings.Contains(err.Error(), "no such module") {
+	n, _ := notifier("n", func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		return helperfake.Fail(req, "notify: perl exited 2: Can't locate PVE/Notify.pm"), nil
+	})
+	err := n.Send(context.Background(), failedSummary())
+	if err == nil || !strings.Contains(err.Error(), "Can't locate PVE/Notify.pm") || !errors.Is(err, sshx.ErrHelper) {
 		t.Fatal(err)
 	}
-	f.Handler = func(string, []byte) (sshx.Result, error) { return sshx.Result{}, fmt.Errorf("down") }
-	if err := (&PVENotifier{SSH: f}).Send(context.Background(), failedSummary()); err == nil {
+	n, _ = notifier("n", func(nodeproto.Request, []byte) (sshx.Result, error) { return sshx.Result{}, fmt.Errorf("down") })
+	if err := n.Send(context.Background(), failedSummary()); err == nil {
 		t.Fatal("want transport error")
 	}
 }
 
-func TestEnsureTemplatesWritesWhenMissing(t *testing.T) {
-	writes := map[string]string{}
-	var cmds []string
-	f := &sshx.Fake{Handler: func(cmd string, stdin []byte) (sshx.Result, error) {
-		cmds = append(cmds, cmd)
-		if strings.Contains(cmd, "cat >") {
-			writes[cmd] = string(stdin)
-			return sshx.Result{}, nil
-		}
-		if strings.HasPrefix(cmd, "test -e ") {
-			return sshx.Result{ExitCode: exitMissing}, nil
-		}
-		return sshx.Result{}, nil
-	}}
-	if err := (&PVENotifier{SSH: f, Node: "n"}).EnsureTemplates(context.Background()); err != nil {
+// PVE::Notify reports per-target failures (including a template that does
+// not render) as "ERROR:" lines and still exits 0; the helper turns them
+// into a failure (internal/node TestRealNotify), so Send fails with them.
+func TestSendFailsOnNotifyErrorLines(t *testing.T) {
+	n, _ := notifier("n", func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		return helperfake.Fail(req, "notify: ERROR: could not notify via target `mail-to-root`: failed to render notification template"), nil
+	})
+	err := n.Send(context.Background(), failedSummary())
+	if err == nil || !strings.Contains(err.Error(), "could not notify via target `mail-to-root`") {
 		t.Fatal(err)
-	}
-	if len(writes) != 2 {
-		t.Fatalf("writes: %v", cmds)
-	}
-	joined := strings.Join(cmds, "\n")
-	for _, p := range []string{"/etc/pve/notification-templates/default/pbp-subject.txt.hbs", "/etc/pve/notification-templates/default/pbp-body.txt.hbs"} {
-		if !strings.Contains(joined, p) {
-			t.Errorf("missing %s", p)
-		}
-	}
-	if !strings.Contains(joined, "mkdir -p") {
-		t.Error("no mkdir")
-	}
-	for _, c := range writes {
-		if !strings.Contains(c, "{{") {
-			t.Error("template content not written")
-		}
 	}
 }
 
-func TestEnsureTemplatesSkipsWhenIdentical(t *testing.T) {
-	f := &sshx.Fake{}
-	f.Handler = func(cmd string, _ []byte) (sshx.Result, error) {
-		if !strings.HasPrefix(cmd, "test -e ") || strings.Contains(cmd, "cat >") {
-			t.Errorf("unexpected write: %s", cmd)
-		}
-		name := "templates/pbp-body.txt.hbs"
-		if strings.Contains(cmd, "pbp-subject") {
-			name = "templates/pbp-subject.txt.hbs"
-		}
-		b, _ := templateFS.ReadFile(name)
-		return sshx.Result{Stdout: string(b)}, nil
+// templateHashes is the helper's templates reply for the embedded set.
+func templateHashes() map[string]string {
+	out := map[string]string{}
+	for name, b := range Templates() {
+		sum := sha256.Sum256(b)
+		out[name] = hex.EncodeToString(sum[:])
 	}
-	if err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(f.CallLog()) != 2 {
-		t.Fatal(f.CallLog())
+	return out
+}
+
+func templatesReply(m map[string]string) func(nodeproto.Request, []byte) (sshx.Result, error) {
+	return func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		if req.Op != "templates" {
+			return sshx.Result{ExitCode: 127}, nil
+		}
+		return helperfake.JSON(m), nil
 	}
 }
 
-// A template that cannot be read for a reason other than being absent is an
-// error, not a cue to overwrite it. Only the exit code tells "missing" apart:
-// stderr text (here a "No such file" from a file removed between test and
-// cat) never does.
-func TestEnsureTemplatesReadFailure(t *testing.T) {
-	for _, stderr := range []string{"cat: x: Permission denied\n", "cat: x: No such file or directory\n"} {
-		f := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
-			if strings.Contains(cmd, "cat >") {
-				t.Errorf("rewrote a template that could not be read: %s", cmd)
+const installHint = `run "pbp node install-templates" as root on the node`
+
+// CheckTemplates only reads: it asks the helper for the installed hashes
+// and compares them with the embedded templates.
+func TestCheckTemplatesIdentical(t *testing.T) {
+	n, f := notifier("n", templatesReply(templateHashes()))
+	if err := n.CheckTemplates(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ops := f.Ops(); !slices.Equal(ops, []string{"templates"}) {
+		t.Fatalf("helper requests = %q, want one templates request", ops)
+	}
+}
+
+// A missing or different template fails with every bad file named and the
+// install instruction; nothing is written.
+func TestCheckTemplatesMismatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		edit  func(map[string]string)
+		names []string
+	}{
+		{name: "hash mismatch", edit: func(m map[string]string) { m["pbp-body.txt.hbs"] = strings.Repeat("0", 64) },
+			names: []string{"pbp-body.txt.hbs"}},
+		{name: "missing file", edit: func(m map[string]string) { m["pbp-subject.txt.hbs"] = "" },
+			names: []string{"pbp-subject.txt.hbs"}},
+		{name: "not reported", edit: func(m map[string]string) { delete(m, "pbp-subject.txt.hbs") },
+			names: []string{"pbp-subject.txt.hbs"}},
+		{name: "both", edit: func(m map[string]string) { m["pbp-subject.txt.hbs"] = ""; m["pbp-body.txt.hbs"] = "abc" },
+			names: []string{"pbp-subject.txt.hbs", "pbp-body.txt.hbs"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := templateHashes()
+			tc.edit(m)
+			n, f := notifier("n", templatesReply(m))
+			err := n.CheckTemplates(context.Background())
+			if err == nil || !strings.Contains(err.Error(), installHint) {
+				t.Fatalf("err = %v, want the install hint", err)
 			}
-			return sshx.Result{ExitCode: 1, Stderr: stderr}, nil
-		}}
-		err := (&PVENotifier{SSH: f}).EnsureTemplates(context.Background())
-		if err == nil || !strings.Contains(err.Error(), strings.TrimSpace(stderr)) {
-			t.Errorf("err = %v", err)
-		}
+			for _, name := range tc.names {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("err %q does not name %s", err, name)
+				}
+			}
+			if ops := f.Ops(); !slices.Equal(ops, []string{"templates"}) {
+				t.Errorf("helper requests = %q, want only the templates read", ops)
+			}
+		})
 	}
 }
 
-func TestReadTemplateCmd(t *testing.T) {
-	want := `test -e '/etc/x y.hbs' || exit 3; cat '/etc/x y.hbs'`
-	if got := readTemplateCmd("/etc/x y.hbs"); got != want {
-		t.Errorf("got %q, want %q", got, want)
+// A templates request that fails is an error naming the cause; it is never
+// a cue to write anything.
+func TestCheckTemplatesReadFailure(t *testing.T) {
+	n, f := notifier("n", func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		return helperfake.Fail(req, "template pbp-body.txt.hbs: permission denied"), nil
+	})
+	err := n.CheckTemplates(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("err = %v", err)
 	}
-}
-
-func TestTrimStderrCutsOnRuneBoundary(t *testing.T) {
-	// "é" is 2 bytes: a cut at maxStderr would land inside the last one.
-	in := "x" + strings.Repeat("é", maxStderr)
-	got := trimStderr(in)
-	if !utf8.ValidString(got) || len(got) > maxStderr || len(got) < maxStderr-1 {
-		t.Fatalf("len %d, valid %v", len(got), utf8.ValidString(got))
-	}
-	if short := "  short é \n"; trimStderr(short) != "short é" {
-		t.Errorf("short input changed: %q", trimStderr(short))
+	if ops := f.Ops(); !slices.Equal(ops, []string{"templates"}) {
+		t.Errorf("helper requests = %q", ops)
 	}
 }
 
@@ -360,11 +374,7 @@ func templateProblems(body string, d, guest map[string]any) []string {
 func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 	d := TemplateData(failedSummary(), "pve1")
 	guest := d["guests"].([]map[string]any)[0]
-	for _, name := range templateFiles {
-		b, err := templateFS.ReadFile("templates/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for name, b := range Templates() {
 		for _, p := range templateProblems(string(b), d, guest) {
 			t.Errorf("%s: %s", name, p)
 		}
@@ -393,42 +403,6 @@ func TestTemplateGuardCatchesBadTags(t *testing.T) {
 	}
 	if got := templateProblems("{{#each guests}}\n {{guest}} {{this}}\n{{/each}} {{summary}}", d, guest); len(got) != 0 {
 		t.Errorf("valid template flagged: %q", got)
-	}
-}
-
-// PVE::Notify reports per-target failures (including a template that does
-// not render) as "ERROR:" lines on stderr and still exits 0; that run sent
-// nothing, so Send must fail. INFO lines are not errors.
-func TestSendFailsOnNotifyErrorLines(t *testing.T) {
-	stderr := "ERROR: failed to render override template 'pbp-body.txt.hbs': could not render notification template\n" +
-		"ERROR: could not notify via target `mail-to-root`: failed to render notification template\n"
-	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
-		return sshx.Result{Stderr: stderr}, nil
-	}}
-	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
-	if err == nil || !strings.Contains(err.Error(), "could not notify via target `mail-to-root`") {
-		t.Fatal(err)
-	}
-	f.Handler = func(string, []byte) (sshx.Result, error) {
-		return sshx.Result{Stderr: "INFO: skipping disabled matcher 'x'\n"}, nil
-	}
-	if err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// PVE::Notify cannot say which targets succeeded, so one ERROR line among
-// successful ones still fails Send (conservative: the run is then "error").
-func TestSendFailsOnMixedSuccessAndError(t *testing.T) {
-	stderr := "INFO: notified via target `webhook-ops`\n" +
-		"ERROR: could not notify via target `mail-to-root`: smtp refused\n" +
-		"INFO: notified via target `gotify`\n"
-	f := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) {
-		return sshx.Result{Stderr: stderr}, nil
-	}}
-	err := (&PVENotifier{SSH: f, Node: "n"}).Send(context.Background(), failedSummary())
-	if err == nil || !strings.Contains(err.Error(), "mail-to-root") || strings.Contains(err.Error(), "webhook-ops") {
-		t.Fatalf("want an error naming only the failed target, got %v", err)
 	}
 }
 

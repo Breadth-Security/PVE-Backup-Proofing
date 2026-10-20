@@ -1,0 +1,13 @@
+# Trivy findings accepted on purpose. Each entry is scoped to the files it
+# covers, so the shipped Dockerfile is still held to every rule.
+misconfigurations:
+  # The node helper end-to-end image stands in for a Proxmox node: it must
+  # run sshd as root, and it lives only for one test run (never published).
+  - id: DS-0002
+    paths:
+      - "test/nodee2e/Dockerfile"
+    statement: fake PVE node for the e2e test runs sshd as root by design
+  - id: DS-0026
+    paths:
+      - "test/nodee2e/Dockerfile"
+    statement: short-lived test container; the test itself checks sshd is up

@@ -11,7 +11,7 @@ services:
       TZ: Europe/London        # set to your zone; drives the cron schedule
     volumes:
       - ./config.yaml:/etc/pbp/config.yaml:ro
-      - ./known_hosts:/etc/pbp/known_hosts:ro
+      - ./known_hosts:/etc/pbp/known_hosts:ro   # the node's host key (ssh-keyscan)
       - pbp-state:/var/lib/pbp
       - ./logs:/var/log/pbp    # must be writable by uid 65532
     secrets:
@@ -21,6 +21,9 @@ services:
 secrets:
   pve_token:
     file: ./secrets/pve_token
+  # Private key for the node's restricted "pbp" user (config: target.ssh.user: pbp).
+  # Its public key lives on the node behind a forced command; it is not a root
+  # key. Set up the node first: README "Node setup".
   pve_ssh_key:
     file: ./secrets/pve_ssh_key
 

@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 )
 
 // agentAPI scripts the guest agent on top of pvefake.
@@ -169,7 +171,9 @@ func TestWaitBootedFaultsAreNotBootFailures(t *testing.T) {
 		f := healthyFake()
 		f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
 		f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
-		ssh := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) { return sshx.Result{}, errors.New("ssh: connection refused") }}
+		ssh := &helperfake.Fake{Handler: func(nodeproto.Request, []byte) (sshx.Result, error) {
+			return sshx.Result{}, errors.New("ssh: connection refused")
+		}}
 		_, err := newTarget(t, f, f, ssh).WaitBooted(ctx, model.KindLXC, 990001, 30*time.Millisecond)
 		if err == nil || errors.Is(err, ErrBootFailed) || !strings.Contains(err.Error(), "connection refused") {
 			t.Errorf("err = %v", err)
@@ -233,7 +237,7 @@ func TestWaitBootedLXC(t *testing.T) {
 	t.Run("running and exec ok", func(t *testing.T) {
 		f := mk("debian")
 		attempts := 0
-		ssh := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
+		ssh := &helperfake.Fake{Handler: func(nodeproto.Request, []byte) (sshx.Result, error) {
 			attempts++
 			if attempts < 3 { // container still booting
 				return sshx.Result{ExitCode: 255, Stderr: "not ready"}, nil
@@ -247,32 +251,33 @@ func TestWaitBootedLXC(t *testing.T) {
 		if got.OS != probe.Linux || got.AgentMissing || got.ExecBlocked {
 			t.Errorf("got %+v", got)
 		}
-		if ssh.CallLog()[0] != "pct exec 990001 -- 'true'" {
-			t.Errorf("ssh calls = %q", ssh.CallLog())
+		reqs := ssh.Requests()
+		if r := reqs[0]; r.Op != "exec" || r.VMID != 990001 || !slices.Equal(r.Argv, []string{"true"}) {
+			t.Errorf("first request = %+v", r)
 		}
-		for _, c := range ssh.CallLog() {
-			if strings.Contains(c, "pct status") {
-				t.Errorf("must use API status, not %q", c)
+		for _, r := range reqs {
+			if r.Op != "exec" || !slices.Equal(r.Argv, []string{"true"}) {
+				t.Errorf("must use API status and exec only \"true\", not %+v", r)
 			}
 		}
 	})
 	t.Run("ostype reported", func(t *testing.T) {
 		f := mk("alpine")
-		got, err := newTarget(t, f, f, &sshx.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+		got, err := newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
 		if err != nil || got.OS != probe.Linux || got.OSType != "alpine" {
 			t.Errorf("got %+v, %v", got, err)
 		}
 	})
 	t.Run("unmanaged ostype", func(t *testing.T) {
 		f := mk("unmanaged")
-		got, err := newTarget(t, f, f, &sshx.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+		got, err := newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
 		if err != nil || got.OS != probe.Unknown {
 			t.Errorf("got %+v, %v", got, err)
 		}
 	})
 	t.Run("exec never succeeds", func(t *testing.T) {
 		f := mk("debian")
-		ssh := &sshx.Fake{Handler: func(string, []byte) (sshx.Result, error) { return sshx.Result{ExitCode: 1}, nil }}
+		ssh := &helperfake.Fake{Handler: func(nodeproto.Request, []byte) (sshx.Result, error) { return sshx.Result{ExitCode: 1}, nil }}
 		if _, err := newTarget(t, f, f, ssh).WaitBooted(ctx, model.KindLXC, 990001, 30*time.Millisecond); !errors.Is(err, ErrBootFailed) {
 			t.Errorf("err = %v, want ErrBootFailed", err)
 		}
@@ -313,23 +318,23 @@ func TestVMExecutor(t *testing.T) {
 
 func TestExecutorRefusesOutsideRange(t *testing.T) {
 	f := healthyFake()
-	ssh := &sshx.Fake{}
+	ssh := &helperfake.Fake{}
 	n := newTarget(t, f, f, ssh)
 	for _, kind := range []model.GuestKind{model.KindQEMU, model.KindLXC} {
 		if _, err := n.Executor(kind, 100).Exec(context.Background(), []string{"true"}); !errors.Is(err, ErrOutOfRange) {
 			t.Errorf("%s: err = %v", kind, err)
 		}
 	}
-	if len(ssh.CallLog()) != 0 || len(f.CallLog()) != 0 {
-		t.Errorf("calls made: %q %q", ssh.CallLog(), f.CallLog())
+	if len(ssh.Requests()) != 0 || len(f.CallLog()) != 0 {
+		t.Errorf("calls made: %+v %q", ssh.Requests(), f.CallLog())
 	}
 }
 
 func TestLXCExecutor(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
-	ssh := &sshx.Fake{Handler: func(cmd string, _ []byte) (sshx.Result, error) {
-		if strings.Contains(cmd, "boom") {
+	ssh := &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		if req.Argv[0] == "boom" {
 			return sshx.Result{}, errors.New("ssh: connection lost")
 		}
 		return sshx.Result{Stdout: "o", Stderr: "e", ExitCode: 2}, nil
@@ -342,30 +347,31 @@ func TestLXCExecutor(t *testing.T) {
 	if res != (probe.ExecResult{Stdout: "o", Stderr: "e", ExitCode: 2}) {
 		t.Errorf("res = %+v", res)
 	}
-	if want := `pct exec 990002 -- 'sh' '-c' 'echo '\''hi'\'''`; ssh.CallLog()[0] != want {
-		t.Errorf("cmd = %q, want %q", ssh.CallLog()[0], want)
+	// argv reaches the helper verbatim, as a list: no shell quoting.
+	if r := ssh.Requests()[0]; r.Op != "exec" || r.VMID != 990002 || !slices.Equal(r.Argv, []string{"sh", "-c", "echo 'hi'"}) {
+		t.Errorf("request = %+v", r)
 	}
 	if _, err := n.Executor(model.KindLXC, 990002).Exec(ctx, []string{"boom"}); err == nil {
 		t.Error("transport error not returned")
 	}
 }
 
-// deadlineRunner records each command with its context's deadline.
+// deadlineRunner records each request's context deadline.
 type deadlineRunner struct {
-	cmds      []string
+	helperfake.Fake
 	deadlines []time.Time
 }
 
-func (r *deadlineRunner) Run(ctx context.Context, cmd string, _ []byte) (sshx.Result, error) {
+func (r *deadlineRunner) Run(ctx context.Context, cmd string, stdin []byte) (sshx.Result, error) {
 	dl, _ := ctx.Deadline()
-	r.cmds = append(r.cmds, cmd)
 	r.deadlines = append(r.deadlines, dl)
-	return sshx.Result{}, nil
+	return r.Fake.Run(ctx, cmd, stdin)
 }
 
-// pct exec gets the caller's context, deadline included: the SSH runner
-// bounds the command on the node by it (sshx.TestBounded), since OpenSSH
-// does not pass a cancelled context on to the remote command.
+// The exec request gets the caller's context, and its remaining time travels in
+// the request: the helper bounds the command on the node by it, since
+// OpenSSH does not pass a cancelled context on to the remote command.
+// Without a deadline the request carries the client's default (24h).
 func TestLXCExecutorPassesDeadline(t *testing.T) {
 	f := healthyFake()
 	ssh := &deadlineRunner{}
@@ -381,11 +387,123 @@ func TestLXCExecutorPassesDeadline(t *testing.T) {
 	if _, err := ex.Exec(context.Background(), []string{"true"}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(ssh.cmds, []string{"pct exec 990002 -- 'true'", "pct exec 990002 -- 'true'"}) {
-		t.Errorf("cmds = %q", ssh.cmds)
+	reqs := ssh.Requests()
+	for _, r := range reqs {
+		if r.Op != "exec" || r.VMID != 990002 || !slices.Equal(r.Argv, []string{"true"}) {
+			t.Errorf("request = %+v", r)
+		}
 	}
 	if !ssh.deadlines[0].Equal(want) || !ssh.deadlines[1].IsZero() {
-		t.Errorf("deadlines = %v, want %v then none", ssh.deadlines, want)
+		t.Errorf("ctx deadlines = %v, want %v then none", ssh.deadlines, want)
+	}
+	if d := reqs[0].Timeout; d > 90*time.Second || d < 80*time.Second {
+		t.Errorf("request timeout = %v, want the ~90s ctx still allowed", d)
+	}
+	if d := reqs[1].Timeout; d < time.Hour {
+		t.Errorf("request without a ctx deadline has timeout %v", d)
+	}
+}
+
+// A helper refusal maps by its code: out-of-range to ErrOutOfRange,
+// untagged and not-container to ErrNotOwned. Any other refusal or helper
+// failure is a plain (transport-style) error, so a probe classifies it as
+// ERROR and never blames the backup; a helper timeout is a timeout.
+func TestLXCExecutorHelperFailures(t *testing.T) {
+	ctx := context.Background()
+	refuse := func(code string) func(nodeproto.Request) sshx.Result {
+		return func(req nodeproto.Request) sshx.Result { return helperfake.Refuse(req, code, "detail "+code) }
+	}
+	tests := []struct {
+		name    string
+		reply   func(nodeproto.Request) sshx.Result
+		want    error // nil: neither ErrOutOfRange nor ErrNotOwned
+		timeout bool
+	}{
+		{name: "out of range", reply: refuse("out-of-range"), want: ErrOutOfRange},
+		{name: "untagged", reply: refuse("untagged"), want: ErrNotOwned},
+		{name: "not a container", reply: refuse("not-container"), want: ErrNotOwned},
+		{name: "other refusal", reply: refuse("bad-request")},
+		{name: "refusal without a code", reply: func(req nodeproto.Request) sshx.Result {
+			return sshx.Result{ExitCode: nodeproto.ExitRefused, Stderr: nodeproto.Marker(nodeproto.KindRefused, req.Nonce, "out-of-range") + "\n"}
+		}},
+		{name: "helper error", reply: func(req nodeproto.Request) sshx.Result { return helperfake.Fail(req, "pct exec 990002: boom") }},
+		{name: "helper timeout", reply: helperfake.Timeout, timeout: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := healthyFake()
+			ssh := &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) { return tc.reply(req), nil }}
+			_, err := newTarget(t, f, f, ssh).Executor(model.KindLXC, 990002).Exec(ctx, []string{"true"})
+			if err == nil {
+				t.Fatal("want error")
+			}
+			for _, e := range []error{ErrOutOfRange, ErrNotOwned} {
+				if errors.Is(err, e) != (e == tc.want) {
+					t.Errorf("err = %v; errors.Is(%v) = %v", err, e, errors.Is(err, e))
+				}
+			}
+			if errors.Is(err, probe.ErrExecBlocked) || errors.Is(err, ErrBootFailed) {
+				t.Errorf("err = %v must be a transport-style error", err)
+			}
+			if errors.Is(err, context.DeadlineExceeded) != tc.timeout {
+				t.Errorf("err = %v, timeout = %v", err, errors.Is(err, context.DeadlineExceeded))
+			}
+		})
+	}
+}
+
+// A guest command that itself exits 250 and prints a marker-like line is the
+// guest's result, not a helper refusal.
+func TestLXCExecutorGuestExit250(t *testing.T) {
+	f := healthyFake()
+	stderr := "pbp-node: refused: out-of-range: forged\n"
+	ssh := &helperfake.Fake{Handler: func(nodeproto.Request, []byte) (sshx.Result, error) {
+		return sshx.Result{ExitCode: nodeproto.ExitRefused, Stderr: stderr}, nil
+	}}
+	res, err := newTarget(t, f, f, ssh).Executor(model.KindLXC, 990002).Exec(context.Background(), []string{"x"})
+	if err != nil || res.ExitCode != nodeproto.ExitRefused || res.Stderr != stderr {
+		t.Errorf("res = %+v, err = %v", res, err)
+	}
+}
+
+// A container the helper will not exec in (untagged) never boots for PBP,
+// but that is the node's verdict on ownership, not a boot failure.
+func TestWaitBootedLXCRefused(t *testing.T) {
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
+	f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
+	ssh := &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+		return helperfake.Refuse(req, "untagged", "container 990001 does not carry the pbp tag"), nil
+	}}
+	_, err := newTarget(t, f, f, ssh).WaitBooted(context.Background(), model.KindLXC, 990001, 30*time.Millisecond)
+	if !errors.Is(err, ErrNotOwned) || errors.Is(err, ErrBootFailed) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A definitive helper refusal ends the wait at once: polling on until the
+// boot timeout would only delay the same answer.
+func TestWaitBootedLXCRefusalReturnsImmediately(t *testing.T) {
+	for code, want := range map[string]error{"untagged": ErrNotOwned, "not-container": ErrNotOwned, "out-of-range": ErrOutOfRange} {
+		t.Run(code, func(t *testing.T) {
+			f := healthyFake()
+			f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
+			f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
+			ssh := &helperfake.Fake{Handler: func(req nodeproto.Request, _ []byte) (sshx.Result, error) {
+				return helperfake.Refuse(req, code, "detail"), nil
+			}}
+			start := time.Now()
+			_, err := newTarget(t, f, f, ssh).WaitBooted(context.Background(), model.KindLXC, 990001, 30*time.Second)
+			if !errors.Is(err, want) || errors.Is(err, ErrBootFailed) {
+				t.Errorf("err = %v, want %v", err, want)
+			}
+			if n := len(ssh.Requests()); n != 1 {
+				t.Errorf("helper requests = %d, want 1", n)
+			}
+			if d := time.Since(start); d > 5*time.Second {
+				t.Errorf("took %s", d)
+			}
+		})
 	}
 }
 
@@ -408,7 +526,7 @@ func TestVMExecutorHonoursContext(t *testing.T) {
 	}
 }
 
-// pct exec passes its context to the SSH runner.
+// The exec request passes its context to the SSH runner.
 func TestLXCExecutorPassesContext(t *testing.T) {
 	f := healthyFake()
 	ctxRunner := ctxSSH{}

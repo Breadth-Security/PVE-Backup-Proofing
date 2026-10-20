@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stub /usr/bin/perl (the real one is diverted to /usr/bin/perl.distrib).
+# It stands in for PVE::Notify: records argv (one per line) and stdin.
+printf '%s\n' "$@" > /var/log/pbp-e2e/perl.args
+cat > /var/log/pbp-e2e/perl.stdin

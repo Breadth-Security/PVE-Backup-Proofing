@@ -3,6 +3,7 @@ package target
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -19,48 +20,47 @@ import (
 var reGuestPort = regexp.MustCompile(`^(?:tap(\d+)i|veth(\d+)i|fwpr(\d+)p|fwln(\d+)[io])\d+$`)
 
 // checkLiveIsolation verifies the bridge's live state on the node, which the
-// API config does not show: IPv6 must be disabled on it (otherwise the
-// kernel gives it a link-local address, through which a proof guest could
-// reach the node's sshd and pveproxy, and a restored router's RAs could give
-// the node a SLAAC address and route), it must hold no address at all, and
-// its only members may be interfaces of guests in the reserved range.
+// API config does not show, as the helper's bridge request reports it: IPv6
+// must be disabled on it (otherwise the kernel gives it a link-local
+// address, through which a proof guest could reach the node's sshd and
+// pveproxy, and a restored router's RAs could give the node a SLAAC address
+// and route), it must hold no address at all, and its only members may be
+// interfaces of guests in the reserved range. The helper reports the bridge
+// from its own config: it must be this bridge, and of the kind (Linux or
+// OVS) the API says it is.
 //
-// A state that cannot be read is reported as ErrNotIsolated (isolation not
-// verified); an SSH transport failure is returned as is.
+// A state the helper cannot read, or replies with unusably, is reported as
+// ErrNotIsolated (isolation not verified); an SSH transport failure or a
+// timeout is returned as is.
 func (n *ExistingNode) checkLiveIsolation(ctx context.Context, iface pve.NetIface) error {
 	notIso := func(format string, a ...any) error {
 		return fmt.Errorf("%w: %s %s", ErrNotIsolated, n.bridge, fmt.Sprintf(format, a...))
 	}
-	run := func(cmd string) (string, error) {
-		res, err := n.ssh.Run(ctx, cmd, nil)
-		if err != nil {
-			return "", fmt.Errorf("bridge %s: %s: %w", n.bridge, cmd, err)
+	st, err := n.helper.Bridge(ctx)
+	if err != nil {
+		if errors.Is(err, sshx.ErrRefused) || errors.Is(err, sshx.ErrHelper) {
+			return notIso("cannot be verified: %v", err)
 		}
-		if res.ExitCode != 0 {
-			return "", notIso("cannot be verified: %s exited %d: %s", cmd, res.ExitCode, strings.TrimSpace(res.Stderr))
-		}
-		return res.Stdout, nil
+		return fmt.Errorf("bridge %s: %w", n.bridge, err)
+	}
+	if st.Name != n.bridge {
+		return notIso("cannot be verified: the node helper checks bridge %q instead", st.Name)
+	}
+	if apiOVS := iface.Type == "OVSBridge"; st.OVS != apiOVS {
+		return notIso("cannot be verified: the API says OVS bridge = %v, the node says OVS bridge = %v", apiOVS, st.OVS)
 	}
 
-	out, err := run("cat " + sshx.Quote("/proc/sys/net/ipv6/conf/"+n.bridge+"/disable_ipv6"))
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(out) != "1" {
-		return notIso("has IPv6 enabled (disable_ipv6 = %q); it gets a link-local address the node can be reached on", strings.TrimSpace(out))
+	if st.DisableIPv6 != "1" {
+		return notIso("has IPv6 enabled (disable_ipv6 = %q); it gets a link-local address the node can be reached on", st.DisableIPv6)
 	}
 
-	out, err = run("ip -j addr show dev " + sshx.Quote(n.bridge))
-	if err != nil {
-		return err
-	}
 	var addrs []struct {
 		AddrInfo []struct {
 			Local     string `json:"local"`
 			PrefixLen int    `json:"prefixlen"`
 		} `json:"addr_info"`
 	}
-	if err := json.Unmarshal([]byte(out), &addrs); err != nil {
+	if err := json.Unmarshal(st.Addrs, &addrs); err != nil {
 		return notIso("cannot be verified: parse ip addr output: %v", err)
 	}
 	for _, a := range addrs {
@@ -70,33 +70,9 @@ func (n *ExistingNode) checkLiveIsolation(ctx context.Context, iface pve.NetIfac
 		}
 	}
 
-	var members []string
-	if iface.Type == "OVSBridge" {
-		// OVS ports are not kernel bridge members; ask OVS.
-		out, err = run("ovs-vsctl list-ports " + sshx.Quote(n.bridge))
-		if err != nil {
-			return err
-		}
-		members = strings.Fields(out)
-	} else {
-		out, err = run("ip -j link show master " + sshx.Quote(n.bridge))
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(out) != "" {
-			var links []struct {
-				IfName string `json:"ifname"`
-			}
-			if err := json.Unmarshal([]byte(out), &links); err != nil {
-				return notIso("cannot be verified: parse ip link output: %v", err)
-			}
-			for _, l := range links {
-				members = append(members, l.IfName)
-			}
-		}
-	}
+	// Members are the kernel bridge's, or the OVS bridge's ports.
 	var foreign []string
-	for _, m := range members {
+	for _, m := range st.Members {
 		if !n.proofPort(m) {
 			foreign = append(foreign, m)
 		}

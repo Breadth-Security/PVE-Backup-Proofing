@@ -35,6 +35,8 @@ type Fake struct {
 	// Range is the reserved VMID range AllocateVMID allocates from.
 	Range [2]int
 
+	// NodeErr is returned by CheckNode.
+	NodeErr error
 	// PrepareErr is returned by Prepare.
 	PrepareErr error
 	// RangeErr is returned by CheckRangeClear (before its own check).
@@ -109,6 +111,13 @@ func (f *Fake) record(format string, args ...any) {
 
 // CallLog returns the calls recorded so far.
 func (f *Fake) CallLog() []string { return f.calls.Snapshot() }
+
+func (f *Fake) CheckNode(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CheckNode")
+	return f.NodeErr
+}
 
 func (f *Fake) Prepare(ctx context.Context) error {
 	f.mu.Lock()

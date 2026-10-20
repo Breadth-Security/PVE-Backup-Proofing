@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,7 +153,7 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		}
 		_ = r.Reply(true, nil)
 		cmd := string(r.Payload[4:])
-		inner := unwrapBounded(cmd)
+		inner := cmd
 		code := byte(0)
 		switch {
 		case strings.HasPrefix(inner, "exit3"):
@@ -215,14 +214,25 @@ func TestDialUnknownHost(t *testing.T) {
 	}
 }
 
-var reBounded = regexp.MustCompile(`^timeout --kill-after=5s \d+s sh -c '(.*)'$`)
-
-// unwrapBounded returns the command a bounded() wrapper runs, or cmd itself.
-func unwrapBounded(cmd string) string {
-	if m := reBounded.FindStringSubmatch(cmd); m != nil {
-		return strings.ReplaceAll(m[1], `'\''`, "'")
+// Client.Run sends the command verbatim, deadline or not: the node's
+// forced command parses it as a helper request, and the helper enforces the
+// request's own deadline.
+func TestRunSendsCommandVerbatim(t *testing.T) {
+	s := newServer(t, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return cmd
+	defer func() { _ = c.Close() }()
+	const cmd = `exec --timeout-ms 1 --nonce 0123456789abcdef 990001 -- ["sh","-c","echo 'x'"]`
+	if res, err := c.Run(context.Background(), cmd, nil); err != nil || res.Stdout != "ok:"+cmd {
+		t.Errorf("no deadline: %+v, %v", res, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if res, err := c.Run(ctx, cmd, nil); err != nil || res.Stdout != "ok:"+cmd {
+		t.Errorf("deadline: %+v, %v", res, err)
+	}
 }
 
 func TestRunCancel(t *testing.T) {

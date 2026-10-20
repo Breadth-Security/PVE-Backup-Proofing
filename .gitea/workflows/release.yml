@@ -11,7 +11,8 @@ name: release
 # it is used in preference when set.
 #
 # Versions: tag v1.2.0 builds 1.2.0 and v1.2.0-rc1 builds 1.2.0~rc1 (see
-# packaging/debversion.sh). Packages, tarballs and release assets all carry
+# packaging/debversion.sh). A tag push fails unless the top-level VERSION file
+# holds the tag's MAJOR.MINOR.PATCH (1.2.0 for both examples). Packages, tarballs and release assets all carry
 # that Debian version; the release itself keeps the tag name.
 
 on:
@@ -63,7 +64,15 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Building version $v"
       - name: Test version mapping
-        run: packaging/debversion_test.sh
+        run: |
+          packaging/debversion_test.sh
+          packaging/versionfile_test.sh
+      - name: Check the tag against the VERSION file
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        # v0.2.0 and v0.2.0-rc1 both need VERSION 0.2.0: the Docker image is
+        # stamped from VERSION, so a disagreement would ship a daemon whose
+        # version differs from the packages'.
+        run: packaging/versionfile.sh "${{ steps.version.outputs.version }}"
       - name: go vet
         run: |
           go vet ./...

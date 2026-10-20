@@ -25,12 +25,12 @@ import (
 const ownVol = "pbs:backup/vm/101/2026-10-18T22:00:00Z"
 
 // isolatedNode makes the fixture's node pass the real Prepare: an isolated
-// bridge (API and live state over SSH) and a usable restore storage.
+// bridge (API and the helper's live state) and a usable restore storage.
 func (f *janitorFixture) isolatedNode(api pve.API) {
 	br := f.d.Cfg.Target.Bridge
 	f.api.Ifaces[br] = pve.NetIface{Iface: br, Type: "bridge"}
 	f.api.Storage[f.d.Cfg.Restore.Storage] = pve.StorageStatus{Active: true, Enabled: true, Content: "images,rootdir"}
-	f.tgt = &destroyLog{Target: target.NewExistingNode(f.d.Cfg, api, bridgetest.Isolated(br, nil))}
+	f.tgt = &destroyLog{Target: target.NewExistingNode(f.d.Cfg, api, bridgetest.Isolated(br).Helper())}
 	f.d.Target, f.d.API = f.tgt, api
 	f.d.Notifier = &fakeNotifier{}
 }
@@ -276,7 +276,7 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	f.assertRefusedAndKept(t, 990000, target.ErrNotOwned)
 }
 
-// Preflight runs Prepare, the templates, the janitor and then the range
+// Preflight runs CheckNode, Prepare, the templates, the janitor and then the range
 // check, stopping at the first failure.
 func TestPreflightOrder(t *testing.T) {
 	ctx := context.Background()
@@ -285,8 +285,19 @@ func TestPreflightOrder(t *testing.T) {
 		if err := Preflight(ctx, f.d); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := f.tgt.CallLog(), []string{"Prepare", "Owned", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.ensured != 1 {
-			t.Errorf("calls %q (want %q), templates ensured %d", got, want, f.notif.ensured)
+		if got, want := f.tgt.CallLog(), []string{"CheckNode", "Prepare", "Owned", "CheckRangeClear"}; !slices.Equal(got, want) || f.notif.checked != 1 {
+			t.Errorf("calls %q (want %q), templates checked %d", got, want, f.notif.checked)
+		}
+	})
+	t.Run("node helper fails", func(t *testing.T) {
+		f := newRunFixture(t, 990000, 990009)
+		f.tgt.NodeErr = errors.New("helper wrong")
+		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "node helper: ") || !strings.Contains(err.Error(), "helper wrong") {
+			t.Errorf("err = %v", err)
+		}
+		// Nothing on the node was touched: no Prepare, no janitor.
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode"}) || f.notif.checked != 0 {
+			t.Errorf("calls %q, templates checked %d", got, f.notif.checked)
 		}
 	})
 	t.Run("prepare fails", func(t *testing.T) {
@@ -295,17 +306,17 @@ func TestPreflightOrder(t *testing.T) {
 		if err := Preflight(ctx, f.d); err == nil || !strings.HasPrefix(err.Error(), "target: ") {
 			t.Errorf("err = %v", err)
 		}
-		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) || f.notif.ensured != 0 {
-			t.Errorf("calls %q, templates ensured %d", got, f.notif.ensured)
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode", "Prepare"}) || f.notif.checked != 0 {
+			t.Errorf("calls %q, templates checked %d", got, f.notif.checked)
 		}
 	})
 	t.Run("templates fail", func(t *testing.T) {
 		f := newRunFixture(t, 990000, 990009)
-		f.notif.ensureErr = errors.New("stop here")
+		f.notif.checkErr = errors.New("stop here")
 		if err := Preflight(ctx, f.d); err == nil {
 			t.Error("want error")
 		}
-		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"Prepare"}) {
+		if got := f.tgt.CallLog(); !slices.Equal(got, []string{"CheckNode", "Prepare"}) {
 			t.Errorf("calls %q: janitor ran", got)
 		}
 	})

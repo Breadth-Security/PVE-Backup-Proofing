@@ -18,6 +18,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
@@ -28,6 +29,10 @@ type destroyLog struct {
 	mu    sync.Mutex
 	calls []int
 }
+
+// CheckNode passes: these tests exercise the janitor and range checks on the
+// real target, not the node helper (see target's CheckNode tests).
+func (t *destroyLog) CheckNode(context.Context) error { return nil }
 
 func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec target.Recorded) error {
 	t.mu.Lock()
@@ -59,7 +64,7 @@ func newJanitorFixture(t *testing.T) *janitorFixture {
 	cfg.Restore.Storage = "local-zfs"
 	api := pvefake.New()
 	var logBuf bytes.Buffer
-	tgt := &destroyLog{Target: target.NewExistingNode(cfg, api, nil)}
+	tgt := &destroyLog{Target: target.NewExistingNode(cfg, api, sshx.Helper{})}
 	f := &janitorFixture{api: api, tgt: tgt, store: store, logBuf: &logBuf}
 	f.d = Deps{
 		Cfg: cfg, API: api, Target: tgt, Store: store,

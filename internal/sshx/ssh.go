@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"strconv"
@@ -246,30 +245,10 @@ func (c *Client) session(ctx context.Context) (*ssh.Session, error) {
 	return s, nil
 }
 
-// bounded wraps cmd in the node's coreutils timeout when ctx has a deadline:
-// OpenSSH does not pass a cancelled context on to the remote process, so
-// without it a hung command would outlive the caller. The limit is the
-// remaining time rounded up to whole seconds (at least 1s), and the command
-// is killed 5s after it is signalled. cmd goes to "sh -c" as one
-// single-quoted argument (Quote), so the shell sees it exactly as sent
-// unwrapped and nothing in it can reach the wrapper. Without a deadline cmd
-// is returned unchanged.
-//
-// A wrapped command runs under /bin/sh (dash on PVE), an unwrapped one under
-// the remote user's login shell (bash for root): commands sent through Run
-// must stay POSIX sh, or they may break only when a deadline is set.
-func bounded(ctx context.Context, cmd string) string {
-	dl, ok := ctx.Deadline()
-	if !ok {
-		return cmd
-	}
-	secs := max(int64(math.Ceil(time.Until(dl).Seconds())), 1)
-	return fmt.Sprintf("timeout --kill-after=5s %ds sh -c %s", secs, Quote(cmd))
-}
-
-// Run executes cmd in a new session, bounded on the node by ctx's deadline
-// if it has one (see bounded). Cancelling ctx closes the session and returns
-// ctx.Err().
+// Run sends cmd verbatim in a new session. Cancelling ctx closes the
+// session and returns ctx.Err(); OpenSSH does not pass that on to the remote
+// process, so a command must bound itself on the node (Helper requests
+// carry their remaining time for the helper to enforce).
 func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -285,7 +264,7 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	if stdin != nil {
 		sess.Stdin = bytes.NewReader(stdin)
 	}
-	if err := sess.Start(bounded(ctx, cmd)); err != nil {
+	if err := sess.Start(cmd); err != nil {
 		return Result{}, fmt.Errorf("sshx: start: %w", err)
 	}
 	done := make(chan error, 1)

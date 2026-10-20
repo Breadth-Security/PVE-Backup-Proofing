@@ -23,6 +23,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/fsutil"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/health"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
@@ -31,7 +32,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n"
+const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp node [install-templates]\n"
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
@@ -52,7 +53,39 @@ func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) 
 func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
 
+// catchNodeSignals keeps a hangup, or a write to a closed stdout or stderr,
+// from killing the node helper: it must reach its own deadline handling
+// (kill the guest command's process group, audit the outcome) after the SSH
+// client is gone. The signals are caught and dropped, not ignored: an
+// ignored disposition survives exec, so pct, lxc-attach and the guest's
+// check commands would inherit it, while a caught one resets to the default
+// in the child. With SIGPIPE caught, writes to a closed stdout or stderr fail
+// with EPIPE instead of killing the process. stop restores the defaults.
+func catchNodeSignals() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGPIPE, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ch:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "node" {
+		// The helper outlives a vanished SSH client on purpose (see
+		// catchNodeSignals); it runs until the process exits.
+		catchNodeSignals()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
 	stop()
@@ -65,10 +98,20 @@ type app struct {
 	now            func() time.Time
 	// connect builds the node-facing dependencies for one run or check.
 	connect func(cfg config.Config) wiring
+
+	// pbp node: stdin, the real System, the audit log, the effective-UID
+	// source and the template directory are seams for tests.
+	stdin       io.Reader
+	nodeSys     node.System
+	audit       auditLog
+	euid        func() int
+	templateDir string
 }
 
 func newApp(stdout, stderr io.Writer) *app {
-	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal}
+	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
+		stdin: os.Stdin, nodeSys: node.NewSystem(),
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir}
 }
 
 // wiring is what talks to the node. apiErr and sshErr record setup failures;
@@ -115,11 +158,14 @@ func assemble(cfg config.Config, api pve.API, apiErr error, ssh sshx.Runner, ssh
 		w.sshErr = sshErr
 		ssh = downRunner{sshErr}
 	}
-	w.target = target.NewExistingNode(cfg, api, ssh)
+	helper := sshx.Helper{R: ssh}
+	existing := target.NewExistingNode(cfg, api, helper)
+	existing.SetDaemonVersion(version)
+	w.target = existing
 	if err := w.setupErr(); err != nil {
 		w.target = unreachable{Target: w.target, err: err}
 	}
-	w.notifier = &report.PVENotifier{SSH: ssh, Node: cfg.Target.Node}
+	w.notifier = &report.PVENotifier{Helper: helper, Node: cfg.Target.Node}
 	return w
 }
 
@@ -136,7 +182,8 @@ type unreachable struct {
 	err error
 }
 
-func (u unreachable) Prepare(context.Context) error { return u.err }
+func (u unreachable) CheckNode(context.Context) error { return u.err }
+func (u unreachable) Prepare(context.Context) error   { return u.err }
 
 func (a *app) main(ctx context.Context, args []string) int {
 	if len(args) == 0 {
@@ -144,6 +191,9 @@ func (a *app) main(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 	cmd := args[0]
+	if cmd == "node" {
+		return a.nodeMain(ctx, args[1:])
+	}
 	fs := flag.NewFlagSet("pbp "+cmd, flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 	cfgFlag := fs.String("config", "", "config file (default $PBP_CONFIG or /etc/pbp/config.yaml)")
@@ -323,9 +373,23 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 	if !ok {
 		return exitFail
 	}
+	if st, isStepper := w.target.(target.NodeStepper); isStepper {
+		for _, s := range st.CheckNodeSteps(ctx) {
+			if s.Err != nil {
+				line(s.Name, s.Err)
+			} else if s.Detail != "" {
+				fprintf(a.stdout, "%s: ok (%s)\n", s.Name, s.Detail)
+			} else {
+				line(s.Name, nil)
+			}
+		}
+		if !ok {
+			return exitFail
+		}
+	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store,
 		Log: report.NewLogger(a.stderr, nil), Now: a.now, Notifier: w.notifier}
-	line("preflight (node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
+	line("preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)",
 		run.Preflight(ctx, d))
 	if !ok {
 		return exitFail

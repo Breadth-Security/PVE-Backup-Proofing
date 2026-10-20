@@ -113,7 +113,7 @@ type Logging struct {
 func defaults() Config {
 	return Config{
 		Workers: 1,
-		Target:  Target{Type: "existing-node", SSH: SSH{User: "root", Port: 22}},
+		Target:  Target{Type: "existing-node", SSH: SSH{User: "pbp", Port: 22}},
 		Restore: Restore{SpaceMarginPercent: 10, BootTimeout: 5 * time.Minute, ProbeTimeout: 5 * time.Minute},
 		Checks:  Checks{CommandTimeout: time.Minute},
 		Notify:  Notify{When: "always"},
@@ -178,11 +178,16 @@ func (c Config) validate() error {
 	if t.Bridge == "" {
 		bad("target.bridge", "required")
 	}
-	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi > maxVMID {
-		bad("target.vmid_range", "need 100 <= lo <= hi <= %d, got [%d, %d]", maxVMID, lo, hi)
+	// hi stays below maxVMID so hi+1 (the out-of-range refusal probe) is
+	// still a valid VMID.
+	if lo, hi := t.VMIDRange[0], t.VMIDRange[1]; lo < 100 || hi < lo || hi >= maxVMID {
+		bad("target.vmid_range", "need 100 <= lo <= hi < %d, got [%d, %d]", maxVMID, lo, hi)
 	}
 	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported)")
+	}
+	if t.SSH.User == "root" {
+		bad("target.ssh.user", `root is no longer supported; set up the pbp node helper (README "Node setup")`)
 	}
 	if t.SSH.KnownHostsFile == "" {
 		bad("target.ssh.known_hosts_file", "required")

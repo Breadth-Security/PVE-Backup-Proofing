@@ -2,8 +2,10 @@
 
 // Package integration runs PBP against a real Proxmox VE node. It is opt-in:
 // build tag "integration" and PBP_IT_CONFIG pointing at a PBP config for the
-// node. See README.md in this directory for the node setup and every
-// environment variable.
+// node. PBP under test reaches the node as the restricted pbp user (the node
+// helper); only the fixtures use a separate test-only admin key
+// (PBP_IT_ADMIN_SSH_KEY). See README.md in this directory for the node setup
+// and every environment variable.
 package integration
 
 import (
@@ -47,8 +49,10 @@ type env struct {
 	cfgPath string
 	cfg     config.Config
 	api     *pve.Client
-	ssh     *sshx.Client
+	ssh     *sshx.Client // PBP's own connection: the pbp user, forced command
+	admin   *sshx.Client // test fixtures only: the test-only admin key, a real shell
 	tgt     *target.ExistingNode
+	version string // daemon version handed to the target and to the built pbp
 }
 
 var (
@@ -56,6 +60,23 @@ var (
 	theEnv  *env
 	envErr  error
 )
+
+// daemonVersion is the version the harness presents as the daemon's: the
+// PBP_IT_DAEMON_VERSION override, else the node helper's own version, so the
+// suite exercises everything except version compatibility (unit tests cover
+// that).
+func daemonVersion(ctx context.Context, h sshx.Helper) (string, error) {
+	if v := os.Getenv("PBP_IT_DAEMON_VERSION"); v != "" {
+		slog.Info("integration: daemon version from PBP_IT_DAEMON_VERSION", "version", v)
+		return v, nil
+	}
+	v, err := h.Version(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read node helper version (set PBP_IT_DAEMON_VERSION to override): %w", err)
+	}
+	slog.Info("integration: daemon version taken from the node helper", "version", v)
+	return v, nil
+}
 
 // setup loads PBP_IT_CONFIG and connects once per test binary. Without
 // PBP_IT_CONFIG every test is skipped.
@@ -81,12 +102,49 @@ func setup(t *testing.T) *env {
 			envErr = err
 			return
 		}
-		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, tgt: target.NewExistingNode(cfg, api, ssh)}
+		admin, err := dialAdmin(cfg)
+		if err != nil {
+			_ = ssh.Close()
+			envErr = err
+			return
+		}
+		version, err := daemonVersion(context.Background(), sshx.Helper{R: ssh})
+		if err != nil {
+			_ = ssh.Close()
+			_ = admin.Close()
+			envErr = err
+			return
+		}
+		tgt := target.NewExistingNode(cfg, api, sshx.Helper{R: ssh})
+		tgt.SetDaemonVersion(version)
+		theEnv = &env{cfgPath: path, cfg: cfg, api: api, ssh: ssh, admin: admin, tgt: tgt, version: version}
 	})
 	if envErr != nil {
 		t.Fatal(envErr)
 	}
 	return theEnv
+}
+
+// dialAdmin connects the fixtures' own SSH client with the test-only admin
+// key. It is never PBP's client and never in PBP's config: PBP under test has
+// no root path (target.ssh.user is pbp). The admin account defaults to root
+// and the host and port are the config's.
+func dialAdmin(cfg config.Config) (*sshx.Client, error) {
+	key, kh := os.Getenv("PBP_IT_ADMIN_SSH_KEY"), os.Getenv("PBP_IT_ADMIN_KNOWN_HOSTS")
+	if key == "" || kh == "" {
+		return nil, fmt.Errorf("set PBP_IT_ADMIN_SSH_KEY and PBP_IT_ADMIN_KNOWN_HOSTS (the test-only admin key, see README.md)")
+	}
+	user := os.Getenv("PBP_IT_ADMIN_USER")
+	if user == "" {
+		user = "root"
+	}
+	if cfg.Target.SSH.User == user {
+		return nil, fmt.Errorf("target.ssh.user %q must differ from the admin user: PBP under test must use the restricted pbp user", user)
+	}
+	return sshx.Dial(config.SSH{
+		Host: cfg.Target.SSH.Host, Port: cfg.Target.SSH.Port, User: user,
+		KeyFile: key, KnownHostsFile: kh,
+	})
 }
 
 // envInt reads a required integer environment variable or skips the test.
@@ -113,7 +171,7 @@ func envStr(t *testing.T, name string) string {
 }
 
 // capture records summaries instead of sending them, so test runs do not
-// notify the node's real targets. EnsureTemplates is real.
+// notify the node's real targets. CheckTemplates is real.
 type capture struct {
 	*report.PVENotifier
 	mu   sync.Mutex
@@ -159,7 +217,7 @@ func (e *env) deps(t *testing.T, stateDir string, cfg config.Config) run.Deps {
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	return run.Deps{
 		Cfg: cfg, API: e.api, Target: e.tgt, Store: store, Log: log, Now: time.Now,
-		Notifier: &capture{PVENotifier: &report.PVENotifier{SSH: e.ssh, Node: cfg.Target.Node}},
+		Notifier: &capture{PVENotifier: &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: cfg.Target.Node}},
 	}
 }
 
@@ -406,15 +464,15 @@ wait $LP || true
 cat "$OUT"
 `
 
-// TestNotificationRenders installs the templates and renders a full summary
+// TestNotificationRenders checks the templates are installed and renders a full summary
 // with the node's proxmox-notify (no delivery). This proves the new "pbp"
 // template type is found in /etc/pve/notification-templates/default/ and
 // that hyphenated variables work in #if and #each.
 func TestNotificationRenders(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	n := &report.PVENotifier{SSH: e.ssh, Node: e.cfg.Target.Node}
-	if err := n.EnsureTemplates(ctx); err != nil {
+	n := &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: e.cfg.Target.Node}
+	if err := n.CheckTemplates(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s := fullSummary()
@@ -427,7 +485,7 @@ func TestNotificationRenders(t *testing.T) {
 	}
 	body := base64.StdEncoding.EncodeToString([]byte("{{ title }}\n=====\n{{ message }}"))
 	cmd := "PORT=18089 BODY=" + sshx.Quote(body) + " bash -c " + sshx.Quote(renderScript)
-	res, err := e.ssh.Run(ctx, cmd, in)
+	res, err := e.admin.Run(ctx, cmd, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,8 +520,8 @@ func TestNotificationDelivers(t *testing.T) {
 		t.Skip("PBP_IT_LIVE_NOTIFY != 1")
 	}
 	ctx := context.Background()
-	n := &report.PVENotifier{SSH: e.ssh, Node: e.cfg.Target.Node}
-	if err := n.EnsureTemplates(ctx); err != nil {
+	n := &report.PVENotifier{Helper: sshx.Helper{R: e.ssh}, Node: e.cfg.Target.Node}
+	if err := n.CheckTemplates(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s := fullSummary()
@@ -477,7 +535,7 @@ func TestNotificationDelivers(t *testing.T) {
 // sh runs a command on the node and fails the test on a non-zero exit.
 func (e *env) sh(t *testing.T, cmd string) string {
 	t.Helper()
-	res, err := e.ssh.Run(context.Background(), cmd, nil)
+	res, err := e.admin.Run(context.Background(), cmd, nil)
 	if err != nil {
 		t.Fatalf("%s: %v", cmd, err)
 	}
@@ -509,7 +567,7 @@ func TestBrokenBackupFails(t *testing.T) {
 	const unit = "pbp-it-broken.service"
 	v := strconv.Itoa(vmid)
 	destroyCT := func() {
-		_, _ = e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct destroy "+v+" --purge; }", nil)
+		_, _ = e.admin.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct destroy "+v+" --purge; }", nil)
 	}
 	t.Cleanup(destroyCT)
 
@@ -517,7 +575,7 @@ func TestBrokenBackupFails(t *testing.T) {
 		"--rootfs %s:2 --net0 name=eth0,bridge=%s --start 1",
 		v, sshx.Quote(tmpl), e.cfg.Restore.Storage, e.cfg.Target.Bridge))
 	unitText := "[Unit]\nDescription=PBP integration test: always fails\n\n[Service]\nType=oneshot\nExecStart=/bin/false\n\n[Install]\nWantedBy=multi-user.target\n"
-	res, err := e.ssh.Run(ctx, "pct exec "+v+" -- sh -c "+sshx.Quote("cat > /etc/systemd/system/"+unit+" && systemctl enable "+unit), []byte(unitText))
+	res, err := e.admin.Run(ctx, "pct exec "+v+" -- sh -c "+sshx.Quote("cat > /etc/systemd/system/"+unit+" && systemctl enable "+unit), []byte(unitText))
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("install unit: %v %+v", err, res)
 	}
@@ -533,7 +591,7 @@ func TestBrokenBackupFails(t *testing.T) {
 		t.Fatalf("unexpected backup %+v", b)
 	}
 	t.Cleanup(func() {
-		res, err := e.ssh.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
+		res, err := e.admin.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
 		}
@@ -586,7 +644,7 @@ func TestCrashRecovery(t *testing.T) {
 	}
 
 	bin := filepath.Join(dir, "pbp")
-	build := exec.Command("go", "build", "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
+	build := exec.Command("go", "build", "-ldflags", "-X main.version="+e.version, "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
@@ -691,7 +749,7 @@ func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, co
 	}
 	v := strconv.Itoa(vmid)
 	destroyCT := func() {
-		_, _ = e.ssh.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct set "+v+" --protection 0; pct destroy "+v+" --purge; }", nil)
+		_, _ = e.admin.Run(ctx, "pct status "+v+" >/dev/null 2>&1 && { pct stop "+v+" >/dev/null 2>&1; pct set "+v+" --protection 0; pct destroy "+v+" --purge; }", nil)
 	}
 	t.Cleanup(destroyCT)
 	e.sh(t, fmt.Sprintf("pct create %s %s --hostname %s --unprivileged 1 --memory 256 --cores 1 "+
@@ -713,7 +771,7 @@ func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, co
 	}
 	t.Logf("created backup %s", b.VolID)
 	t.Cleanup(func() {
-		res, err := e.ssh.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
+		res, err := e.admin.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
 		}
@@ -730,7 +788,7 @@ func (e *env) waitOpenRCDefault(t *testing.T, v string) {
 	// that is changing runlevel to exit.
 	settled := "[ \"$(rc-status -r)\" = default ] && ! pidof openrc >/dev/null"
 	for i := 0; i < 120; i++ {
-		res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(settled), nil)
+		res, err := e.admin.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(settled), nil)
 		if err == nil && res.ExitCode == 0 {
 			time.Sleep(2 * time.Second)
 			return
@@ -744,7 +802,7 @@ func (e *env) waitOpenRCDefault(t *testing.T, v string) {
 // output and exit code.
 func (e *env) rcCrashed(t *testing.T, v string) (string, int) {
 	t.Helper()
-	res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- rc-status --crashed", nil)
+	res, err := e.admin.Run(context.Background(), "pct exec "+v+" -- rc-status --crashed", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +840,7 @@ func TestProofAlpineCrashed(t *testing.T) {
 	script := "#!/sbin/openrc-run\ndescription=\"PBP integration test: a daemon that exits right after start\"\n" +
 		"command=\"/bin/sleep\"\ncommand_args=\"1\"\ncommand_background=no\n"
 	e.throwaway(t, vmid, tmpl, "pbp-it-alpcrash", "", func(v string) {
-		res, err := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
+		res, err := e.admin.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
 			"cat > /etc/init.d/"+svc+" && chmod 755 /etc/init.d/"+svc+" && rc-update add "+svc+" default"), []byte(script))
 		if err != nil || res.ExitCode != 0 {
 			t.Fatalf("install service: %v %+v", err, res)
@@ -816,7 +874,7 @@ func TestProofProtectedGuest(t *testing.T) {
 		if !strings.Contains(e.sh(t, "pct config "+v), "\nprotection: 1\n") {
 			t.Fatal("source container is not protected")
 		}
-		res, _ := e.ssh.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
+		res, _ := e.admin.Run(context.Background(), "pct exec "+v+" -- sh -c "+sshx.Quote(
 			"timeout 120 systemctl is-system-running --wait; systemctl --failed --no-legend --plain"), nil)
 		t.Logf("source state: %s", strings.TrimSpace(res.Stdout))
 	})

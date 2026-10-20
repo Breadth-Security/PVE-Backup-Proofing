@@ -4,8 +4,17 @@ These tests run PBP's real code (API client, SSH, target, run lifecycle,
 janitor, notification templates) against a live PVE 9 node. They are opt-in:
 build tag `integration`, and every test skips unless `PBP_IT_CONFIG` is set.
 
+PBP under test connects as the restricted `pbp` user through the node helper
+(`target.ssh.user: pbp`, the default; `root` is rejected). The suite's own
+fixtures (creating, backing up and destroying throwaway containers, the
+notification render test) need a real root shell, so they use a **separate,
+test-only admin key** through the test's own SSH client. That key is never in
+PBP's config or product code.
+
 ```
 PBP_IT_CONFIG=/path/to/config.yaml \
+PBP_IT_ADMIN_SSH_KEY=/path/to/it_admin_key \
+PBP_IT_ADMIN_KNOWN_HOSTS=/path/to/it_admin_known_hosts \
 PBP_IT_LXC=110 PBP_IT_VM_AGENT=100 PBP_IT_VM_NOAGENT=138 \
 PBP_IT_BROKEN_VMID=990009 \
 PBP_IT_BROKEN_TEMPLATE=NFS-iso:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
@@ -23,7 +32,11 @@ own backup and deletes exactly that backup again.
 
 | Variable | Used by | Meaning |
 |----------|---------|---------|
-| `PBP_IT_CONFIG` | all | A PBP config file for the node (never committed). Use `workers: 1`. |
+| `PBP_IT_CONFIG` | all | A PBP config file for the node (never committed). Use `workers: 1`, `target.ssh.user: pbp`. |
+| `PBP_IT_ADMIN_SSH_KEY` | all | Private key file of the test-only admin key (see below). The suite fails without it. |
+| `PBP_IT_ADMIN_KNOWN_HOSTS` | all | A `known_hosts` file for the admin connection (same host and port as `target.ssh`). |
+| `PBP_IT_ADMIN_USER` | all | Admin account for the fixtures. Default `root`; must differ from `target.ssh.user`. |
+| `PBP_IT_DAEMON_VERSION` | all | Version the harness presents as the daemon's (set on the target and in the `pbp` that `TestCrashRecovery` builds). Default: the node helper's own version, so the suite does not test version compatibility (unit tests do). |
 | `PBP_IT_LXC` | `TestProofSmallLXC`, `TestCrashRecovery` | VMID of a small container whose newest backup is proofed. |
 | `PBP_IT_VM_AGENT` | `TestProofVMWithAgent` | VMID of a VM with `agent: 1` and a working guest agent inside. |
 | `PBP_IT_VM_NOAGENT` | `TestProofVMWithoutAgent` | VMID of a VM without a guest agent. |
@@ -47,14 +60,14 @@ The values above are pve1's: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
 ## What each test does
 
 - **TestCheck**: the preflight of `pbp check` (PVE version, isolated bridge,
-  restore storage, template install, janitor, no foreign guest in the range),
+  restore storage, installed templates, janitor, no foreign guest in the range),
   and that the API reports the bridge as `bridge`/`OVSBridge`.
 - **TestProofSmallLXC**: proofs the container's newest backup. Expects
   `PROVEN`, or `FAILED` naming real units.
 - **TestProofVMWithAgent**: proofs the VM; expects `PROVEN` or `FAILED` with
   the agent used (not `BOOTED`).
 - **TestProofVMWithoutAgent**: expects `BOOTED` / `guest agent missing`.
-- **TestNotificationRenders**: installs the templates, then renders a summary
+- **TestNotificationRenders**: checks the templates are installed, then renders a summary
   that fills every section with the node's own proxmox-notify. It renders
   into an in-memory notification config whose only enabled target is a
   webhook to a one-shot listener on the node's loopback; the built-in
@@ -107,7 +120,33 @@ instead of the node, so they send no notifications. They also hide backups of
 other guest kinds with the same VMID (VMIDs get reused: a run for
 `--guest N` proofs every kind with that VMID).
 
+## Admin key for the fixtures (add before a live run, remove after)
+
+Only while live tests run, and only with the owner's approval at the time:
+
+1. Create a throwaway key pair for this purpose, on the machine that runs the
+   suite: `ssh-keygen -t ed25519 -f it_admin_key -N '' -C pbp-it-admin`.
+2. Add `it_admin_key.pub` to `/root/.ssh/authorized_keys` on the node, as one
+   line (`pbp-it-admin` in the comment makes it easy to find and remove).
+3. `ssh-keyscan -t ed25519 <node> > it_admin_known_hosts`, and cross-check the
+   host key against one you already trust.
+4. Run the suite with `PBP_IT_ADMIN_SSH_KEY` and `PBP_IT_ADMIN_KNOWN_HOSTS`
+   set as above.
+5. **Afterwards**, remove the line again (`sed -i '/pbp-it-admin/d'
+   /root/.ssh/authorized_keys`), check with `grep pbp-it-admin
+   /root/.ssh/authorized_keys` that nothing is left, and delete the private
+   key.
+
+The admin key is not PBP's key. PBP's own key stays the forced-command `pbp`
+key, and root's `authorized_keys` must hold no PBP key between runs.
+
 ## Node setup (done once on pve1, 2026-10-19)
+
+**Node helper** (prerequisite): the `pbp` user, forced command, sudoers rule and
+`/etc/pbp/node.yaml` exactly as in the main README "Node setup" (the node
+`vmid_range` and `bridge` must equal the test config's), plus `pbp node
+install-templates` run once as root. PBP no longer installs the templates
+itself, so `TestCheck` and the notification tests fail until that is done.
 
 **Isolated bridge `vmbr99`** (Linux bridge, no ports, no address). Backup of
 the network config first, then:
@@ -147,7 +186,7 @@ config and volume access) and `SDN.Use` on `/sdn/zones/localnetwork` (restore
 checks the original NIC bridges and VLANs) were found missing by the suite.
 
 **Notification templates.** `pbp-subject.txt.hbs` and `pbp-body.txt.hbs` in
-`/etc/pve/notification-templates/default/`, installed by PBP's preflight.
+`/etc/pve/notification-templates/default/`, installed by `pbp node install-templates` as root.
 
 **Test config.** `restore.storage: pool_qemu`, `sources.storages:
 [PBS-Baremetal, PBS-qemu]` (encrypted; the node holds the key), bridge

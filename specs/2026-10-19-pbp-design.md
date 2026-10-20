@@ -64,12 +64,16 @@ retired everywhere (README, binary, image, docs).
   and refuses older ones.
 - **Access to the target node** requires both:
   - a **PVE API token** (reads, restores, config, annotations), and
-  - **SSH as root** (or a user with equivalent rights) to the node, because:
+  - **SSH as the unprivileged `pbp` user** to the node, restricted by an SSH forced command to
+    the `pbp node` helper (one sudo rule), because:
     - `pct exec` has no API equivalent (FR6), and
     - arbitrary notifications can only be sent via `PVE::Notify` on the node itself
       (the notifications REST API only has a fixed "test" send).
-  - Consequence to document clearly: PBP holds root-equivalent access to one PVE node.
-    Hardening (restricted sudo wrapper) is a later improvement, not v1.
+  - There is no root SSH path. The helper only runs `pct exec` in tagged containers inside the
+    reserved range, reads the isolated bridge's state, sends `pbp` notifications and prints its
+    config. Revised from the original v1 text (root-equivalent access) by
+    [2026-10-19-root-access-reduction-design.md](2026-10-19-root-access-reduction-design.md)
+    (release 0.2.0).
 - The source PBS storage(s) must be configured on the target node (PVE storage config is
   cluster-wide, so any cluster node's PBS storage works).
 - The existing Rust stub (`pbvRunner/`, including its committed `target/` build output) is
@@ -169,6 +173,7 @@ recoverable by the janitor after a crash.
 Builder note: some operations may be refused to an API token (e.g. removing `hostpci`, restoring
 privileged containers, bind mounts are root-only in PVE). Prefer the API; fall back to the
 equivalent CLI (`qmrestore`, `pct restore`, `qm set`, `pct set`) over SSH where the API refuses.
+(Superseded in 0.2.0: the `pbp node` helper offers no such commands, so the API must suffice.)
 Verify each on a real node.
 
 ## 7. Proofing checks
@@ -284,8 +289,8 @@ mount points excluded from backup, bind mounts and passthrough devices removed b
 - `SKIPPED` because already proven does not rewrite notes.
 
 ### 8.3 Notification via the PVE node
-- One summary per run, sent on the target node via SSH calling `PVE::Notify::notify(severity,
-  "pbp", data, fields)`, so it uses whatever targets/matchers the operator already has.
+- One summary per run, sent on the target node via the `pbp node` helper (over SSH) calling
+  `PVE::Notify::notify(severity, "pbp", data, fields)`, so it uses whatever targets/matchers the operator already has.
 - The summary includes a "not covered by backup" section (§7.8) and, when non-empty, an
   "Environment errors" section (pbp-tagged guests outside the VMID range, §11; a failed check
   for them).
@@ -293,7 +298,9 @@ mount points excluded from backup, bind mounts and passthrough devices removed b
   run-level failure.
 - Metadata fields include `type=pbp` and `hostname` so operators can route via matchers.
 - Template files `pbp-subject.txt.hbs`, `pbp-body.txt.hbs` (and optionally `.html.hbs`) installed
-  by PBP into `/etc/pve/notification-templates/default/` during preflight.
+  by the admin with `pbp node install-templates` (as root on the node) into
+  `/etc/pve/notification-templates/default/`; preflight only checks them (changed in 0.2.0, since
+  PBP no longer has root).
   **Must verify on a real node** that a brand-new type is picked up from the override dir; if
   not, fall back to `/usr/share/pve-manager/templates/default/` and document that it may need
   reinstalling after upgrades.
@@ -319,7 +326,7 @@ target:
     tls_fingerprint: "AB:CD:..."   # or ca_file; never skip-verify by default
   ssh:
     host: pve1.example.lan
-    user: root
+    user: pbp                  # restricted helper user; root is rejected (see root-access-reduction design)
     key_file: /run/secrets/pve_ssh_key
     known_hosts_file: /etc/pbp/known_hosts
   bridge: vmbr-pbp             # operator-created, no ports, no IP; PBP verifies
@@ -394,6 +401,9 @@ logging:
 6. All teardown is crash-recoverable via the state store + janitor.
 7. A guest tagged `pbp` outside the reserved range is never touched; it is reported as an
    environment error in the run summary.
+8. No root path: PBP reaches the node only through the `pbp node` helper, which itself refuses any
+   guest outside its configured range, any untagged guest and any non-container, whatever the
+   daemon asks (root-access-reduction design, §3 and §7).
 
 ## 12. Testing
 

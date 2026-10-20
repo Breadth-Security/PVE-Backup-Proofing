@@ -66,7 +66,7 @@ func TestDefaultsAndAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Target.Type != "existing-node" || c.Target.SSH.User != "root" || c.Logging.Dir != "/var/log/pbp" || c.Restore.BootTimeout != 5*time.Minute {
+	if c.Target.Type != "existing-node" || c.Target.SSH.User != "pbp" || c.Logging.Dir != "/var/log/pbp" || c.Restore.BootTimeout != 5*time.Minute {
 		t.Fatalf("defaults: %+v", c)
 	}
 	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) {
@@ -112,6 +112,7 @@ func TestValidateErrors(t *testing.T) {
 		{"command timeout short", "sources:", "checks: {command_timeout: 500ms}\nsources:", "checks.command_timeout"},
 		{"command timeout unitless", "sources:", "checks: {command_timeout: 60}\nsources:", "checks.command_timeout"},
 		{"range too high", "[990000, 990049]", "[990000, 1000000000]", "target.vmid_range"},
+		{"range hi at max", "[990000, 990049]", "[990000, 999999999]", "target.vmid_range"},
 		{"profile no name", "sources:", "checks: {profiles: [{unit: x.service}]}\nsources:", "checks.profiles[0].name"},
 		{"profile no unit", "sources:", "checks: {profiles: [{name: x}]}\nsources:", "checks.profiles[0].unit"},
 		{"profile duplicate", "sources:", "checks: {profiles: [{name: x, unit: a}, {name: x, unit: b}]}\nsources:", "checks.profiles[1].name"},
@@ -147,6 +148,20 @@ func TestValidateErrors(t *testing.T) {
 				t.Fatalf("want validation line starting %q, got %v", tc.key+": ", inner)
 			}
 		})
+	}
+}
+
+func TestRootSSHUserIsRejected(t *testing.T) {
+	for _, user := range []string{"root", `"root"`} {
+		_, err := loadStr(t, strings.Replace(minimal, "ssh: {known_hosts_file: /kh}", "ssh: {user: "+user+", known_hosts_file: /kh}", 1))
+		want := `target.ssh.user: root is no longer supported; set up the pbp node helper (README "Node setup")`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("user %s: err = %v, want it to contain %q", user, err, want)
+		}
+	}
+	c, err := loadStr(t, strings.Replace(minimal, "ssh: {known_hosts_file: /kh}", "ssh: {user: backup, known_hosts_file: /kh}", 1))
+	if err != nil || c.Target.SSH.User != "backup" {
+		t.Errorf("another user: %v, %+v", err, c.Target.SSH)
 	}
 }
 
@@ -257,5 +272,17 @@ func TestResolvePath(t *testing.T) {
 	t.Setenv("PBP_CONFIG", "/env.yaml")
 	if ResolvePath("") != "/env.yaml" || ResolvePath("/flag.yaml") != "/flag.yaml" {
 		t.Fatal("precedence")
+	}
+}
+
+// The refusal probe uses vmid_range[1]+1, so hi stops one short of the
+// largest VMID Proxmox accepts.
+func TestVMIDRangeTop(t *testing.T) {
+	c, err := loadStr(t, strings.Replace(minimal, "[990000, 990049]", "[990000, 999999998]", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Target.VMIDRange[1] != 999999998 {
+		t.Errorf("hi = %d, want 999999998", c.Target.VMIDRange[1])
 	}
 }
