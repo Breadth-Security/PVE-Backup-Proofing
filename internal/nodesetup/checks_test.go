@@ -3,6 +3,9 @@ package nodesetup
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +26,17 @@ type checkRig struct {
 	bridge    nodeproto.BridgeState
 	bridgeErr error
 	calls     []string
+	root      string // has sudo, visudo and /etc/sudoers.d
+}
+
+// sudoRoot is a temp root with sudo installed.
+func sudoRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "etc/sudoers.d"), 0o750)
+	mustWrite(t, filepath.Join(root, "usr/bin/sudo"), "", 0o755)
+	mustWrite(t, filepath.Join(root, "usr/sbin/visudo"), "", 0o755)
+	return root
 }
 
 type rigSystem struct {
@@ -35,8 +49,9 @@ func (s rigSystem) BridgeState(_ context.Context, b string) (nodeproto.BridgeSta
 	return s.r.bridge, s.r.bridgeErr
 }
 
-func newRig() *checkRig {
+func newRig(t *testing.T) *checkRig {
 	return &checkRig{
+		root:     sudoRoot(t),
 		version:  `{"version":"9.0.3"}`,
 		nodes:    `[{"node":"pve1"},{"node":"pve2"}]`,
 		iface:    `{"iface":"vmbr99","type":"bridge","bridge_ports":"none"}`,
@@ -72,7 +87,7 @@ func (r *checkRig) env() (Env, *pve.Client) {
 		}
 		return nil, errors.New("unexpected path " + path)
 	}
-	env := Env{Run: func(_ context.Context, name string, args []string, _ []byte) (string, string, int, error) {
+	env := Env{Root: r.root, Run: func(_ context.Context, name string, args []string, _ []byte) (string, string, int, error) {
 		r.calls = append(r.calls, name+" "+strings.Join(args, " "))
 		return r.sshd, "", 0, nil
 	}}
@@ -93,7 +108,7 @@ func checkArgs() nodeproto.SetupArgs {
 }
 
 func TestCheckPasses(t *testing.T) {
-	r := newRig()
+	r := newRig(t)
 	n, err := r.check(checkArgs())
 	if err != nil || n != "pve1" {
 		t.Fatalf("Check = %q, %v", n, err)
@@ -121,12 +136,12 @@ func TestCheckFailures(t *testing.T) {
 		{"foreign guest", func(r *checkRig, _ *nodeproto.SetupArgs) {
 			r.guests = `[{"type":"qemu","vmid":990002,"node":"pve1","name":"x","status":"stopped"}]`
 		}, "990002", "/cluster/resources"},
-		{"no usepam", func(r *checkRig, _ *nodeproto.SetupArgs) { r.sshd = "port 22\nusepam no\n" }, "UsePAM", "/usr/sbin/sshd -T"},
+		{"no usepam", func(r *checkRig, _ *nodeproto.SetupArgs) { r.sshd = "port 22\nusepam no\n" }, "UsePAM", "/usr/sbin/sshd -T -C user=pbp,host=localhost,addr=127.0.0.1"},
 		{"storage", func(r *checkRig, _ *nodeproto.SetupArgs) { r.storages = nil }, "storage local-zfs", "/nodes/pve1/storage/local-zfs/status"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig()
+			r := newRig(t)
 			a := checkArgs()
 			tc.mod(r, &a)
 			_, err := r.check(a)
@@ -141,7 +156,7 @@ func TestCheckFailures(t *testing.T) {
 }
 
 func TestCheckMissingBridgePrintsStanza(t *testing.T) {
-	r := newRig()
+	r := newRig(t)
 	r.iface = ""
 	_, err := r.check(checkArgs())
 	if err == nil {
@@ -159,7 +174,7 @@ func TestCheckMissingBridgePrintsStanza(t *testing.T) {
 }
 
 func TestCheckIPv6HintAndOtherIfaceErrors(t *testing.T) {
-	r := newRig()
+	r := newRig(t)
 	r.bridge.DisableIPv6 = "0"
 	_, err := r.check(checkArgs())
 	if err == nil || !strings.Contains(err.Error(), "ifreload -a") {
@@ -179,7 +194,7 @@ const realMissingStderr = "400 Parameter verification failed.\niface: interface 
 // pveshEnv drives Check through the production wiring PveshRun, with fail
 // deciding what a pvesh network GET does.
 func pveshEnv(r *checkRig, fail func() (string, int, error)) (Env, *pve.Client) {
-	var env Env
+	env := Env{Root: r.root}
 	env.Run = func(_ context.Context, name string, args []string, _ []byte) (string, string, int, error) {
 		if name == "/usr/sbin/sshd" {
 			return r.sshd, "", 0, nil
@@ -201,7 +216,7 @@ func pveshEnv(r *checkRig, fail func() (string, int, error)) (Env, *pve.Client) 
 
 func TestCheckMissingBridge(t *testing.T) {
 	hostname = func() (string, error) { return "pve1", nil }
-	r := newRig()
+	r := newRig(t)
 	env, api := pveshEnv(r, func() (string, int, error) { return realMissingStderr, 255, nil })
 	_, err := Check(context.Background(), env, api, rigSystem{r: r}, checkArgs(), "0.3.0")
 	if err == nil || !strings.Contains(err.Error(), BridgeStanza("vmbr99")) {
@@ -214,5 +229,47 @@ func TestCheckMissingBridge(t *testing.T) {
 	_, err = Check(context.Background(), env, api, rigSystem{r: r}, checkArgs(), "0.3.0")
 	if err == nil || strings.Contains(err.Error(), BridgeStanza("vmbr99")) || !strings.Contains(err.Error(), "executable file not found") {
 		t.Fatalf("exec failure must not look like a missing bridge: %v", err)
+	}
+}
+
+func TestCheckSudoMissing(t *testing.T) {
+	for _, p := range []string{"usr/bin/sudo", "usr/sbin/visudo", "etc/sudoers.d"} {
+		t.Run(p, func(t *testing.T) {
+			r := newRig(t)
+			if err := os.RemoveAll(filepath.Join(r.root, p)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := r.check(checkArgs())
+			if err == nil || !strings.Contains(err.Error(), "apt install sudo") || !strings.Contains(err.Error(), "/"+p) {
+				t.Fatalf("err = %v, want the sudo prerequisite naming /%s", err, p)
+			}
+			if got := r.calls[len(r.calls)-1]; got != "/version" {
+				t.Errorf("probes ran after the sudo check: %v", r.calls)
+			}
+		})
+	}
+	// /etc/sudoers.d must be a directory.
+	r := newRig(t)
+	if err := os.RemoveAll(filepath.Join(r.root, "etc/sudoers.d")); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(r.root, "etc/sudoers.d"), "", 0o644)
+	if _, err := r.check(checkArgs()); err == nil || !strings.Contains(err.Error(), "/etc/sudoers.d") {
+		t.Fatalf("err = %v, want /etc/sudoers.d named", err)
+	}
+}
+
+func TestCheckSshdArgs(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.check(checkArgs()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.calls, "/usr/sbin/sshd -T -C user=pbp,host=localhost,addr=127.0.0.1") {
+		t.Errorf("sshd not asked for pbp's connection: %v", r.calls)
+	}
+	// UsePAM set off in a Match block for pbp shows in -C output.
+	r.sshd = "usepam no\n"
+	if _, err := r.check(checkArgs()); err == nil || !strings.Contains(err.Error(), "UsePAM") {
+		t.Errorf("err = %v", err)
 	}
 }

@@ -62,7 +62,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 	host, _, _ = strings.Cut(host, ".")
 	f := &fakeNode{t: t, root: t.TempDir(), host: host, shell: "/usr/sbin/nologin",
 		roles: map[string]string{}, tokens: map[string][]string{}}
-	for _, d := range []string{"var/lib/pbp", "etc/sudoers.d", "etc/ssh", "etc/pve/local"} {
+	for _, d := range []string{"var/lib/pbp", "etc/sudoers.d", "etc/ssh", "etc/pve/local", "usr/bin", "usr/sbin"} {
 		if err := os.MkdirAll(filepath.Join(f.root, d), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -70,6 +70,8 @@ func newFakeNode(t *testing.T) *fakeNode {
 	if err := os.Chmod(filepath.Join(f.root, "var/lib/pbp"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	f.write("/usr/bin/sudo", "", 0o755)
+	f.write("/usr/sbin/visudo", "", 0o755)
 	f.write(nodesetup.HostKeyPath, genKey(t, "root@node")+"\n", 0o644)
 	cert, err := os.ReadFile("../../internal/nodesetup/testdata/api-cert.crt")
 	if err != nil {
@@ -139,7 +141,7 @@ func (f *fakeNode) run(_ context.Context, name string, args []string, _ []byte) 
 		}
 		return "", "unexpected pvesh " + p, 2, nil
 	case "/usr/sbin/sshd":
-		return "port 22\nusepam yes\n", "", 0, nil
+		return "port 22\nusepam yes\nauthorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\nauthorizedkeyscommand none\n", "", 0, nil
 	case "/usr/sbin/visudo":
 		f.events = append(f.events, "visudo "+line)
 		return "", "", 0, nil

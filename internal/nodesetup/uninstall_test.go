@@ -652,3 +652,21 @@ func TestUninstallStopsOnFailure(t *testing.T) {
 		}
 	}
 }
+
+// An extra key file in .ssh (which setup refuses) does not stop uninstall
+// removing access: the sudo rule and authorized_keys still go; the extra
+// file and so .ssh stay.
+func TestUninstallExtraKeyFile(t *testing.T) {
+	_, env := newUninstallFake(t)
+	extra := filepath.Join(env.path(SSHDir), "authorized_keys2")
+	mustWrite(t, extra, "ssh-ed25519 AAAAevil\n", 0o644)
+	if err := uninstall(t, env, false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if !gone(env, SudoersPath) || !gone(env, AuthorizedKeys) {
+		t.Error("access left in place")
+	}
+	if _, err := os.Stat(extra); err != nil {
+		t.Errorf("extra file: %v", err)
+	}
+}

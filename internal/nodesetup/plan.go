@@ -60,6 +60,7 @@ const (
 	KindFile      Kind = "file"      // Path: file; Mode, Owner, Group, Content
 	KindShell     Kind = "shell"     // Path: user name; Content: the shell
 	KindHome      Kind = "home"      // Path: pbp's home; check-only
+	KindCheck     Kind = "check"     // a check-only condition; Path names what it checks
 	KindTemplates Kind = "templates" // Path: template dir; written as node.InstallTemplates does
 	KindRole      Kind = "role"      // Path: role id; privileges RolePrivs
 	KindUser      Kind = "user"      // Path: user id
@@ -127,6 +128,8 @@ func BuildPlan(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName str
 		NodeYAML(a.VMIDRange[0], a.VMIDRange[1], a.Bridge)), sameNodeYAML(env, a)))
 	add(planShell(ids))
 	add(planHome(env, ids))
+	add(planKeySources(ctx, env, ids))
+	add(planSSHDirContents(env))
 	add(planFile(env, ids, fileItem("sudoers rule", SudoersPath, 0o440, "root", "root",
 		[]byte(SudoersText)), sameSudoers))
 	add(planTemplates(env))
@@ -374,6 +377,82 @@ func planHome(env Env, ids ids) Item {
 	}
 	if len(bad) > 0 {
 		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+	}
+	return it
+}
+
+// planKeySources checks where sshd looks for pbp's keys (sshd -T for a pbp
+// connection, so Match blocks apply): every AuthorizedKeysFile entry but
+// /var/lib/pbp/.ssh/authorized_keys must be absent, that one must be
+// listed, and no AuthorizedKeysCommand may apply. Otherwise a key setup
+// never wrote would let a host in. Check-only: setup never edits sshd's
+// configuration.
+func planKeySources(ctx context.Context, env Env, ids ids) Item {
+	it := Item{Kind: KindCheck, Name: "sshd key sources for pbp", Path: "sshd -T", CheckOnly: true}
+	cfg, err := sshdConfig(ctx, env)
+	if err != nil {
+		it.Status, it.Diff = Differs, "cannot read the sshd configuration: "+err.Error()
+		return it
+	}
+	var bad []string
+	listed := false
+	for _, f := range strings.Fields(cfg["authorizedkeysfile"]) {
+		if f == "none" {
+			continue
+		}
+		p, ok := expandKeysFile(f, ids.uid[PbpUser])
+		if !ok {
+			bad = append(bad, "AuthorizedKeysFile "+f+": cannot tell which file this names for pbp; use a plain path, %h or %u")
+			continue
+		}
+		if p == AuthorizedKeys {
+			listed = true
+			continue
+		}
+		_, err := os.Lstat(env.path(p))
+		switch {
+		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+		case err != nil:
+			bad = append(bad, p+": "+err.Error())
+		default:
+			bad = append(bad, p+" exists, and sshd reads pbp's keys from it too: remove it (setup writes only "+AuthorizedKeys+")")
+		}
+	}
+	if !listed {
+		bad = append(bad, "sshd does not read "+AuthorizedKeys+" for pbp (AuthorizedKeysFile "+cfg["authorizedkeysfile"]+"): set AuthorizedKeysFile .ssh/authorized_keys in /etc/ssh/sshd_config")
+	}
+	if c := cfg["authorizedkeyscommand"]; c != "" && c != "none" {
+		bad = append(bad, "AuthorizedKeysCommand "+c+" applies to pbp: sshd would accept keys it prints; set it to none for pbp in /etc/ssh/sshd_config")
+	}
+	if len(bad) > 0 {
+		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+	}
+	return it
+}
+
+// planSSHDirContents checks that pbp's .ssh holds nothing but
+// authorized_keys and setup's backups of it. Check-only: setup never
+// removes a file it did not write. A missing .ssh, or one that is not a
+// directory (the dir item reports that), is correct here.
+func planSSHDirContents(env Env) Item {
+	it := Item{Kind: KindCheck, Name: "pbp .ssh contents", Path: SSHDir, CheckOnly: true}
+	fi, err := os.Lstat(env.path(SSHDir))
+	if err != nil || !fi.IsDir() {
+		return it
+	}
+	ents, err := os.ReadDir(env.path(SSHDir))
+	if err != nil {
+		it.Status, it.Diff = Differs, err.Error()
+		return it
+	}
+	var extra []string
+	for _, e := range ents {
+		if !sshDirAllowed(e.Name()) {
+			extra = append(extra, e.Name())
+		}
+	}
+	if len(extra) > 0 {
+		it.Status, it.Diff = Differs, "unexpected "+strings.Join(extra, ", ")+": only "+akName+" (and its backups) may be here, since sshd may read keys from other files; move them away"
 	}
 	return it
 }

@@ -16,6 +16,9 @@ homepage: https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing
 license: Apache-2.0
 depends:
   - adduser
+# Node setup's sudo rule needs it; Proxmox VE does not install it by default.
+recommends:
+  - sudo
 contents:
   - src: ${BIN}
     dst: /usr/bin/pbp

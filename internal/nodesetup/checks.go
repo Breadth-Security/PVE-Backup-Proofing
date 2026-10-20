@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -97,6 +98,10 @@ func Check(ctx context.Context, env Env, api *pve.Client, sys node.System, a nod
 		return "", fmt.Errorf("the setup line's public key is not usable (%v): copy the setup line again from pbp setup", err)
 	}
 
+	if err := sudoPrereqs(env); err != nil {
+		return "", err
+	}
+
 	host, err := hostname()
 	if err != nil {
 		return "", fmt.Errorf("cannot read this node's hostname (%v): fix the hostname and run pbp node setup again", err)
@@ -145,19 +150,11 @@ func Check(ctx context.Context, env Env, api *pve.Client, sys node.System, a nod
 			a.VMIDRange[0], a.VMIDRange[1], strings.Join(foreign, ", "))
 	}
 
-	out, stderr, exit, err := env.Run(ctx, "/usr/sbin/sshd", []string{"-T"}, nil)
+	cfg, err := sshdConfig(ctx, env)
 	if err != nil {
-		return "", fmt.Errorf("cannot read the sshd configuration (sshd -T: %v): fix sshd, then run pbp node setup again", err)
+		return "", fmt.Errorf("cannot read the sshd configuration (%v): fix sshd, then run pbp node setup again", err)
 	}
-	if exit != 0 {
-		return "", fmt.Errorf("cannot read the sshd configuration (sshd -T exited %d: %s): fix sshd, then run pbp node setup again", exit, strings.TrimSpace(stderr))
-	}
-	usePAM := false
-	for _, l := range strings.Split(out, "\n") {
-		if strings.EqualFold(strings.Join(strings.Fields(l), " "), "usepam yes") {
-			usePAM = true
-		}
-	}
+	usePAM := strings.EqualFold(cfg["usepam"], "yes")
 	if !usePAM {
 		return "", errors.New("sshd has UsePAM off, so the pbp account cannot log in over SSH: set UsePAM yes in /etc/ssh/sshd_config and reload sshd (setup never edits it)")
 	}
@@ -168,4 +165,91 @@ func Check(ctx context.Context, env Env, api *pve.Client, sys node.System, a nod
 		}
 	}
 	return name, nil
+}
+
+// sudoFiles are what the forced command and the sudo rule need; Proxmox VE
+// does not install sudo by default.
+var sudoFiles = []struct {
+	path string
+	dir  bool
+}{{sudoBin, false}, {visudo, false}, {"/etc/sudoers.d", true}}
+
+// sudoPrereqs checks that sudo is installed before setup changes anything.
+func sudoPrereqs(env Env) error {
+	var missing []string
+	for _, f := range sudoFiles {
+		fi, err := os.Stat(env.path(f.path))
+		if err != nil || fi.IsDir() != f.dir {
+			missing = append(missing, f.path)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("sudo is not installed (%s missing), and the pbp account reaches the helper through a sudo rule: apt install sudo, then run pbp node setup again",
+			strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+const sshdBin = "/usr/sbin/sshd"
+
+// sshdArgs ask sshd for the configuration a connection as pbp gets, so
+// Match blocks apply.
+var sshdArgs = []string{"-T", "-C", "user=" + PbpUser + ",host=localhost,addr=127.0.0.1"}
+
+// sshdConfig runs `sshd -T` for a pbp connection and returns each keyword
+// (lower case, as sshd prints it) with the rest of its first line.
+func sshdConfig(ctx context.Context, env Env) (map[string]string, error) {
+	cmd := sshdBin + " " + strings.Join(sshdArgs, " ")
+	out, stderr, exit, err := env.Run(ctx, sshdBin, sshdArgs, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cmd, err)
+	}
+	if exit != 0 {
+		return nil, fmt.Errorf("%s exited %d: %s", cmd, exit, strings.TrimSpace(stderr))
+	}
+	cfg := map[string]string{}
+	for _, l := range strings.Split(out, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), " ")
+		if k = strings.ToLower(k); k == "" {
+			continue
+		}
+		if _, ok := cfg[k]; !ok {
+			cfg[k] = strings.Join(strings.Fields(v), " ")
+		}
+	}
+	return cfg, nil
+}
+
+// expandKeysFile expands an AuthorizedKeysFile entry for pbp: %h, %u, %U
+// and %%; a relative path is relative to the home. ok is false for any
+// other % token.
+func expandKeysFile(f string, uid int) (string, bool) {
+	var sb strings.Builder
+	for i := 0; i < len(f); i++ {
+		if f[i] != '%' {
+			sb.WriteByte(f[i])
+			continue
+		}
+		if i+1 == len(f) {
+			return "", false
+		}
+		i++
+		switch f[i] {
+		case '%':
+			sb.WriteByte('%')
+		case 'h':
+			sb.WriteString(PbpHome)
+		case 'u':
+			sb.WriteString(PbpUser)
+		case 'U':
+			sb.WriteString(strconv.Itoa(uid))
+		default:
+			return "", false
+		}
+	}
+	p := sb.String()
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(PbpHome, p)
+	}
+	return filepath.Clean(p), true
 }

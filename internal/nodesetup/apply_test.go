@@ -102,6 +102,8 @@ func (f *applyFake) run(ctx context.Context, name string, args []string, stdin [
 		}
 		return "", "bad visudo", 2, nil
 	case "/usr/sbin/pveum":
+	case "/usr/sbin/sshd": // read-only; not an event
+		return f.fakePVE.run(ctx, name, args, stdin)
 	default:
 		f.events = append(f.events, ev)
 		return "", "unexpected command " + name, 127, nil

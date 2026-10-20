@@ -44,10 +44,24 @@ type fakePVE struct {
 	nosep  bool                // tokens are listed with privsep 0
 	acls   []aclEntry
 	calls  []string
+	// sshd is the output of `sshd -T -C …`; "" means Debian's defaults.
+	sshd string
 }
+
+// debianSSHD is what sshd -T prints on a stock Debian/PVE for the keys.
+const debianSSHD = "port 22\nusepam yes\nauthorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\nauthorizedkeyscommand none\n"
 
 func (f *fakePVE) run(_ context.Context, name string, args []string, stdin []byte) (string, string, int, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if name == "/usr/sbin/sshd" {
+		if !slices.Equal(args, []string{"-T", "-C", "user=pbp,host=localhost,addr=127.0.0.1"}) {
+			return "", "bad sshd args", 255, nil
+		}
+		if f.sshd == "" {
+			return debianSSHD, "", 0, nil
+		}
+		return f.sshd, "", 0, nil
+	}
 	if name != "/usr/sbin/pveum" {
 		return "", "unexpected command " + name, 127, nil
 	}
@@ -220,6 +234,8 @@ func TestPlanFreshNode(t *testing.T) {
 		{KindFile, "/etc/pbp/node.yaml"},
 		{KindShell, "pbp"},
 		{KindHome, "/var/lib/pbp"},
+		{KindCheck, "sshd -T"},
+		{KindCheck, "/var/lib/pbp/.ssh"},
 		{KindFile, "/etc/sudoers.d/pbp"},
 		{KindTemplates, node.DefaultTemplateDir},
 		{KindRole, RoleName},
@@ -242,10 +258,10 @@ func TestPlanFreshNode(t *testing.T) {
 	}
 	for _, it := range p.Items {
 		wantStatus := Create
-		if it.Kind == KindHome {
-			wantStatus = Correct // check-only: the .deb made it right
+		if it.Kind == KindHome || it.Kind == KindCheck {
+			wantStatus = Correct // check-only: the .deb and sshd made it right
 			if !it.CheckOnly {
-				t.Errorf("home item must be check-only")
+				t.Errorf("%s item must be check-only", it.Kind)
 			}
 		}
 		if it.Status != wantStatus {
@@ -283,8 +299,10 @@ func TestPlanItemsOnlyWithToken(t *testing.T) {
 			t.Errorf("unexpected %s item without --create-token or --storages", it.Kind)
 		}
 	}
-	if len(pve.calls) != 0 {
-		t.Errorf("pveum called without token items: %v", pve.calls)
+	for _, c := range pve.calls {
+		if strings.HasPrefix(c, "/usr/sbin/pveum") {
+			t.Errorf("pveum called without token items: %v", pve.calls)
+		}
 	}
 
 	// ACLs name the token, so an absent token is created for them.
@@ -525,5 +543,129 @@ func TestDesiredValues(t *testing.T) {
 	}
 	if Correct.String() != "already correct" || Create.String() != "create" || Differs.String() != "differs" {
 		t.Error("Status strings")
+	}
+}
+
+func TestPlanKeySources(t *testing.T) {
+	tests := []struct {
+		name  string
+		sshd  string
+		files []string // created under the root
+		want  string   // "" = correct, else part of the diff
+	}{
+		{"debian defaults", "", nil, ""},
+		{"authorized_keys2 present", "", []string{"/var/lib/pbp/.ssh/authorized_keys2"}, "/var/lib/pbp/.ssh/authorized_keys2 exists"},
+		{"only authorized_keys", "authorizedkeysfile %h/.ssh/authorized_keys\nauthorizedkeyscommand none\n", []string{"/var/lib/pbp/.ssh/authorized_keys2"}, ""},
+		{"central file for %u", "authorizedkeysfile .ssh/authorized_keys /etc/ssh/keys/%u\n", []string{"/etc/ssh/keys/pbp"}, "/etc/ssh/keys/pbp exists"},
+		{"central file absent", "authorizedkeysfile .ssh/authorized_keys /etc/ssh/keys/%u %%x\n", nil, ""},
+		{"unknown token", "authorizedkeysfile .ssh/authorized_keys /etc/ssh/%C\n", nil, "cannot tell which file"},
+		{"key file not read", "authorizedkeysfile none\n", nil, "does not read /var/lib/pbp/.ssh/authorized_keys"},
+		{"keys command", "authorizedkeysfile .ssh/authorized_keys\nauthorizedkeyscommand /usr/bin/fetch-keys %u\n", nil, "AuthorizedKeysCommand /usr/bin/fetch-keys %u applies"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pve := &fakePVE{sshd: tc.sshd}
+			env := testEnv(t, pve, "/bin/sh")
+			for _, f := range tc.files {
+				mustWrite(t, env.path(f), "ssh-ed25519 AAAAevil\n", 0o644)
+			}
+			it := item(t, buildPlan(t, env, testArgs()), KindCheck, "sshd -T")
+			if !it.CheckOnly {
+				t.Error("not check-only")
+			}
+			if tc.want == "" {
+				if it.Status != Correct {
+					t.Errorf("status %v, diff %q; want correct", it.Status, it.Diff)
+				}
+				return
+			}
+			if it.Status != Differs || !strings.Contains(it.Diff, tc.want) {
+				t.Errorf("status %v, diff %q; want differs with %q", it.Status, it.Diff, tc.want)
+			}
+			p := Plan{Items: []Item{it}}
+			if err := p.Refusal(ApplyOpts{Replace: true}); err == nil || !strings.Contains(err.Error(), "fix it by hand") {
+				t.Errorf("Refusal with --replace = %v", err)
+			}
+		})
+	}
+
+	t.Run("symlinked authorized_keys2", func(t *testing.T) {
+		env := testEnv(t, &fakePVE{}, "/bin/sh")
+		mustMkdir(t, env.path(SSHDir), 0o755)
+		if err := os.Symlink("/nonexistent", env.path(SSHDir+"/authorized_keys2")); err != nil {
+			t.Fatal(err)
+		}
+		if it := item(t, buildPlan(t, env, testArgs()), KindCheck, "sshd -T"); it.Status != Differs {
+			t.Errorf("a dangling symlink at authorized_keys2 passed: %v", it.Status)
+		}
+	})
+	t.Run("sshd fails", func(t *testing.T) {
+		env := testEnv(t, &fakePVE{}, "/bin/sh")
+		env.Run = func(context.Context, string, []string, []byte) (string, string, int, error) {
+			return "", "bad config line 3", 255, nil
+		}
+		a := testArgs()
+		a.CreateToken, a.Storages = false, nil
+		if it := item(t, buildPlan(t, env, a), KindCheck, "sshd -T"); it.Status != Differs || !strings.Contains(it.Diff, "bad config line 3") {
+			t.Errorf("status %v diff %q", it.Status, it.Diff)
+		}
+	})
+}
+
+func TestPlanSSHDirContents(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{"no .ssh", nil, ""},
+		{"key and backups", []string{"authorized_keys", "authorized_keys.pbp-backup-20261020T120000"}, ""},
+		{"authorized_keys2", []string{"authorized_keys", "authorized_keys2"}, "unexpected authorized_keys2"},
+		{"known_hosts and id", []string{"known_hosts", "id_ed25519"}, "id_ed25519, known_hosts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testEnv(t, &fakePVE{sshd: "authorizedkeysfile .ssh/authorized_keys\n"}, "/bin/sh")
+			for _, f := range tc.files {
+				mustWrite(t, filepath.Join(env.path(SSHDir), f), "x\n", 0o644)
+			}
+			it := item(t, buildPlan(t, env, testArgs()), KindCheck, SSHDir)
+			switch {
+			case !it.CheckOnly:
+				t.Error("not check-only")
+			case tc.want == "" && it.Status != Correct:
+				t.Errorf("status %v diff %q", it.Status, it.Diff)
+			case tc.want != "" && (it.Status != Differs || !strings.Contains(it.Diff, tc.want)):
+				t.Errorf("status %v diff %q, want %q", it.Status, it.Diff, tc.want)
+			}
+		})
+	}
+	// Apply refuses an extra file even with --replace, changing nothing.
+	f, env := newApplyFake(t, "/bin/sh")
+	mustWrite(t, filepath.Join(env.path(SSHDir), "authorized_keys2"), "x\n", 0o644)
+	_, err := apply(t, env, applyArgs(), ApplyOpts{Replace: true})
+	if err == nil || !strings.Contains(err.Error(), "pbp .ssh contents") {
+		t.Fatalf("Apply err %v", err)
+	}
+	for _, e := range f.events {
+		if !strings.Contains(e, "--output-format json") {
+			t.Errorf("changed despite the refusal: %s", e)
+		}
+	}
+}
+
+func TestExpandKeysFile(t *testing.T) {
+	for in, want := range map[string]string{
+		".ssh/authorized_keys":    AuthorizedKeys,
+		"%h/.ssh/authorized_keys": AuthorizedKeys,
+		"/etc/ssh/keys/%u":        "/etc/ssh/keys/pbp",
+		"/etc/ssh/keys/%U":        "/etc/ssh/keys/1234",
+		"/k/100%%":                "/k/100%",
+		"/etc/%C":                 "",
+		"/etc/%":                  "",
+	} {
+		got, ok := expandKeysFile(in, 1234)
+		if ok != (want != "") || got != want {
+			t.Errorf("expandKeysFile(%q) = %q, %v; want %q", in, got, ok, want)
+		}
 	}
 }

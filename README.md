@@ -196,8 +196,8 @@ What setup writes, and who owns it:
 
 In a root shell on the node (the console, or SSH as root), run the two lines `pbp setup` printed: first the install line, then the `pbp node setup` line. `pbp node setup`:
 
-1. **Checks**, changing nothing: PVE 9 or later; the daemon's version is compatible with this helper; the key is `ssh-ed25519`; the bridge exists and is isolated (by the same rule as preflight, so it can be rerun on a node in use); the VMID range holds no guest PBP does not own; sshd has `UsePAM yes`; and each named storage exists. A failure stops it with a sentence saying what to do. A missing bridge is reported with the stanza from step 2: setup never creates a bridge or reloads networking.
-2. **Shows a plan.** Every item from [Node setup](#node-setup) steps 2 to 6 (the helper config, the `pbp` shell, the sudo rule, the notification templates, the forced-command key) and the API token (role, user, token and ACLs), each marked `already correct`, `create` or `differs`, with the difference shown.
+1. **Checks**, changing nothing: PVE 9 or later; the daemon's version is compatible with this helper; the key is `ssh-ed25519`; `sudo` is installed (Proxmox VE does not install it: `apt install sudo`; the `.deb` recommends it); the bridge exists and is isolated (by the same rule as preflight, so it can be rerun on a node in use); the VMID range holds no guest PBP does not own; sshd has `UsePAM yes` for the `pbp` user (read with `sshd -T -C user=pbp,...`, so `Match` blocks count); and each named storage exists. A failure stops it with a sentence saying what to do. A missing bridge is reported with the stanza from step 2: setup never creates a bridge or reloads networking.
+2. **Shows a plan.** Every item from [Node setup](#node-setup) steps 2 to 6 (the helper config, the `pbp` shell, the sudo rule, the notification templates, the forced-command key) and the API token (role, user, token and ACLs), each marked `already correct`, `create` or `differs`, with the difference shown. Two more items are checks that setup never fixes, so a `differs` there stops it even with `--replace`: sshd must read `pbp`'s keys only from `/var/lib/pbp/.ssh/authorized_keys` (any other `AuthorizedKeysFile` entry, such as Debian's default `.ssh/authorized_keys2`, must not exist, and no `AuthorizedKeysCommand` may apply to `pbp`), and `/var/lib/pbp/.ssh` may hold only `authorized_keys` and setup's backups of it.
 3. **Asks** `Apply these changes? [y/N]`. Anything but `y` or `yes` changes nothing.
 4. **Applies** the plan, writing each file to a temporary file and renaming it into place. The sudo rule is checked with `visudo` first. The key goes in last, so an interrupted run never leaves a working key without its restriction.
 5. **Proves it**, the way the daemon will use it: as `pbp`, through the sudo rule, the helper must answer a version request and refuse a command for a VMID just above the range. It also re-reads every file.
@@ -392,9 +392,9 @@ Done once, as root on the PVE node. Step 1 is the install line `pbp setup` print
    chown root:root /var/lib/pbp/.ssh/authorized_keys && chmod 0644 /var/lib/pbp/.ssh/authorized_keys
    ```
 
-   `restrict` turns off port, agent and X11 forwarding, the pty and `~/.ssh/rc`, and whatever a later OpenSSH adds to that list. The directory and the file belong to root, so the `pbp` user cannot rewrite its own forced command; sshd accepts a key file owned by root.
+   `restrict` turns off port, agent and X11 forwarding, the pty and `~/.ssh/rc`, and whatever a later OpenSSH adds to that list. The directory and the file belong to root, so the `pbp` user cannot rewrite its own forced command; sshd accepts a key file owned by root. Keep nothing else in `.ssh`, and make sure sshd reads no other key source for `pbp`: `sshd -T -C user=pbp,host=localhost,addr=127.0.0.1 | grep -i authorizedkeys` lists them, and Debian's default also reads `.ssh/authorized_keys2`, which must not exist.
 
-5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp`. Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
+5. **Add the one sudo rule**, in `/etc/sudoers.d/pbp` (Proxmox VE does not install `sudo`: `apt install sudo` first). Check it with `visudo -cf` before it is installed; a broken sudoers file locks you out of sudo:
 
    ```
    f=$(mktemp)
