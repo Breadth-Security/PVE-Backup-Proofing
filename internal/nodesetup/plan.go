@@ -1,0 +1,532 @@
+package nodesetup
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+	"syscall"
+
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+)
+
+const pveum = "/usr/sbin/pveum"
+
+// Status is how one item compares with its desired state.
+type Status int
+
+// Item statuses.
+const (
+	Correct Status = iota // already correct
+	Create                // absent; setup creates it
+	Differs               // present but different; changed only with --replace
+)
+
+func (s Status) String() string {
+	switch s {
+	case Correct:
+		return "already correct"
+	case Create:
+		return "create"
+	case Differs:
+		return "differs"
+	}
+	return fmt.Sprintf("Status(%d)", int(s))
+}
+
+// Kind says what an item is, and so how Apply acts on it.
+type Kind string
+
+// Item kinds.
+const (
+	KindDir       Kind = "dir"       // Path: directory; Mode, Owner, Group
+	KindFile      Kind = "file"      // Path: file; Mode, Owner, Group, Content
+	KindShell     Kind = "shell"     // Path: user name; Content: the shell
+	KindHome      Kind = "home"      // Path: pbp's home; check-only
+	KindTemplates Kind = "templates" // Path: template dir; written as node.InstallTemplates does
+	KindRole      Kind = "role"      // Path: role id; privileges RolePrivs
+	KindUser      Kind = "user"      // Path: user id
+	KindToken     Kind = "token"     // Path: token id
+	KindACL       Kind = "acl"       // Path: ACL path; user and token get RoleName
+)
+
+// Item is one resource of the node's desired state.
+type Item struct {
+	Kind Kind
+	// Name is a short human label, e.g. "sudoers rule".
+	Name string
+	// Path identifies the resource: an absolute node path (not joined with
+	// Env.Root) for dir, file, home and templates; the user name for shell;
+	// the role, user or token id; the ACL path.
+	Path   string
+	Status Status
+	// Diff explains Create/Differs: "-have"/"+want" lines or a sentence.
+	// Empty when Correct.
+	Diff string
+	// Desired mode and owner names (dir, file).
+	Mode         os.FileMode
+	Owner, Group string
+	// Content is the desired file content (file) or login shell (shell).
+	Content []byte
+	// CheckOnly items are reported, never changed: Apply refuses to proceed
+	// while one is not Correct.
+	CheckOnly bool
+}
+
+// Plan lists every item in apply order.
+type Plan struct{ Items []Item }
+
+// Complete reports whether every item is already correct.
+func (p Plan) Complete() bool {
+	for _, it := range p.Items {
+		if it.Status != Correct {
+			return false
+		}
+	}
+	return true
+}
+
+// BuildPlan compares the desired state for a on node with what is on disk
+// and in PVE. Items come in apply order: /etc/pbp and node.yaml, shell (and
+// the check-only home), sudoers, templates, role/user/token/ACLs, then the
+// .ssh dir and authorized_keys last.
+func BuildPlan(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string) (Plan, error) {
+	ids, err := lookupIDs(env)
+	if err != nil {
+		return Plan{}, err
+	}
+	pub, err := nodeproto.ParsePubKey(a.PubKey)
+	if err != nil {
+		return Plan{}, fmt.Errorf("public key: %w", err)
+	}
+	var p Plan
+	add := func(it Item) { p.Items = append(p.Items, it) }
+
+	add(planDir(env, ids, "/etc/pbp", EtcDir, 0o750, "root", "pbp"))
+	add(planFile(env, ids, fileItem("helper config", NodeYAMLPath, 0o640, "root", "pbp",
+		NodeYAML(a.VMIDRange[0], a.VMIDRange[1], a.Bridge)), sameNodeYAML(env, a)))
+	add(planShell(ids))
+	add(planHome(env, ids))
+	add(planFile(env, ids, fileItem("sudoers rule", SudoersPath, 0o440, "root", "root",
+		[]byte(SudoersText)), sameSudoers))
+	add(planTemplates(env))
+
+	token := a.CreateToken || a.RotateToken
+	if token || len(a.Storages) > 0 {
+		pve, err := planPVE(ctx, env, a, nodeName, token)
+		if err != nil {
+			return Plan{}, err
+		}
+		p.Items = append(p.Items, pve...)
+	}
+
+	add(planDir(env, ids, "pbp .ssh dir", SSHDir, 0o755, "root", "root"))
+	add(planFile(env, ids, fileItem("authorized key", AuthorizedKeys, 0o644, "root", "root",
+		[]byte(AuthorizedKeysLine(pub)+"\n")), sameAuthorizedKeys(pub)))
+	return p, nil
+}
+
+// ids holds the uid/gid of root and pbp, plus pbp's home and shell.
+type ids struct {
+	uid, gid map[string]int
+	home     string
+	pbpShell string
+}
+
+func lookupIDs(env Env) (ids, error) {
+	out := ids{uid: map[string]int{}, gid: map[string]int{}}
+	for _, u := range []string{"root", PbpUser} {
+		uid, gid, home, shell, err := env.Lookup(u)
+		if err != nil {
+			return ids{}, fmt.Errorf("look up user %s: %w", u, err)
+		}
+		out.uid[u], out.gid[u] = uid, gid
+		if u == PbpUser {
+			out.home, out.pbpShell = home, shell
+		}
+	}
+	return out, nil
+}
+
+func fileItem(name, path string, mode os.FileMode, owner, group string, content []byte) Item {
+	return Item{Kind: KindFile, Name: name, Path: path, Mode: mode, Owner: owner, Group: group, Content: content}
+}
+
+// statOwned lstats path under Root and returns mode/owner problems.
+func statOwned(env Env, ids ids, it Item) (fs.FileInfo, []string, error) {
+	fi, err := os.Lstat(env.path(it.Path))
+	if err != nil {
+		return nil, nil, err
+	}
+	var bad []string
+	if m := fi.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky); m != it.Mode {
+		bad = append(bad, fmt.Sprintf("mode %04o, want %04o", uint32(m), uint32(it.Mode)))
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		wu, wg := ids.uid[it.Owner], ids.gid[it.Group]
+		if int(st.Uid) != wu || int(st.Gid) != wg {
+			bad = append(bad, fmt.Sprintf("owner %d:%d, want %s:%s (%d:%d)", st.Uid, st.Gid, it.Owner, it.Group, wu, wg))
+		}
+	}
+	return fi, bad, nil
+}
+
+func planDir(env Env, ids ids, name, path string, mode os.FileMode, owner, group string) Item {
+	it := Item{Kind: KindDir, Name: name, Path: path, Mode: mode, Owner: owner, Group: group}
+	fi, bad, err := statOwned(env, ids, it)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		it.Status, it.Diff = Create, fmt.Sprintf("+dir %04o %s:%s", uint32(mode), owner, group)
+	case err != nil:
+		it.Status, it.Diff = Differs, err.Error()
+	case !fi.IsDir():
+		it.Status, it.Diff = Differs, "not a directory ("+fi.Mode().Type().String()+")"
+	case len(bad) > 0:
+		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+	}
+	return it
+}
+
+// sameFunc compares file content with the desired content; when they do not
+// match it returns the diff.
+type sameFunc func(have []byte) (ok bool, diff string)
+
+func planFile(env Env, ids ids, it Item, same sameFunc) Item {
+	fi, bad, err := statOwned(env, ids, it)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		it.Status, it.Diff = Create, prefixLines("+", lines(it.Content))
+		return it
+	case err != nil:
+		it.Status, it.Diff = Differs, err.Error()
+		return it
+	case !fi.Mode().IsRegular():
+		it.Status, it.Diff = Differs, "not a regular file ("+fi.Mode().Type().String()+")"
+		return it
+	}
+	have, err := os.ReadFile(env.path(it.Path))
+	if err != nil {
+		it.Status, it.Diff = Differs, err.Error()
+		return it
+	}
+	if ok, d := same(have); !ok {
+		bad = append(bad, d)
+	}
+	if len(bad) > 0 {
+		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+	}
+	return it
+}
+
+// sameNodeYAML compares vmid_range and bridge by value; request_timeout is a
+// tuning knob and is kept as is.
+func sameNodeYAML(env Env, a nodeproto.SetupArgs) sameFunc {
+	return func([]byte) (bool, string) {
+		c, err := node.LoadConfig(env.path(NodeYAMLPath))
+		if err != nil {
+			return false, "invalid: " + err.Error()
+		}
+		var d []string
+		if c.VMIDRange != a.VMIDRange {
+			d = append(d, fmt.Sprintf("-vmid_range: [%d, %d]\n+vmid_range: [%d, %d]",
+				c.VMIDRange[0], c.VMIDRange[1], a.VMIDRange[0], a.VMIDRange[1]))
+		}
+		if c.Bridge != a.Bridge {
+			d = append(d, "-bridge: "+c.Bridge+"\n+bridge: "+a.Bridge)
+		}
+		return len(d) == 0, strings.Join(d, "\n")
+	}
+}
+
+// directives returns the trimmed lines of b, without blank and # lines.
+func directives(b []byte) []string {
+	var out []string
+	for _, l := range lines(b) {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func sameSudoers(have []byte) (bool, string) {
+	h, w := directives(have), directives([]byte(SudoersText))
+	if slices.Equal(h, w) {
+		return true, ""
+	}
+	return false, lineDiff(h, w)
+}
+
+func sameAuthorizedKeys(pub string) sameFunc {
+	want := []string{AuthorizedKeysLine(pub)}
+	return func(have []byte) (bool, string) {
+		h := directives(have)
+		if slices.Equal(h, want) {
+			return true, ""
+		}
+		return false, lineDiff(h, want)
+	}
+}
+
+// lineDiff lists lines only in have as "-" and lines only in want as "+",
+// or the whole of both when only the order differs.
+func lineDiff(have, want []string) string {
+	var d []string
+	for _, l := range have {
+		if !slices.Contains(want, l) {
+			d = append(d, "-"+l)
+		}
+	}
+	for _, l := range want {
+		if !slices.Contains(have, l) {
+			d = append(d, "+"+l)
+		}
+	}
+	if len(d) == 0 {
+		return prefixLines("-", have) + "\n" + prefixLines("+", want)
+	}
+	return strings.Join(d, "\n")
+}
+
+func lines(b []byte) []string {
+	s := strings.TrimSuffix(string(b), "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func prefixLines(p string, ls []string) string {
+	out := make([]string, len(ls))
+	for i, l := range ls {
+		out[i] = p + l
+	}
+	return strings.Join(out, "\n")
+}
+
+// planShell: a no-login shell (the .deb's default) is Create; any other
+// shell than /bin/sh is Differs.
+func planShell(ids ids) Item {
+	it := Item{Kind: KindShell, Name: "pbp login shell", Path: PbpUser, Content: []byte(PbpShell)}
+	switch ids.pbpShell {
+	case PbpShell:
+	case "", "/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false":
+		it.Status, it.Diff = Create, "-"+ids.pbpShell+"\n+"+PbpShell
+	default:
+		it.Status, it.Diff = Differs, "-"+ids.pbpShell+"\n+"+PbpShell
+	}
+	return it
+}
+
+// planHome checks pbp's home: /var/lib/pbp, a directory, 0700, owned by pbp.
+// Setup never changes it; the item is check-only.
+func planHome(env Env, ids ids) Item {
+	it := Item{Kind: KindHome, Name: "pbp home", Path: PbpHome, Mode: PbpHomeMode, Owner: PbpUser, CheckOnly: true}
+	var bad []string
+	if ids.home != PbpHome {
+		bad = append(bad, "pbp's home is "+ids.home+", want "+PbpHome)
+	}
+	fi, err := os.Lstat(env.path(PbpHome))
+	switch {
+	case err != nil:
+		bad = append(bad, err.Error())
+	case !fi.IsDir():
+		bad = append(bad, PbpHome+" is not a directory")
+	default:
+		if m := fi.Mode().Perm(); m != PbpHomeMode {
+			bad = append(bad, fmt.Sprintf("mode %04o, want %04o", uint32(m), uint32(PbpHomeMode)))
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != ids.uid[PbpUser] {
+			bad = append(bad, fmt.Sprintf("owner uid %d, want pbp (%d)", st.Uid, ids.uid[PbpUser]))
+		}
+	}
+	if len(bad) > 0 {
+		it.Status, it.Diff = Differs, strings.Join(bad, "\n")
+	}
+	return it
+}
+
+// planTemplates compares the installed templates by sha256 with the
+// embedded ones, as CheckTemplates does; no mode or owner checks.
+func planTemplates(env Env) Item {
+	it := Item{Kind: KindTemplates, Name: "notification templates", Path: TemplateDir}
+	tmpl := report.Templates()
+	names := make([]string, 0, len(tmpl))
+	for n := range tmpl {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var missing, differ []string
+	for _, n := range names {
+		have, err := os.ReadFile(filepath.Join(env.path(TemplateDir), n))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			missing = append(missing, "+"+n)
+		case err != nil:
+			differ = append(differ, n+": "+err.Error())
+		default:
+			hs, ws := sha256.Sum256(have), sha256.Sum256(tmpl[n])
+			if hs != ws {
+				differ = append(differ, fmt.Sprintf("%s differs (sha256 %s, want %s)", n,
+					hex.EncodeToString(hs[:])[:12], hex.EncodeToString(ws[:])[:12]))
+			}
+		}
+	}
+	switch {
+	case len(differ) > 0:
+		it.Status = Differs
+	case len(missing) > 0:
+		it.Status = Create
+	}
+	it.Diff = strings.Join(append(differ, missing...), "\n")
+	return it
+}
+
+// runPveum runs `pveum args… --output-format json` and decodes stdout into v.
+// A non-zero exit returns its stderr as the error.
+func runPveum(ctx context.Context, env Env, v any, args ...string) (exit int, stderr string, err error) {
+	stdout, stderr, exit, err := env.Run(ctx, pveum, append(args, "--output-format", "json"), nil)
+	if err != nil {
+		return exit, stderr, fmt.Errorf("pveum %s: %w", strings.Join(args, " "), err)
+	}
+	if exit != 0 {
+		return exit, stderr, fmt.Errorf("pveum %s: exit %d: %s", strings.Join(args, " "), exit, strings.TrimSpace(stderr))
+	}
+	if err := json.Unmarshal([]byte(stdout), v); err != nil {
+		return exit, stderr, fmt.Errorf("pveum %s: %w", strings.Join(args, " "), err)
+	}
+	return 0, stderr, nil
+}
+
+// privList accepts privs as a comma-separated string or as an object keyed
+// by privilege.
+type privList []string
+
+func (p *privList) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		for _, x := range strings.Split(s, ",") {
+			if x = strings.TrimSpace(x); x != "" {
+				*p = append(*p, x)
+			}
+		}
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	for k := range m {
+		*p = append(*p, k)
+	}
+	return nil
+}
+
+func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName string, token bool) ([]Item, error) {
+	var items []Item
+
+	var roles []struct {
+		RoleID string   `json:"roleid"`
+		Privs  privList `json:"privs"`
+	}
+	if _, _, err := runPveum(ctx, env, &roles, "role", "list"); err != nil {
+		return nil, err
+	}
+	role := Item{Kind: KindRole, Name: "PVE role", Path: RoleName, Status: Create, Diff: prefixLines("+", RolePrivs)}
+	for _, r := range roles {
+		if r.RoleID != RoleName {
+			continue
+		}
+		role.Status, role.Diff = Correct, ""
+		have := slices.Clone([]string(r.Privs))
+		want := slices.Clone(RolePrivs)
+		sort.Strings(have)
+		sort.Strings(want)
+		have = slices.Compact(have)
+		if !slices.Equal(have, want) {
+			role.Status, role.Diff = Differs, lineDiff(have, want)
+		}
+	}
+	items = append(items, role)
+
+	var users []struct {
+		UserID string `json:"userid"`
+	}
+	if _, _, err := runPveum(ctx, env, &users, "user", "list"); err != nil {
+		return nil, err
+	}
+	user := Item{Kind: KindUser, Name: "PVE user", Path: UserID, Status: Create, Diff: "+" + UserID}
+	for _, u := range users {
+		if u.UserID == UserID {
+			user.Status, user.Diff = Correct, ""
+		}
+	}
+	items = append(items, user)
+
+	if token {
+		tok := Item{Kind: KindToken, Name: "API token", Path: TokenID, Status: Create, Diff: "+" + TokenID + " (privsep 1)"}
+		if user.Status == Correct {
+			var toks []struct {
+				TokenID string `json:"tokenid"`
+			}
+			exit, stderr, err := runPveum(ctx, env, &toks, "user", "token", "list", UserID)
+			switch {
+			case exit != 0 && strings.Contains(strings.ToLower(stderr), "no such user"):
+			case err != nil:
+				return nil, err
+			}
+			for _, t := range toks {
+				if t.TokenID == TokenName {
+					tok.Status, tok.Diff = Correct, ""
+				}
+			}
+		}
+		if tok.Status == Correct && a.RotateToken {
+			tok.Status, tok.Diff = Create, "rotate: the existing "+TokenID+" is removed and created again with a new secret"
+		}
+		items = append(items, tok)
+	}
+
+	var acls []struct {
+		Path   string `json:"path"`
+		RoleID string `json:"roleid"`
+		Type   string `json:"type"`
+		UGID   string `json:"ugid"`
+	}
+	if _, _, err := runPveum(ctx, env, &acls, "acl", "list"); err != nil {
+		return nil, err
+	}
+	for _, path := range ACLPaths(nodeName, a.Storages) {
+		var hasUser, hasToken bool
+		for _, e := range acls {
+			if e.Path != path || e.RoleID != RoleName {
+				continue
+			}
+			hasUser = hasUser || e.Type == "user" && e.UGID == UserID
+			hasToken = hasToken || e.Type == "token" && e.UGID == TokenID
+		}
+		it := Item{Kind: KindACL, Name: "ACL " + path, Path: path}
+		var d []string
+		if !hasUser {
+			d = append(d, "+user "+UserID+" "+RoleName)
+		}
+		if !hasToken {
+			d = append(d, "+token "+TokenID+" "+RoleName)
+		}
+		if len(d) > 0 {
+			it.Status, it.Diff = Create, strings.Join(d, "\n")
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
