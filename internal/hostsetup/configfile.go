@@ -17,7 +17,7 @@ import (
 )
 
 // TokenID is the API token setup creates on the node.
-const TokenID = "pbp@pve!proof"
+const TokenID = "pbp@pve!proof" // #nosec G101 -- a token id, not its secret
 
 // checksComment replaces the example's sample profiles and per-guest checks.
 const checksComment = "Profiles (checks.profiles) and per-guest checks (checks.guests):\nsee config.example.yaml in the PBP repository."

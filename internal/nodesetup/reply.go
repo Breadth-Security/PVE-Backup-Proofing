@@ -110,6 +110,6 @@ func apiFingerprint(env Env) (string, error) {
 
 // regularFile is perl's -f: path (symlinks followed) is a regular file.
 func regularFile(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(path) // #nosec G703 -- a fixed PVE certificate path under env.Root
 	return err == nil && fi.Mode().IsRegular()
 }

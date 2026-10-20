@@ -17,14 +17,14 @@ func shellSplit(s string) ([]string, error) {
 	in := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n':
+		switch c {
+		case ' ', '\t', '\n':
 			if in {
 				words = append(words, cur.String())
 				cur.Reset()
 				in = false
 			}
-		case c == '\'':
+		case '\'':
 			in = true
 			j := strings.IndexByte(s[i+1:], '\'')
 			if j < 0 {
@@ -32,7 +32,7 @@ func shellSplit(s string) ([]string, error) {
 			}
 			cur.WriteString(s[i+1 : i+1+j])
 			i += j + 1
-		case c == '"':
+		case '"':
 			in = true
 			i++
 			for ; i < len(s) && s[i] != '"'; i++ {
@@ -44,7 +44,7 @@ func shellSplit(s string) ([]string, error) {
 			if i >= len(s) {
 				return nil, fmt.Errorf("unterminated double quote")
 			}
-		case c == '\\':
+		case '\\':
 			in = true
 			i++
 			if i < len(s) {

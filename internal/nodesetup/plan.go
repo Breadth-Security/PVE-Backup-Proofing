@@ -390,6 +390,7 @@ func planTemplates(env Env) Item {
 	sort.Strings(names)
 	var missing, differ []string
 	for _, n := range names {
+		// #nosec G304 -- the fixed template dir and an embedded template name
 		have, err := os.ReadFile(filepath.Join(env.path(TemplateDir), n))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):

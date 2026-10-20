@@ -47,7 +47,7 @@ func SelfTest(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName stri
 		return fmt.Errorf("self-test: check: not as setup left it: %s", strings.Join(bad, "; "))
 	}
 
-	out, stderr, exit, nonce, err := probe(ctx, env, nodeproto.Request{Op: "version"})
+	out, stderr, exit, _, err := probe(ctx, env, nodeproto.Request{Op: "version"})
 	switch {
 	case err != nil:
 		return fmt.Errorf("self-test: version probe: %w", err)
@@ -58,7 +58,7 @@ func SelfTest(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName stri
 	}
 
 	vmid := a.VMIDRange[1] + 1
-	_, stderr, exit, nonce, err = probe(ctx, env, nodeproto.Request{Op: "exec", VMID: vmid, Argv: []string{"true"}})
+	_, stderr, exit, nonce, err := probe(ctx, env, nodeproto.Request{Op: "exec", VMID: vmid, Argv: []string{"true"}})
 	if err != nil {
 		return fmt.Errorf("self-test: out-of-range probe (exec %d): %w", vmid, err)
 	}

@@ -82,7 +82,7 @@ func Apply(ctx context.Context, env Env, p Plan, a nodeproto.SetupArgs, nodeName
 	// every ACL item is applied, whatever its planned status.
 	readded := false
 	for _, it := range p.Items {
-		if it.Status == Correct && !(it.Kind == KindACL && readded) {
+		if it.Status == Correct && (it.Kind != KindACL || !readded) {
 			continue
 		}
 		var err error

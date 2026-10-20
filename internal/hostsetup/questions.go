@@ -131,14 +131,14 @@ type asker struct {
 func (q asker) ask(prompt, def string, check func(string) error) error {
 	for {
 		if def != "" {
-			fmt.Fprintf(q.w, "%s [%s]: ", prompt, def)
+			_, _ = fmt.Fprintf(q.w, "%s [%s]: ", prompt, def)
 		} else {
-			fmt.Fprintf(q.w, "%s: ", prompt)
+			_, _ = fmt.Fprintf(q.w, "%s: ", prompt)
 		}
 		line, err := q.r.ReadString('\n')
 		if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 			if errors.Is(err, io.EOF) {
-				fmt.Fprintln(q.w)
+				_, _ = fmt.Fprintln(q.w)
 				return fmt.Errorf("no answer to %q: end of input", prompt)
 			}
 			return fmt.Errorf("read answer: %w", err)
@@ -148,11 +148,11 @@ func (q asker) ask(prompt, def string, check func(string) error) error {
 			s = def
 		}
 		if s == "" {
-			fmt.Fprintln(q.w, "  an answer is required")
+			_, _ = fmt.Fprintln(q.w, "  an answer is required")
 			continue
 		}
 		if err := check(s); err != nil {
-			fmt.Fprintf(q.w, "  %v\n", err)
+			_, _ = fmt.Fprintf(q.w, "  %v\n", err)
 			continue
 		}
 		return nil
