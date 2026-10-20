@@ -91,7 +91,7 @@ func (n *ExistingNode) Prepare(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bridge %s: %w", n.bridge, err)
 	}
-	if why := notIsolated(iface); why != "" {
+	if why := NotIsolated(iface); why != "" {
 		return fmt.Errorf("%w: %s %s", ErrNotIsolated, n.bridge, why)
 	}
 	if err := n.checkLiveIsolation(ctx, iface); err != nil {
@@ -120,31 +120,11 @@ func (n *ExistingNode) CheckRangeClear(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list guests: %w", err)
 	}
-	var foreign []string
-	for _, g := range guests {
-		if n.inRange(g.Key.VMID) && !slices.Contains(g.Tags, OwnerTag) {
-			foreign = append(foreign, g.Key.String())
-		}
-	}
+	foreign := ForeignInRange(guests, n.lo, n.hi)
 	if len(foreign) > 0 {
 		return fmt.Errorf("%w: %s", ErrForeignInRange, strings.Join(foreign, ", "))
 	}
 	return nil
-}
-
-// notIsolated explains why iface is not an isolated bridge ("" if it is).
-func notIsolated(i pve.NetIface) string {
-	switch {
-	case i.Type != "bridge" && i.Type != "OVSBridge":
-		return fmt.Sprintf("is a %q, not a bridge", i.Type)
-	case i.BridgePorts != "" && i.BridgePorts != "none":
-		return "has ports " + i.BridgePorts
-	case i.OVSPorts != "":
-		return "has ports " + i.OVSPorts
-	case i.Address != "" || i.CIDR != "" || i.Address6 != "" || i.CIDR6 != "":
-		return "has an IP address"
-	}
-	return ""
 }
 
 func (n *ExistingNode) Owned(ctx context.Context) ([]pve.GuestRef, error) {

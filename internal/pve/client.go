@@ -42,6 +42,8 @@ type Client struct {
 	// retryBackoff is the wait before the nth consecutive retry of a
 	// transient task-poll failure; a field so tests can shorten it.
 	retryBackoff func(n int) time.Duration
+	// local, when set, serves GETs through pvesh instead of HTTP (NewLocal).
+	local func(ctx context.Context, path string, query url.Values) ([]byte, error)
 }
 
 // APIError is returned for any non-2xx response.
@@ -122,6 +124,9 @@ func normalizeFingerprint(s string) string {
 // do performs a request. path must already be escaped and start with "/".
 // Responses are unwrapped from {"data": ...} into out (if non-nil).
 func (c *Client) do(ctx context.Context, method, path string, query, form url.Values, out any) error {
+	if c.local != nil {
+		return c.doLocal(ctx, method, path, query, out)
+	}
 	u := c.base + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
