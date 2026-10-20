@@ -32,6 +32,10 @@ contents:
     dst: /usr/share/doc/pbp/README.md
     file_info:
       mode: 0644
+  - src: docs/*.md
+    dst: /usr/share/doc/pbp/docs/
+    file_info:
+      mode: 0644
   - src: packaging/copyright
     dst: /usr/share/doc/pbp/copyright
     file_info:

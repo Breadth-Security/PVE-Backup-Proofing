@@ -17,7 +17,7 @@ COPY pbp.deb /tmp/pbp.deb
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/pbp.deb && rm /tmp/pbp.deb
 
 # The node starts unconfigured: no helper config, no shell for pbp, no key,
-# no sudo rule (README "Node setup" steps 2-6 are setup's job).
+# no sudo rule (docs/manual-setup.md "Node setup" steps 2-6 are setup's job).
 RUN test ! -e /etc/pbp/node.yaml \
     && test "$(getent passwd pbp | cut -d: -f7)" = /usr/sbin/nologin \
     && test ! -e /var/lib/pbp/.ssh \

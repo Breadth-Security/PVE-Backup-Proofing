@@ -763,7 +763,7 @@ func TestSudoOnlyHelper(t *testing.T) {
 }
 
 // TestAuthorizedKeysRootOwned: the key file and its directory belong to root
-// (README Node setup step 4), so the pbp user cannot rewrite its own forced
+// (docs/manual-setup.md "Node setup" step 4), so the pbp user cannot rewrite its own forced
 // command, and sshd still accepts the key (every other test logs in with it).
 func TestAuthorizedKeysRootOwned(t *testing.T) {
 	out, err := dockerOut("stat", "-c", "%U:%G %a %n", "/var/lib/pbp/.ssh", "/var/lib/pbp/.ssh/authorized_keys")

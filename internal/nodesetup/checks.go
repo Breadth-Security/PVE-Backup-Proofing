@@ -22,7 +22,7 @@ var hostname = os.Hostname
 const ipv6PostUp = "post-up echo 1 > /proc/sys/net/ipv6/conf/%s/disable_ipv6"
 
 // BridgeStanza is the /etc/network/interfaces stanza for an isolated Linux
-// bridge, exactly as README "Create the isolated bridge" shows it. Setup
+// bridge, exactly as docs/setup.md step 2 ("Create the isolated bridge") shows it. Setup
 // only prints it; it never edits networking.
 func BridgeStanza(bridge string) string {
 	return "auto " + bridge + "\n" +

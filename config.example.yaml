@@ -16,7 +16,7 @@ target:
   ssh:
     host: pve1.example.lan
     user: pbp                  # default; the restricted node helper user. root is rejected
-                               # (README "Node setup"). The key must be installed on the
+                               # (docs/setup.md). The key must be installed on the
                                # node with a forced command, not in root's authorized_keys
     port: 22                   # default
     key_file: /run/secrets/pve_ssh_key

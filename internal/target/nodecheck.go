@@ -11,7 +11,7 @@ import (
 )
 
 // setupHint ends every node helper failure.
-const setupHint = `see README "Node setup"`
+const setupHint = `see docs/setup.md`
 
 // NodeStep is the outcome of one node helper check, for `pbp check` to print.
 type NodeStep struct {

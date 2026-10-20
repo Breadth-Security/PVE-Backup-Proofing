@@ -23,7 +23,7 @@ secrets:
     file: ./secrets/pve_token
   # Private key for the node's restricted "pbp" user (config: target.ssh.user: pbp).
   # Its public key lives on the node behind a forced command; it is not a root
-  # key. Set up the node first: README "Node setup".
+  # key. Set up the node first: docs/setup.md.
   pve_ssh_key:
     file: ./secrets/pve_ssh_key
 

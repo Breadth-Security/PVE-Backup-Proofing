@@ -1,0 +1,56 @@
+# Development
+
+## Building
+
+```
+docker build -t pbp:latest .            # multi-stage; static binary on distroless, version from VERSION
+docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp another version
+docker run --rm pbp:latest version      # prints the stamped version (VERSION, e.g. 0.3.0, unless overridden)
+go test ./... && go vet ./...
+packaging/build.sh 1.2.3 dist           # .debs, tarballs and SHA256SUMS for amd64 and arm64
+```
+
+The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build uses when no `--build-arg VERSION` is given. Bump it before tagging a release: the `release` workflow fails a tag `v<version>` whose `MAJOR.MINOR.PATCH` differs from it (`v0.3.0-rc1` needs `0.3.0`). A plain `go build` without `-ldflags "-X main.version=..."` is a `dev` build.
+
+`packaging/build.sh` needs Go, `envsubst` (gettext-base) and network access for the pinned nfpm. The `release` workflow runs it when a tag `v<version>` is pushed, runs lintian on the packages (errors fail the job) and creates the Gitea release with the packages, tarballs and `SHA256SUMS` attached. Run it by hand (workflow dispatch) for a dry run that builds but publishes nothing. It authenticates with the job's automatic token; if your Gitea refuses that (HTTP 401/403), create a token with the `write:repository` scope and store it as the repository secret `RELEASE_TOKEN`, which is used in preference when set.
+
+## Code scanning
+
+Workflows in [`.gitea/workflows/`](../.gitea/workflows/) check every pull request and every push to `main`, and each **blocks** the pull request when it fails:
+
+- **test**: `go vet` (with and without the `integration` tag) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
+- **Scanners**: Trivy, govulncheck, gosec, staticcheck and golangci-lint check the code and dependencies. gitleaks checks the **whole git history** for committed secrets; Trivy only sees the current files. The scanners also run weekly (Monday 06:17 UTC), so newly published vulnerabilities are caught in code that hasn't changed.
+
+The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the test workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
+
+Tool versions are pinned in the workflow files. To run them locally from the repository root:
+
+```
+# govulncheck
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+# staticcheck
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 -tags integration ./...
+
+# gosec
+# gosec v2.29.0 needs a Go 1.26 toolchain to analyse the code
+GOTOOLCHAIN=go1.26.9 go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
+
+# golangci-lint (config: .golangci.yml)
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --build-tags integration ./...
+
+# Trivy (vulnerabilities, secrets, misconfigurations)
+docker run --rm -v "$PWD":/src:ro -w /src aquasec/trivy:0.76.0 fs --exit-code 1 --ignore-unfixed \
+  --scanners vuln,secret,misconfig --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+  --skip-dirs .superpowers --ignorefile .trivyignore.yaml .
+
+# gitleaks (full git history)
+docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact /repo
+
+# vet and race tests
+go vet ./... && go vet -tags integration ./... && go test -race ./...
+```
+
+An accepted gosec finding carries a `// #nosec <rule> -- <reason>` comment at the call site. An accepted gitleaks finding (a fake secret in a test) is allowlisted by value in `.gitleaks.toml`, and an accepted Trivy finding in `.trivyignore.yaml`.

@@ -374,12 +374,12 @@ func TestCheckPrintsNodeHelperSteps(t *testing.T) {
 	}
 
 	st.steps = []target.NodeStep{{Name: "node helper version", Detail: "0.2.0"},
-		{Name: "node helper config", Err: errors.New("bridge differs (see README \"Node setup\")")}}
+		{Name: "node helper config", Err: errors.New("bridge differs (see docs/setup.md)")}}
 	e.a.connect = func(config.Config) wiring {
 		return wiring{api: e.api, target: st, notifier: e.notif, close: func() {}}
 	}
 	code := e.run("check")
-	if code != exitFail || !strings.Contains(e.out.String(), `node helper config: FAIL: bridge differs (see README "Node setup")`) ||
+	if code != exitFail || !strings.Contains(e.out.String(), `node helper config: FAIL: bridge differs (see docs/setup.md)`) ||
 		strings.Contains(e.out.String(), "preflight") {
 		t.Errorf("exit %d out %q", code, e.out)
 	}
@@ -414,7 +414,7 @@ func TestCheckRealNodeHelperUsesDaemonVersion(t *testing.T) {
 	e.a.connect = func(cfg config.Config) wiring { return assemble(cfg, e.api, nil, helperVer("9.9.9"), nil) }
 	code := e.run("check")
 	if code != exitFail || !strings.Contains(e.out.String(), "node helper version: FAIL") ||
-		!strings.Contains(e.out.String(), "9.9.9") || !strings.Contains(e.out.String(), "Node setup") ||
+		!strings.Contains(e.out.String(), "9.9.9") || !strings.Contains(e.out.String(), "docs/setup.md") ||
 		strings.Contains(e.out.String(), "preflight") {
 		t.Errorf("exit %d out %q", code, e.out)
 	}

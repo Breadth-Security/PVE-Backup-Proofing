@@ -3,7 +3,7 @@
 # one dummy member named like a proof guest's port (VMID 990005, inside the
 # test range), then run sshd in the foreground logging to stderr.
 #
-# IPv6 must be off on the bridge, as README's post-up line does on a node.
+# IPv6 must be off on the bridge, as the post-up line in docs/setup.md does on a node.
 # Docker mounts /proc/sys read-only, so the test starts the container with
 # --sysctl net.ipv6.conf.default.disable_ipv6=1 and the new bridge inherits
 # it; the write below covers a runtime that allows it, and the check makes

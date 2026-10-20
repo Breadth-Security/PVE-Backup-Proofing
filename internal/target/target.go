@@ -84,7 +84,7 @@ type Target interface {
 	// CheckNode verifies the node's restricted `pbp node` helper before
 	// anything else touches the node: it is reachable, runs a compatible
 	// version, agrees with the daemon's VMID range and bridge, and refuses
-	// an out-of-range exec. Every failure names README "Node setup".
+	// an out-of-range exec. Every failure names docs/setup.md.
 	CheckNode(ctx context.Context) error
 	// Prepare verifies the node: PVE version, isolated bridge and restore
 	// storage.

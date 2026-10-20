@@ -1,5 +1,5 @@
 // Package nodesetup is `pbp node setup`: it brings a Proxmox node to the
-// state README "Node setup" describes. This file is the single source of
+// state docs/manual-setup.md "Node setup" describes. This file is the single source of
 // truth for that state; plan.go compares it with the node.
 package nodesetup
 
@@ -10,10 +10,10 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 )
 
-// SudoersText is /etc/sudoers.d/pbp, exactly as README step 5 shows it.
+// SudoersText is /etc/sudoers.d/pbp, exactly as docs/manual-setup.md "Node setup" step 5 shows it.
 const SudoersText = "Defaults:pbp env_reset\nDefaults:pbp env_keep = \"SSH_ORIGINAL_COMMAND SSH_CONNECTION\"\npbp ALL=(root) NOPASSWD: /usr/bin/pbp node\n"
 
-// PVE identities for the API token (README step 3).
+// PVE identities for the API token (docs/manual-setup.md "Create an API token").
 const (
 	RoleName  = "PBPProofer"
 	UserID    = "pbp@pve"
@@ -21,7 +21,7 @@ const (
 	TokenID   = UserID + "!" + TokenName
 )
 
-// RolePrivs are the PBPProofer privileges, in README order.
+// RolePrivs are the PBPProofer privileges, in the order docs/manual-setup.md lists them.
 var RolePrivs = []string{
 	"VM.Allocate", "VM.Audit", "VM.Backup", "VM.Config.HWType", "VM.Config.Network",
 	"VM.Config.Options", "VM.PowerMgmt", "VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted",
