@@ -197,7 +197,7 @@ func (r *linuxRun) pendingJobs(ctx context.Context) string {
 	if len(units) == 0 {
 		return ""
 	}
-	return " (waiting on: " + strings.Join(units, ", ") + ")"
+	return " (waiting on: " + nameList(units) + ")"
 }
 
 // errorOut finalizes an ERROR outcome: PBP could not judge the guest.
@@ -358,7 +358,7 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 		// The production guest has the same failures: they say nothing
 		// about the backup, but the guest cannot be proven either.
 		return r.booted(fmt.Sprintf("container without nesting: %d units cannot start sandboxed (%s); enable nesting=1",
-			n, strings.Join(r.nesting, ", ")))
+			n, nameList(r.nesting)))
 	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
@@ -479,7 +479,7 @@ func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) 
 		r.nesting, untraced = nestingFailures(ctx, r.ex, untraced)
 	}
 	if len(untraced) > 0 {
-		return r.fail(ctx, "failed: "+strings.Join(untraced, ", ")), true
+		return r.fail(ctx, "failed: "+nameList(untraced)), true
 	}
 	return Outcome{}, false
 }

@@ -536,3 +536,35 @@ func TestMarkerLineBoundsTheReason(t *testing.T) {
 		t.Errorf("short reason = %q", got)
 	}
 }
+
+// A guest that floods its output is cut off at maxExecOutput per stream: the
+// command is killed and the helper reports an error, so the daemon never
+// has to hold the flood (code review I14).
+func TestServeExecOutputCapped(t *testing.T) {
+	for _, stream := range []string{"stdout", "stderr"} {
+		f := newFake()
+		f.ExecFn = func(ctx context.Context, stdout, stderr io.Writer) (int, error) {
+			w := stdout
+			if stream == "stderr" {
+				w = stderr
+			}
+			chunk := bytes.Repeat([]byte("y\n"), 32<<10)
+			for ctx.Err() == nil {
+				if _, err := w.Write(chunk); err != nil {
+					return -1, err
+				}
+			}
+			return -1, ctx.Err()
+		}
+		r := serve(t, f, req(t, nodeproto.Request{Op: "exec", VMID: 990004, Argv: []string{"yes"}}), "")
+		if r.exit != nodeproto.ExitRefused {
+			t.Fatalf("%s: exit %d, want %d", stream, r.exit, nodeproto.ExitRefused)
+		}
+		if len(r.stdout) > maxExecOutput || len(r.stderr) > maxExecOutput+4096 {
+			t.Errorf("%s: passed through %d bytes stdout, %d stderr", stream, len(r.stdout), len(r.stderr))
+		}
+		if !strings.Contains(r.stderr, "]: error: guest output exceeds") {
+			t.Errorf("%s: no error marker at the end: %q", stream, r.stderr[max(0, len(r.stderr)-300):])
+		}
+	}
+}

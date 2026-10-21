@@ -42,10 +42,12 @@ const (
 // caller's environment is never inherited.
 var cmdEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
 
+// waitDelay bounds how long a command may keep its output pipes open after
+// it exited or was killed (e.g. a background child still holding them). A
+// var for tests.
+var waitDelay = 5 * time.Second
+
 const (
-	// waitDelay bounds how long a killed command may keep its output pipes
-	// open (e.g. a grandchild that escaped the process group).
-	waitDelay = 5 * time.Second
 	// maxCaptured bounds the output captured from a helper-internal command.
 	maxCaptured = 4 << 20
 	// ovsTimeout keeps ovs-vsctl from waiting forever for a dead ovsdb.
@@ -124,6 +126,10 @@ func stream(ctx context.Context, name string, args []string, stdin io.Reader, st
 func waitExit(ctx context.Context, err error) (int, error) {
 	if ctx.Err() != nil {
 		return -1, ctx.Err()
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// It exited 0, but a child it left behind held the output open.
+		return 0, nil
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

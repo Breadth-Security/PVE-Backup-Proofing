@@ -58,7 +58,7 @@ type checker struct {
 }
 
 func (c *checker) record(name string, ok bool, detail string) {
-	c.results = append(c.results, model.CheckResult{Name: name, OK: ok, Detail: detail})
+	c.results = append(c.results, model.CheckResult{Name: clip(name, maxDetail), OK: ok, Detail: clip(detail, maxDetail)})
 }
 
 func (c *checker) service(ctx context.Context, prefix, unit string) error {

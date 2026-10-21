@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
@@ -894,5 +895,37 @@ func TestOpenRCRootAndGuestChecks(t *testing.T) {
 	}
 	if len(o.Checks) != 3 {
 		t.Errorf("checks = %+v, want sshd, nginx and the command", o.Checks)
+	}
+}
+
+// What a guest prints cannot grow an Outcome without bound: a reason names
+// at most 10 units (all stay in FailedUnits), a check's detail and the
+// reason are clipped, and the boot log keeps its newest 256 KiB (code
+// review I14).
+func TestOutcomeBounded(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	var units []string
+	for i := range 50 {
+		units = append(units, fmt.Sprintf("u%02d.service loaded failed failed U", i))
+	}
+	ex[failedC] = out(strings.Join(units, "\n") + "\n")
+	ex["journalctl -b --no-pager -n 200"] = out(strings.Repeat("old line\n", 64<<10) + "newest line\n")
+	o := run(ex, config.Checks{})
+	want := "failed: u00.service, u01.service, u02.service, u03.service, u04.service, u05.service, u06.service, " +
+		"u07.service, u08.service, u09.service, … and 40 more"
+	if o.Verdict != model.Failed || o.Reason != want || len(o.FailedUnits) != 50 {
+		t.Fatalf("got %v %q with %d failed units", o.Verdict, o.Reason, len(o.FailedUnits))
+	}
+	if len(o.BootLog) > 256<<10+8 || !strings.HasSuffix(o.BootLog, "newest line\n") || !strings.HasPrefix(o.BootLog, "…\nold line") {
+		t.Errorf("boot log: %d bytes, starts %q", len(o.BootLog), o.BootLog[:20])
+	}
+
+	ex = healthy()
+	ex[enabledC] = out("postgresql.service enabled\n")
+	ex["sh -c pg_isready -q"] = probe.ExecResult{ExitCode: 2, Stderr: strings.Repeat("é", 4096)}
+	o = run(ex, config.Checks{})
+	if len(o.Checks) != 1 || len(o.Checks[0].Detail) > 512 || !utf8.ValidString(o.Checks[0].Detail) || !strings.HasSuffix(o.Checks[0].Detail, "…") {
+		t.Errorf("check detail not clipped: %+v", o.Checks)
 	}
 }

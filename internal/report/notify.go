@@ -30,6 +30,37 @@ type PVENotifier struct {
 
 var _ Notifier = (*PVENotifier)(nil)
 
+// maxPayload keeps the notification under the node helper's 1 MiB limit on
+// a notify payload, with room to spare.
+const maxPayload = 1000 << 10
+
+// listKeys are the TemplateData lists shortened when the payload is too big.
+var listKeys = []string{"environment-errors", "failed", "errored", "booted", "skipped", "not-covered"}
+
+// shortened returns data with each list cut to keep lines plus a line saying
+// how many more the run log has, and the proven list cut to 4 KiB; keep < 0
+// returns data unchanged.
+func shortened(data map[string]any, keep int) map[string]any {
+	if keep < 0 {
+		return data
+	}
+	out := make(map[string]any, len(data))
+	for k, v := range data {
+		out[k] = v
+	}
+	for _, k := range listKeys {
+		l, _ := data[k].([]string)
+		if len(l) > keep {
+			out[k] = append(l[:keep:keep], fmt.Sprintf("… and %d more; see the run log", len(l)-keep))
+		}
+	}
+	if p, _ := data["proven"].(string); len(p) > 4096 {
+		cut := strings.LastIndex(p[:4096], ", ")
+		out["proven"] = p[:max(cut, 0)] + ", … (see the run log)"
+	}
+	return out
+}
+
 // CheckTemplates compares the templates installed on the node (their sha256,
 // as the helper reports them) with the embedded ones. It writes nothing: a
 // missing or different template is an error naming each such file and how
@@ -65,13 +96,23 @@ func (p *PVENotifier) CheckTemplates(ctx context.Context) error {
 // Send delivers the run summary through the helper's notify request, which
 // hands it to PVE::Notify::notify.
 func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
-	payload, err := json.Marshal(map[string]any{
-		"severity": s.Severity(),
-		"data":     TemplateData(s, p.Node),
-		"fields":   map[string]string{"type": "pbp", "hostname": p.Node},
-	})
-	if err != nil {
-		return fmt.Errorf("report: encode notification: %w", err)
+	data := TemplateData(s, p.Node)
+	var payload []byte
+	// Shorten the lists until the payload fits the helper's limit: a run
+	// with very many problems still notifies, pointing to the run log.
+	for _, keep := range []int{-1, 100, 20, 5, 0} {
+		var err error
+		payload, err = json.Marshal(map[string]any{
+			"severity": s.Severity(),
+			"data":     shortened(data, keep),
+			"fields":   map[string]string{"type": "pbp", "hostname": p.Node},
+		})
+		if err != nil {
+			return fmt.Errorf("report: encode notification: %w", err)
+		}
+		if len(payload) <= maxPayload {
+			break
+		}
 	}
 	if err := p.Helper.Notify(ctx, payload); err != nil {
 		return fmt.Errorf("report: send notification: %w", err)

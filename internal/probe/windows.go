@@ -184,7 +184,7 @@ func windowsServices(ctx context.Context, ex Executor, in Input) (out Outcome, r
 	}
 	if len(out.FailedUnits) > 0 {
 		out.Verdict = model.Failed
-		out.Reason = "stopped auto services: " + strings.Join(out.FailedUnits, ", ")
+		out.Reason = "stopped auto services: " + nameList(out.FailedUnits)
 		out.BootLog = strings.Join(why, "\n")
 		return out, false, pending
 	}

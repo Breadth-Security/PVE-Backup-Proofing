@@ -160,6 +160,13 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			code = 3
 			_, _ = io.WriteString(ch, "out")
 			_, _ = io.WriteString(ch.Stderr(), "err")
+		case strings.HasPrefix(inner, "flood"):
+			chunk := []byte(strings.Repeat("y\n", 16<<10))
+			for {
+				if _, err := ch.Write(chunk); err != nil {
+					return
+				}
+			}
 		case strings.HasPrefix(inner, "cat"):
 			_, _ = io.Copy(ch, ch)
 		case strings.HasPrefix(inner, "sleep"):
@@ -476,5 +483,180 @@ func TestRunNotBlockedByStuckConnect(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("second Run blocked behind stuck connect")
+	}
+}
+
+// A command that floods its output is cut off at maxOutput: Run returns an
+// error instead of buffering without bound (code review I14).
+func TestRunOutputCapped(t *testing.T) {
+	old := maxOutput
+	maxOutput = 1 << 20
+	defer func() { maxOutput = old }()
+	s := newServer(t, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = c.Run(ctx, "flood", nil)
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("got %v, want ErrOutputTooLarge", err)
+	}
+	// The connection is still usable.
+	if res, err := c.Run(ctx, "exit3", nil); err != nil || res.ExitCode != 3 {
+		t.Fatalf("after flood: %+v %v", res, err)
+	}
+}
+
+// freezeProxy forwards TCP between the client and target until frozen;
+// then it stops passing bytes without closing anything, like a NAT that
+// dropped the connection silently (a half-open connection).
+type freezeProxy struct {
+	addr   string
+	frozen chan struct{}
+	once   sync.Once
+}
+
+func (p *freezeProxy) freeze() { p.once.Do(func() { close(p.frozen) }) }
+
+func newFreezeProxy(t *testing.T, target string) *freezeProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &freezeProxy{addr: ln.Addr().String(), frozen: make(chan struct{})}
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	})
+	pipe := func(dst, src net.Conn) {
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := src.Read(buf)
+			select {
+			case <-p.frozen:
+				return // swallow it and everything after
+			default:
+			}
+			if n > 0 {
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s, err := net.Dial("tcp", target)
+			if err != nil {
+				_ = c.Close()
+				continue
+			}
+			mu.Lock()
+			conns = append(conns, c, s)
+			mu.Unlock()
+			go pipe(s, c)
+			go pipe(c, s)
+		}
+	}()
+	return p
+}
+
+// frozenClient returns a client connected through a proxy that is then
+// frozen.
+func frozenClient(t *testing.T) (*Client, *freezeProxy) {
+	t.Helper()
+	s := newServer(t, true)
+	p := newFreezeProxy(t, s.addr)
+	kh, err := os.ReadFile(s.cfg.KnownHostsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := s.cfg
+	cfg.KnownHostsFile = filepath.Join(t.TempDir(), "known_hosts")
+	kh = []byte(strings.Replace(string(kh), knownhosts.Normalize(s.addr), knownhosts.Normalize(p.addr), 1))
+	if err := os.WriteFile(cfg.KnownHostsFile, kh, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(p.addr)
+	cfg.Port, _ = strconv.Atoi(port)
+	c, err := dial(context.Background(), cfg, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if _, err := c.Run(context.Background(), "exit3", nil); err != nil {
+		t.Fatal(err)
+	}
+	p.freeze()
+	return c, p
+}
+
+// On a half-open connection, opening the session blocks on a reply that
+// never comes; Run still returns when ctx ends (code review I15).
+func TestRunHonoursCtxOnHalfOpenConnection(t *testing.T) {
+	c, _ := frozenClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := c.Run(ctx, "exit3", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("Run blocked %v past its deadline", el)
+	}
+}
+
+// Keepalives find a half-open connection and drop it, so the next Run
+// reconnects instead of waiting on it (code review I15).
+func TestKeepaliveDropsDeadConnection(t *testing.T) {
+	oldEvery, oldWait := keepaliveInterval, keepaliveTimeout
+	keepaliveInterval, keepaliveTimeout = 50*time.Millisecond, 100*time.Millisecond
+	defer func() { keepaliveInterval, keepaliveTimeout = oldEvery, oldWait }()
+	c, _ := frozenClient(t)
+	waitFor(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.conn == nil
+	})
+}
+
+// Keepalives leave a healthy connection alone.
+func TestKeepaliveKeepsLiveConnection(t *testing.T) {
+	oldEvery, oldWait := keepaliveInterval, keepaliveTimeout
+	keepaliveInterval, keepaliveTimeout = 20*time.Millisecond, time.Second
+	defer func() { keepaliveInterval, keepaliveTimeout = oldEvery, oldWait }()
+	s := newServer(t, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	c.mu.Lock()
+	same := c.conn == conn
+	c.mu.Unlock()
+	if !same {
+		t.Fatal("healthy connection dropped")
 	}
 }
