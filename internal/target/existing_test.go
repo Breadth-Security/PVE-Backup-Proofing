@@ -459,11 +459,16 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	if cfg["name"] != "pbp-101-202607260600" {
 		t.Errorf("name = %q", cfg["name"])
 	}
+	// The backup's onboot=1 is cleared in the first write, before Sanitize,
+	// so a copy left by a failed sanitize never autostarts (code review C1).
+	if cfg["onboot"] != "0" {
+		t.Errorf("onboot = %q, want 0", cfg["onboot"])
+	}
 	calls := f.CallLog()
 	want := []string{
 		"Restore pve1 qemu 990000 " + vmVol + " " + store,
 		"WaitTask pve1 UPID:pve1:fake:restore:990000:",
-		"SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]", // tags come from the backup's config: no read first
+		"SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 onboot:0 protection:0 tags:pbp] del=[]", // tags come from the backup's config: no read first
 	}
 	if !slices.Equal(calls, want) {
 		t.Errorf("calls = %q", calls)
@@ -496,7 +501,7 @@ func TestRestoreClearsProtection(t *testing.T) {
 	if got := f.Configs[990000]["protection"]; got != "0" {
 		t.Errorf("protection after restore = %q", got)
 	}
-	want := "SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 protection:0 tags:pbp] del=[]"
+	want := "SetGuestConfig pve1 qemu 990000 set=map[name:pbp-101-202607260600 onboot:0 protection:0 tags:pbp] del=[]"
 	if got := f.CallLog(); slices.Index(got, want) != len(got)-1 {
 		t.Errorf("want one SetGuestConfig as the last call, got %q", got)
 	}
@@ -1126,7 +1131,7 @@ func TestSanitizeReportsChanges(t *testing.T) {
 	}
 	want := []string{
 		"net0: virtio=AA:BB,bridge=vmbr0,tag=2 \u2192 virtio=AA:BB,bridge=" + bridge,
-		"onboot: 1 \u2192 0",
+		// onboot is already 0: the restore overrode it (code review C1).
 		"usb0 removed (host=1-1)",
 	}
 	if !slices.Equal(got.Changes, want) {

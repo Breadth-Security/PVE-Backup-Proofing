@@ -67,7 +67,10 @@ func (c *Client) Guests(ctx context.Context) ([]GuestRef, error) {
 
 // Restore starts restoring a backup into a new guest and returns the task UPID.
 func (c *Client) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
-	form := url.Values{"vmid": {strconv.Itoa(vmid)}, "storage": {storage}, "unique": {"1"}}
+	// onboot=0 overrides the backup's own value from the first moment the
+	// copy exists: until it is sanitized it still has its production NICs,
+	// and a node reboot must never autostart it (accepted for both kinds).
+	form := url.Values{"vmid": {strconv.Itoa(vmid)}, "storage": {storage}, "unique": {"1"}, "onboot": {"0"}}
 	if kind == model.KindLXC {
 		form.Set("ostemplate", volid)
 		form.Set("restore", "1")

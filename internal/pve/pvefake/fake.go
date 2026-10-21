@@ -207,6 +207,8 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 		return "", fmt.Errorf("volume %s does not exist", volid)
 	}
 	cfg := parseConfig(raw)
+	// Like PVE with the client's onboot=0 restore override.
+	cfg["onboot"] = "0"
 	f.Configs[vmid] = cfg
 	f.GuestList = append(f.GuestList, pve.GuestRef{
 		Key: model.GuestKey{Kind: kind, VMID: vmid}, Node: fakeNode, Name: cfg["name"], Status: "stopped",
