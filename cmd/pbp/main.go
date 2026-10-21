@@ -137,6 +137,8 @@ type app struct {
 	// ownerOf returns the owner (uid and user name) of a path; a seam for
 	// the root refusal of daemon, run and check.
 	ownerOf func(path string) (uid int, name string, err error)
+	// inContainer reports whether PBP runs in a container (no sudo there).
+	inContainer func() bool
 
 	// pbp node setup and uninstall: whether stdin is a terminal, and every
 	// outside effect of the node setup library.
@@ -158,7 +160,7 @@ type app struct {
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
 		stdin: os.Stdin, nodeSys: node.NewSystem(),
-		euid: os.Geteuid, templateDir: node.DefaultTemplateDir, ownerOf: ownerOf,
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir, ownerOf: ownerOf, inContainer: inContainer,
 		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
@@ -334,6 +336,18 @@ func (a *app) refuseRoot(args []string, cfgPath, logDir string) error {
 		if err != nil {
 			return fmt.Errorf("as root: cannot check who owns %s: %w", dir, err)
 		}
+		way := "if PBP is meant to run as root, give the state and log directories to root first"
+		if a.inContainer != nil && a.inContainer() {
+			// No sudo in the image: the container's user is set by the
+			// image or a `user:` override in the compose file.
+			who := strconv.Itoa(uid)
+			if name != "" {
+				who = name + " (uid " + who + ")"
+			}
+			return fmt.Errorf("refusing to run as root: %s belongs to %s, and files root writes there would lock the service out of them; "+
+				"run the container as uid %d, the image's own user (remove any `user:` override in docker-compose.yml), or, %s",
+				dir, who, uid, way)
+		}
 		who := name
 		if who == "" {
 			who = "#" + strconv.Itoa(uid)
@@ -348,10 +362,21 @@ func (a *app) refuseRoot(args []string, cfgPath, logDir string) error {
 			run = append([]string{"PBP_STATE_DIR=" + d}, run...)
 		}
 		return fmt.Errorf("refusing to run as root: %s belongs to %s, and files root writes there would lock the service out of them; "+
-			"run it as that user: sudo -u %s %s (or, if PBP is meant to run as root, give the state and log directories to root first)",
-			dir, who, who, strings.Join(run, " "))
+			"run it as that user: sudo -u %s %s (or, %s)",
+			dir, who, who, strings.Join(run, " "), way)
 	}
 	return nil
+}
+
+// inContainer reports whether this process runs in a Docker or Podman
+// container, by the marker file each runtime creates.
+func inContainer() bool {
+	for _, p := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // ownerOf returns the owner of path, with the user name when it resolves.

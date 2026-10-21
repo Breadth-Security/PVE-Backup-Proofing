@@ -1179,3 +1179,29 @@ func TestRootRefusalDetails(t *testing.T) {
 		t.Errorf("ownerOf missing: %v", err)
 	}
 }
+
+// In a container there is no sudo: the message says to run the container
+// as the directory's owner (the image's own user) instead (issue #63).
+func TestRootRefusalInContainer(t *testing.T) {
+	e := newEnv(t)
+	e.a.euid = func() int { return 0 }
+	e.a.inContainer = func() bool { return true }
+	e.a.ownerOf = func(p string) (int, string, error) {
+		if p == daemon.StateDir() {
+			return 65532, "nonroot", nil
+		}
+		return 0, "", fs.ErrNotExist
+	}
+	if got := e.run("daemon"); got != exitConfig {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	msg := e.errOut.String()
+	if strings.Contains(msg, "sudo") {
+		t.Errorf("suggests sudo in a container: %q", msg)
+	}
+	for _, want := range []string{"belongs to nonroot (uid 65532)", "run the container as uid 65532", "user:", "give the state and log directories to root"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
+	}
+}
