@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.5.0
+
+This release carries the fixes from the whole-codebase review ([#21](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/21)): safety (#46), verdict correctness (#47), robustness (#48), and setup, docs and tests (#49).
+
+**Upgrade both sides.** The daemon and the node helper must share major.minor, so a 0.4 helper does not work with a 0.5 daemon, and the helper itself changed (it now caps a guest command's output): follow [Upgrading](docs/upgrading.md). The notification templates are unchanged. If you run PBP with Docker Compose from your own `docker-compose.yml`, raise `stop_grace_period` to `25m` as in this release's file, so a stopped PBP can finish its proofs, tear down and notify. Existing configs need no change; your ignore lists now add to the built-in ones (see below).
 
 - **`pbp node setup --replace` fixes an `authorized_keys` with the right line but the wrong owner or mode** ([#49](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/49)). Setup reported the file as differing but left it as it was, so the self-test failed on every rerun and a file writable by `pbp` stayed writable (letting a process running as `pbp` rewrite its own forced command). It is now rewritten with the right owner and mode.
 - Docs: [security.md](docs/security.md) now says plainly that a stolen PBP SSH key reaches root inside every proof container while it runs, which is a copy of production data, and how to protect the key accordingly; `restore.max_run_duration` is described as what it is, a point after which no new proof starts (proofs in progress still finish), not a cap on run length ([#49](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/49)).
