@@ -87,38 +87,118 @@ func TestOpenRunLog(t *testing.T) {
 	}
 }
 
-func TestTemplateData(t *testing.T) {
-	s := model.RunSummary{
+func sectionsSummary() model.RunSummary {
+	edt := time.FixedZone("EDT", -4*3600)
+	started := time.Date(2026, 10, 21, 2, 0, 0, 0, edt)
+	bk := func(kind model.GuestKind, id int) model.Backup {
+		return model.Backup{
+			Key:  model.GuestKey{Kind: kind, VMID: id},
+			Time: time.Date(2026, 10, 20, 6, 0, 0, 0, time.UTC), // 02:00 EDT
+		}
+	}
+	return model.RunSummary{
 		ID:      "r1",
-		Started: time.Date(2026, 10, 19, 2, 0, 0, 0, time.UTC),
-		Ended:   time.Date(2026, 10, 19, 3, 2, 3, 0, time.UTC),
+		Trigger: "schedule",
+		Started: started,
+		Ended:   started.Add(time.Hour + 33*time.Minute + 54*time.Second),
+		LogDir:  "/var/log/pbp/2026-10-21_02-00-00_schedule",
 		Results: []model.GuestResult{
-			{Name: "a", Verdict: model.Booted, Reason: "no agent", Backup: model.Backup{Key: model.GuestKey{Kind: model.KindLXC, VMID: 5}},
-				NotCovered: []model.NotCovered{{Unit: "lxc/5", Piece: model.MissingPiece{Kind: "network-storage", Path: "/mnt/x"}}}},
-			{Name: "b", Verdict: model.Proven},
+			{Backup: bk(model.KindQEMU, 102), Name: "web01", Verdict: model.Failed, Reason: "failed: a.service",
+				NotCovered: []model.NotCovered{{Unit: "nfs-home.mount", Piece: model.MissingPiece{Kind: "network-storage", Path: "/nfs/home"}}}},
+			{Backup: bk(model.KindLXC, 101), Name: "dns01", Verdict: model.Error, Reason: "restore failed"},
+			{Backup: bk(model.KindQEMU, 117), Name: "win01", Verdict: model.Booted, Reason: "guest agent missing"},
+			{Backup: bk(model.KindQEMU, 104), Verdict: model.Skipped, Reason: "insufficient node memory"},
+			{Backup: bk(model.KindQEMU, 105), Verdict: model.Skipped, Reason: "insufficient node memory"},
+			{Backup: bk(model.KindQEMU, 100), Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
+			{Backup: bk(model.KindQEMU, 108), Verdict: model.Proven},
+			{Backup: bk(model.KindLXC, 109), Verdict: model.Proven},
 		},
 	}
-	d := TemplateData(s, "pve1")
-	if d["node"] != "pve1" || d["run-id"] != "r1" || d["started"] != "2026-10-19T02:00:00Z" || d["elapsed"] != "1h2m3s" {
-		t.Fatal(d)
+}
+
+func TestTemplateDataSections(t *testing.T) {
+	d := TemplateData(sectionsSummary(), "pve1")
+	want := map[string]any{
+		"node":     "pve1",
+		"run-id":   "r1",
+		"headline": "PBP run on pve1, Wed 2026-10-21 02:00 EDT (scheduled), 1h34m",
+		"logs":     "/var/log/pbp/2026-10-21_02-00-00_schedule/",
+		"summary":  "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
+		"proven":   "VM108, CT109",
+		"failed":   []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
+		"errored":  []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
+		"booted":   []string{"VM117 win01 · backup Oct 20 02:00 · guest agent missing"},
+		"skipped":  []string{"insufficient node memory: VM104, VM105", "already proven: VM100"},
 	}
-	if n := len(d["booted"].([]map[string]any)); n != 1 {
-		t.Fatal(n)
+	for k, v := range want {
+		if fmt.Sprint(d[k]) != fmt.Sprint(v) {
+			t.Errorf("%s = %#v, want %#v", k, d[k], v)
+		}
 	}
-	if d["counts"].(map[string]int)["BOOTED"] != 1 {
-		t.Fatal(d["counts"])
+	if nc := d["not-covered"].([]string); len(nc) != 1 || !strings.HasPrefix(nc[0], "VM102: ") {
+		t.Errorf("not-covered = %q", nc)
 	}
-	if len(d["not-covered"].([]string)) != 1 || len(d["guests"].([]map[string]any)) != 2 {
-		t.Fatal(d)
+	for _, k := range []string{"run-error", "environment-errors"} {
+		if _, ok := d[k]; !ok {
+			t.Errorf("missing key %s", k)
+		}
 	}
-	if d["summary"] != "1 proven, 0 failed, 1 booted, 0 skipped, 0 error" {
-		t.Fatal(d["summary"])
-	}
-	if d["run-error"] != "" {
-		t.Fatal(d["run-error"])
+	if len(d) != 13 {
+		t.Errorf("%d keys: %v", len(d), d)
 	}
 	if _, err := json.Marshal(d); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTemplateDataNoProblemsNoLogs(t *testing.T) {
+	s := sectionsSummary()
+	s.LogDir = ""
+	s.Results = s.Results[6:]
+	d := TemplateData(s, "pve1")
+	if d["logs"] != "" || d["summary"] != "all 2 proven" || d["proven"] != "VM108, CT109" {
+		t.Fatal(d)
+	}
+	s.Results = nil
+	if d := TemplateData(s, "pve1"); d["proven"] != "" {
+		t.Fatalf("proven = %q", d["proven"])
+	}
+}
+
+func TestSubjectSummary(t *testing.T) {
+	res := func(v model.Verdict, mod func(*model.GuestResult)) model.GuestResult {
+		r := model.GuestResult{Verdict: v}
+		if mod != nil {
+			mod(&r)
+		}
+		return r
+	}
+	proven := func(n int) []model.GuestResult {
+		var out []model.GuestResult
+		for i := 0; i < n; i++ {
+			out = append(out, res(model.Proven, nil))
+		}
+		return out
+	}
+	already := res(model.Skipped, func(r *model.GuestResult) { r.AlreadyProven = true })
+	tests := []struct {
+		name string
+		s    model.RunSummary
+		want string
+	}{
+		{"all proven", model.RunSummary{Results: proven(13)}, "all 13 proven"},
+		{"proven and already proven", model.RunSummary{Results: append(proven(2), already)}, "all 2 proven"},
+		{"only already proven", model.RunSummary{Results: []model.GuestResult{already}}, "nothing to proof"},
+		{"run error", model.RunSummary{RunError: "boom"}, "run error · 0 proven"},
+		{"run error with failure", model.RunSummary{RunError: "boom", Results: append(proven(1), res(model.Failed, nil))}, "run error, 1 failed · 1 proven"},
+		{"template skip", model.RunSummary{Results: []model.GuestResult{res(model.Skipped, func(r *model.GuestResult) { r.Template = true })}}, "nothing to proof"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TemplateData(tc.s, "pve1")["summary"]; got != tc.want {
+				t.Errorf("summary = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -286,11 +366,6 @@ func TestTemplateDataKeysAreNotNotifyHelpers(t *testing.T) {
 	for k := range d {
 		keys = append(keys, k)
 	}
-	for _, g := range d["guests"].([]map[string]any) {
-		for k := range g {
-			keys = append(keys, k)
-		}
-	}
 	for _, k := range keys {
 		for _, h := range notifyHelpers {
 			if k == h {
@@ -305,9 +380,10 @@ var reTag = regexp.MustCompile(`{{{?[^{}]*}?}}`)
 
 // templateProblems lists what is wrong with a template: a triple-stash tag, a
 // tag with more than one argument (it would be parsed as a multi-argument
-// helper call), or a variable TemplateData does not provide (top level, or
-// per guest inside #each guests/booted), which would render empty.
-func templateProblems(body string, d, guest map[string]any) []string {
+// helper call), or a variable TemplateData does not provide, which would
+// render empty. Inside #each the sections are lists of strings, so only
+// {{this}} and top-level keys are valid.
+func templateProblems(body string, d map[string]any) []string {
 	var problems []string
 	for _, tag := range reTag.FindAllString(body, -1) {
 		if strings.HasPrefix(tag, "{{{") {
@@ -339,9 +415,7 @@ func templateProblems(body string, d, guest map[string]any) []string {
 			problems = append(problems, tag+": helper call with argument")
 		case word == "this":
 		default:
-			_, top := d[word]
-			_, inGuest := guest[word]
-			if !top && !inGuest {
+			if _, ok := d[word]; !ok {
 				problems = append(problems, tag+": no such key")
 			}
 		}
@@ -353,9 +427,8 @@ func templateProblems(body string, d, guest map[string]any) []string {
 // provided list.
 func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 	d := TemplateData(failedSummary(), "pve1")
-	guest := d["guests"].([]map[string]any)[0]
 	for name, b := range Templates() {
-		for _, p := range templateProblems(string(b), d, guest) {
+		for _, p := range templateProblems(string(b), d) {
 			t.Errorf("%s: %s", name, p)
 		}
 	}
@@ -363,49 +436,53 @@ func TestTemplatesUseOnlyProvidedKeys(t *testing.T) {
 
 func TestTemplateGuardCatchesBadTags(t *testing.T) {
 	d := TemplateData(failedSummary(), "pve1")
-	guest := d["guests"].([]map[string]any)[0]
 	for body, want := range map[string]string{
-		"{{{reason}}}":          "triple-stash",
-		"{{table guests name}}": "more than one argument",
-		"{{#each guests name}}": "more than one argument",
-		"{{duration started}}":  "helper call with argument",
+		"{{{summary}}}":         "triple-stash",
+		"{{table failed name}}": "more than one argument",
+		"{{#each failed name}}": "more than one argument",
+		"{{duration headline}}": "helper call with argument",
 		"{{nope}}":              "no such key",
 		"{{#each nope}}":        "no such key nope",
-		"{{{ reason }}}":        "triple-stash",
+		"{{{ summary }}}":       "triple-stash",
 		"{{this x}}":            "helper call with argument",
 		"{{/each junk}}":        "closing tag with argument",
 		"{{#each}}":             "block without argument",
 	} {
-		got := templateProblems(body, d, guest)
+		got := templateProblems(body, d)
 		if len(got) != 1 || !strings.Contains(got[0], want) {
 			t.Errorf("%q: problems %q, want one containing %q", body, got, want)
 		}
 	}
-	if got := templateProblems("{{#each guests}}\n {{guest}} {{this}}\n{{/each}} {{summary}}", d, guest); len(got) != 0 {
+	if got := templateProblems("{{#each failed}}\n {{this}}\n{{/each}} {{summary}}", d); len(got) != 0 {
 		t.Errorf("valid template flagged: %q", got)
 	}
 }
 
-// The BOOTED section names what BOOTED means (the agent may be present but
-// unable to run commands) and shows each guest's reason.
-func TestBodyBootedSection(t *testing.T) {
+// The body leads with problems, each section guarded so it only shows when
+// it has content, and the ordering is: run error, environment errors, FAILED,
+// ERROR, BOOTED, SKIPPED, PROVEN, Not covered.
+func TestBodySectionsInOrder(t *testing.T) {
 	b, err := templateFS.ReadFile("templates/pbp-body.txt.hbs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(b)
-	const title = "Guests PBP could not look inside (booted only):"
-	i := strings.Index(body, title)
-	if i < 0 {
-		t.Fatalf("body has no %q section", title)
+	marks := []string{
+		"{{#if run-error}}", "{{#if environment-errors}}",
+		"{{#if failed}}", "FAILED: the backup has a problem",
+		"{{#if errored}}", "ERROR: PBP could not finish; says nothing about the backup",
+		"{{#if booted}}", "BOOTED: started, not looked inside",
+		"{{#if skipped}}", "SKIPPED",
+		"{{#if proven}}", "PROVEN",
+		"{{#if not-covered}}", "Not covered by backup",
 	}
-	section := body[i:]
-	end := strings.Index(section, "{{/each}}")
-	if !strings.HasPrefix(section[len(title):], "\n{{#each booted}}") || end < 0 || !strings.Contains(section[:end], "{{reason}}") {
-		t.Errorf("booted section does not list each reason:\n%s", section)
-	}
-	if strings.Contains(body, "without a working guest agent") {
-		t.Error("old booted title still present")
+	last := -1
+	for _, m := range marks {
+		i := strings.Index(body[last+1:], m)
+		if i < 0 {
+			t.Fatalf("body lacks %q after offset %d:\n%s", m, last, body)
+		}
+		last += 1 + i
 	}
 }
 
