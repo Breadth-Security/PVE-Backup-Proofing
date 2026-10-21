@@ -4,27 +4,85 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
-const windowsScript = `Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' -and $_.DelayedAutoStart -ne $true } | ForEach-Object { $_.Name }`
+// WindowsServicesScript lists the automatic-start services that are not
+// running, one per line: name, exit code, service-specific exit code, and
+// the ID and message (on one line) of the newest Service Control Manager
+// event since boot that names the service (a failure or unexpected stop),
+// separated by tabs (issue #44).
+const WindowsServicesScript = `$b=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; ` +
+	`$ev=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager';StartTime=$b} -ErrorAction SilentlyContinue | ` +
+	`Where-Object { $_.Id -in 7000,7009,7011,7022,7023,7024,7031,7034 }); ` +
+	`Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' -and $_.DelayedAutoStart -ne $true } | ` +
+	`ForEach-Object { $s=$_; $e=$ev | Where-Object { $_.Message -and $_.Message.Contains($s.DisplayName) } | Select-Object -First 1; ` +
+	`$id=''; $m=''; if ($e) { $id=$e.Id; $m=($e.Message -replace '\s+',' ').Trim() }; ` +
+	`@($s.Name, $s.ExitCode, $s.ServiceSpecificExitCode, $id, $m) -join [char]9 }`
 
-// serviceNames returns trimmed, non-blank, deduplicated lines in order.
-func serviceNames(out string) []string {
-	var res []string
+// stoppedService is one line of WindowsServicesScript's output. A line with
+// only a name (no tabs) carries no stop details.
+type stoppedService struct {
+	name, exitCode, specificCode, eventID, event string
+	details                                      bool
+}
+
+// stoppedServices parses the script's output: trimmed, non-blank lines,
+// deduplicated by name, in order.
+func stoppedServices(out string) []stoppedService {
+	var res []stoppedService
 	seen := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
-		n := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if n == "" || seen[n] {
+		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
+		for i := range f {
+			f[i] = strings.TrimSpace(f[i])
+		}
+		if f[0] == "" || seen[f[0]] {
 			continue
 		}
-		seen[n] = true
-		res = append(res, n)
+		seen[f[0]] = true
+		s := stoppedService{name: f[0], details: len(f) > 1}
+		for i, dst := range []*string{&s.exitCode, &s.specificCode, &s.eventID, &s.event} {
+			if i+1 < len(f) {
+				*dst = f[i+1]
+			}
+		}
+		res = append(res, s)
 	}
 	return res
+}
+
+// why explains a stopped service in one line, from its event and exit codes.
+func (s stoppedService) why() string {
+	var b strings.Builder
+	b.WriteString(s.name + " stopped: ")
+	switch {
+	case s.eventID != "":
+		b.WriteString("event " + s.eventID + ": " + s.event)
+	case s.exitCode == "1077":
+		b.WriteString("not started since boot")
+	default:
+		b.WriteString("no Service Control Manager event since boot")
+	}
+	if s.exitCode == "1066" && s.specificCode != "" && s.specificCode != "0" {
+		b.WriteString(" (service-specific exit code " + exitCode(s.specificCode) + ")")
+	} else if s.exitCode != "" {
+		b.WriteString(" (exit code " + s.exitCode + ")")
+	}
+	return b.String()
+}
+
+// exitCode shows a Windows exit code: in hex from 0x80000000 up, where codes
+// are HRESULTs or negative numbers (4294967295 is 0xFFFFFFFF, i.e. -1).
+func exitCode(s string) string {
+	if n, err := strconv.ParseUint(s, 10, 32); err == nil && n >= 0x80000000 {
+		return fmt.Sprintf("0x%08X", n)
+	}
+	return s
 }
 
 // defaultWindowsSettlePoll is how often stopped automatic services are
@@ -61,7 +119,7 @@ func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
 
 // windowsServices runs one service query and judges it.
 func windowsServices(ctx context.Context, ex Executor, in Input) Outcome {
-	res, err := ex.Exec(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsScript})
+	res, err := ex.Exec(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", WindowsServicesScript})
 	switch {
 	case errors.Is(err, ErrExecBlocked):
 		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}
@@ -78,16 +136,21 @@ func windowsServices(ctx context.Context, ex Executor, in Input) Outcome {
 		return Outcome{Verdict: model.Failed, Reason: fmt.Sprintf("probe error: powershell exited %d", res.ExitCode)}
 	}
 	var out Outcome
-	for _, n := range serviceNames(res.Stdout) {
-		if windowsIgnored(in.Checks.WindowsIgnoreServices, n) {
-			out.IgnoredUnits = append(out.IgnoredUnits, n)
-		} else {
-			out.FailedUnits = append(out.FailedUnits, n)
+	var why []string
+	for _, s := range stoppedServices(res.Stdout) {
+		if windowsIgnored(in.Checks.WindowsIgnoreServices, s.name) {
+			out.IgnoredUnits = append(out.IgnoredUnits, s.name)
+			continue
+		}
+		out.FailedUnits = append(out.FailedUnits, s.name)
+		if s.details {
+			why = append(why, s.why())
 		}
 	}
 	if len(out.FailedUnits) > 0 {
 		out.Verdict = model.Failed
 		out.Reason = "stopped auto services: " + strings.Join(out.FailedUnits, ", ")
+		out.BootLog = strings.Join(why, "\n")
 		return out
 	}
 	out.Verdict = model.Proven

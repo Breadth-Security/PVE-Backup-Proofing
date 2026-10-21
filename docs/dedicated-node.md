@@ -5,9 +5,10 @@ By default PBP restores and boots its proof copies on a production Proxmox node.
 This page covers **one source cluster** whose backups are proofed on one dedicated node. Proofing backups of several clusters from one datastore is not supported yet: guests are identified by kind and VMID, so two clusters' VM 100 would be treated as one guest.
 
 ```
-production PVE  ── backup jobs ──▶  PBS datastore  ◀── same datastore ──  proofing PVE
-                                                                             ▲
-                                                                  PBP (its own host, or on it)
+Production PVE  ── Backup jobs ──▶  PBS datastore  ◀── same datastore ──  Proofing PVE
+                                                                          ▲
+                                                                          │
+                                                                          PBP (its own host, or on the proofing host directly)
 ```
 
 PBP itself is unchanged: it talks only to the proofing node, which is its `target.node`. Where to run PBP is a separate choice: [Where to run PBP](security.md#where-to-run-pbp).
@@ -48,6 +49,22 @@ To find the owner, look at a backup group in the PBS web UI (Datastore > Content
 4. **Run the two node lines on the proofing node** and paste the reply back ([Setup](setup.md) steps 4 and 5). Production nodes are not involved.
 5. **Start PBP and run `pbp check`** ([Setup](setup.md) step 6).
 6. **If PBP proofed on a production node before, retire that setup:** stop the old daemon, and remove PBP from the production node with [`pbp node uninstall`](setup.md#removing-pbp-from-a-node). Do not run both. They see the same backups and share their notes, so the second simply skips what the first proved, and both would compete for the same backups.
+
+## Proofing on your disaster-recovery standby
+
+**For production, make the proofing node the hardware your disaster recovery plan would restore to:** a standby host, a cold spare, or the machine at a second site. A proof there is a rehearsal of the real restore, every night:
+
+- **It proves the path you would actually use:** that host's CPU, storage, PVE version, its access to the PBS datastore, and the encryption key and PBS credentials it holds. A proof on a production node only shows that the backup restores where it came from.
+- **It catches drift on hardware that otherwise sits idle.** A missing or rotated key, expired credentials, a failing disk, an outdated PVE: each shows up as a failed or erroring proof the next morning, not in the middle of an outage. Treat such a failure as a finding about your disaster recovery, not only about one backup.
+- **It keeps proofing load off production**, and production nodes need nothing from PBP.
+
+What the standby then has to meet every night is the list in [What the proofing node needs](#what-the-proofing-node-needs): as new a PVE as production, room for your largest guests, the datastore with the owner's credentials and the encryption key.
+
+**A cold spare that is normally off** must be running for the run window. PBP does not power hosts on: wake it shortly before the schedule (wake-on-LAN or IPMI from another host's timer, or a BIOS wake time) and let it power down afterwards if you like. If it is not up when the run starts, the run fails at preflight; because the summary is sent through the proofing node, no notification can be sent then, so watch `pbp health` from your monitoring ([Health check](operating.md#health-check)). Leave enough margin for the host to boot and for PBS, if it is woken too, to be ready.
+
+**A standby at another site** needs the PBS datastore from there: the same PBS over the WAN, or a PBS at that site that receives the backups through a sync job (see [Proofing from a sync target](#good-to-know)). The run summary goes out through that node's notification targets, so configure them for the site.
+
+**Proofing borrows the standby's capacity:** a VMID range, space on the restore storage and RAM, for the length of the run. Size the schedule and `restore.max_run_duration` so the window ends well before the standby might be needed, and pause PBP (`sudo systemctl stop pbp`, or `docker compose stop`) during a failover test or a real failover, so it does not compete with the guests you are bringing up.
 
 ## Good to know
 

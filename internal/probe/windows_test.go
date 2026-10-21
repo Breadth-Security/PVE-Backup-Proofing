@@ -14,7 +14,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe/probetest"
 )
 
-const winCmd = `powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' -and $_.DelayedAutoStart -ne $true } | ForEach-Object { $_.Name }`
+const winCmd = "powershell.exe -NoProfile -NonInteractive -Command " + probe.WindowsServicesScript
 
 func runWin(ex probe.Executor, ck config.Checks) probe.Outcome {
 	return probe.Run(context.Background(), ex, probe.Input{OS: probe.Windows, Checks: ck})
@@ -28,6 +28,32 @@ func TestWindowsFailedAndIgnored(t *testing.T) {
 	}
 	if !reflect.DeepEqual(o.IgnoredUnits, []string{"sppsvc"}) || !reflect.DeepEqual(o.FailedUnits, []string{"Spooler"}) {
 		t.Fatalf("ignored=%v failed=%v", o.IgnoredUnits, o.FailedUnits)
+	}
+}
+
+// Each stopped service's line carries why it stopped (issue #44): its exit
+// codes and the newest Service Control Manager event since boot naming it.
+// The Bonjour and WslInstaller lines are real output from a copy of VM115 on
+// pve2.
+// The reason stays the list of names; the explanations go in the boot log,
+// for the services that count (not the ignored ones).
+func TestWindowsStopReasons(t *testing.T) {
+	ex := probetest.Scripted{winCmd: out("" +
+		"Bonjour Service\t1066\t4294967295\t7024\tThe Bonjour Service service terminated with the following service-specific error: %%4294967295\r\n" +
+		"WslInstaller\t0\t0\t\t\r\n" +
+		"Spooler\t1077\t0\t\t\r\n" +
+		"AppSvc\t1066\t5\t7024\tThe App service terminated with the following service-specific error: 5\r\n" +
+		"sppsvc\t1067\t0\t7031\tignored anyway\r\n")}
+	o := runWin(ex, config.Checks{WindowsIgnoreServices: []string{"sppsvc"}})
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: Bonjour Service, WslInstaller, Spooler, AppSvc" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+	want := "Bonjour Service stopped: event 7024: The Bonjour Service service terminated with the following service-specific error: %%4294967295 (service-specific exit code 0xFFFFFFFF)\n" +
+		"WslInstaller stopped: no Service Control Manager event since boot (exit code 0)\n" +
+		"Spooler stopped: not started since boot (exit code 1077)\n" +
+		"AppSvc stopped: event 7024: The App service terminated with the following service-specific error: 5 (service-specific exit code 5)"
+	if o.BootLog != want {
+		t.Errorf("boot log:\n%s\nwant:\n%s", o.BootLog, want)
 	}
 }
 
