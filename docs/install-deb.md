@@ -4,17 +4,17 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
 ## Install
 
-1. **Download and verify** the package and `SHA256SUMS` of a release (here `0.3.0`; use the version you want):
+1. **Download and verify** the package and `SHA256SUMS` of a release (here `0.4.0`; use the version you want):
 
    ```
-   v=0.3.0; a=$(dpkg --print-architecture)
+   v=0.4.0; a=$(dpkg --print-architecture)
    base=https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v$v
    curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS"
    sha256sum -c SHA256SUMS --ignore-missing
    sudo apt install "./pbp_${v}_${a}.deb"
    ```
 
-   Pre-releases are tagged like `v0.3.0-rc.2` and their files carry the Debian version `0.3.0~rc.2` (`pbp_0.3.0~rc.2_amd64.deb`), which sorts before `0.3.0`, so the final release installs over a pre-release as an upgrade.
+   Pre-releases are tagged like `v0.4.0-rc.2` and their files carry the Debian version `0.4.0~rc.2` (`pbp_0.4.0~rc.2_amd64.deb`), which sorts before `0.4.0`, so the final release installs over a pre-release as an upgrade.
 
 2. **Set it up.** Choose the VMID range and create the bridge first ([Setup](setup.md) steps 1 and 2), then run:
 
