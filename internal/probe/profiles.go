@@ -53,6 +53,8 @@ type checker struct {
 	ports    map[int]bool
 	portsOK  bool
 	portsErr error // the listing timed out: port checks fail
+	// openrc checks services with rc-service instead of systemctl.
+	openrc bool
 }
 
 func (c *checker) record(name string, ok bool, detail string) {
@@ -61,7 +63,11 @@ func (c *checker) record(name string, ok bool, detail string) {
 
 func (c *checker) service(ctx context.Context, prefix, unit string) error {
 	name := prefix + ":services:" + unit
-	r, err := c.ex.Exec(ctx, []string{"systemctl", "is-active", unit})
+	argv := []string{"systemctl", "is-active", unit}
+	if c.openrc {
+		argv = []string{"rc-service", unit, "status"}
+	}
+	r, err := c.ex.Exec(ctx, argv)
 	if errors.Is(err, errCommandTimeout) {
 		c.record(name, false, timedOutDetail)
 		return nil
@@ -70,6 +76,11 @@ func (c *checker) service(ctx context.Context, prefix, unit string) error {
 		return err
 	}
 	state := strings.TrimSpace(r.Stdout)
+	if c.openrc {
+		// rc-service status: exit 0 when started (" * status: started").
+		c.record(name, r.ExitCode == 0, strings.TrimPrefix(state, "* status: "))
+		return nil
+	}
 	c.record(name, state == "active", state)
 	return nil
 }

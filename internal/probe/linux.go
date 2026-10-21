@@ -63,6 +63,32 @@ func (r *linuxRun) crashLooping(ctx context.Context) []string {
 	return out
 }
 
+// openRCFailed lists the services `rc-status --format ini` reports as
+// failed: crashed in any section, or stopped in a runlevel section (a
+// service of the runlevel that failed to start, which --crashed misses;
+// seen on Alpine 3.24). The "Dynamic" sections (dependencies, hotplugged,
+// manual) are not the runlevel's own (code review I9).
+func openRCFailed(ini string) []string {
+	var failed []string
+	runlevel := false
+	for _, line := range strings.Split(ini, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			runlevel = !strings.HasPrefix(line, "[Dynamic")
+			continue
+		}
+		name, state, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name, state = strings.TrimSpace(name), strings.TrimSpace(state)
+		if (state == "crashed" || (runlevel && state == "stopped")) && !slices.Contains(failed, name) {
+			failed = append(failed, name)
+		}
+	}
+	return failed
+}
+
 // rootOptions returns the mount options of the root filesystem: from
 // findmnt, or, when findmnt is missing or fails, from /proc/self/mounts (the
 // last "/" entry, which an overmount puts last). nil means neither could be
@@ -338,19 +364,50 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 		return r.execErr(ctx, "openrc boot", err)
 	}
 
-	res, err := r.exec(ctx, "rc-status", "--crashed")
+	res, err := r.exec(ctx, "rc-status", "--format", "ini")
 	if err != nil {
 		return r.execErr(ctx, "openrc services", err)
 	}
-	if res.ExitCode == 127 {
-		return r.booted("init answering, service state unknown")
+	var failed []string
+	if res.ExitCode == 0 && strings.Contains(res.Stdout, "[") {
+		failed = openRCFailed(res.Stdout)
+	} else {
+		// An OpenRC without --format ini: crashed services only.
+		res, err = r.exec(ctx, "rc-status", "--crashed")
+		if err != nil {
+			return r.execErr(ctx, "openrc services", err)
+		}
+		if res.ExitCode == 127 {
+			return r.booted("init answering, service state unknown")
+		}
+		// Exit 0 or 1 are both normal; stdout lists the crashed services.
+		if res.ExitCode != 0 && res.ExitCode != 1 {
+			return r.errorOut(fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+		}
+		failed = firstFields(res.Stdout)
 	}
-	// Exit 0 or 1 are both normal; stdout lists the crashed services.
-	if res.ExitCode != 0 && res.ExitCode != 1 {
-		return r.errorOut(fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+
+	opts, err := r.rootOptions(ctx)
+	if err != nil {
+		return r.execErr(ctx, "root filesystem", err)
 	}
-	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+	if opts == nil {
+		return r.errorOut("cannot read the root filesystem's mount options")
+	}
+	if slices.Contains(opts, "ro") {
+		return r.fail(ctx, "root filesystem read-only")
+	}
+
+	if o, bad := r.triage(ctx, failed); bad {
 		return o
+	}
+	// Per-guest checks (ports, commands, services via rc-service). The
+	// built-in profiles match systemd unit names, so they do not apply.
+	c := &checker{ex: r.ex, openrc: true}
+	err = c.runProfiles(ctx, r.in, nil)
+	r.out.Checks = c.results
+	if err != nil {
+		return r.execErr(ctx, "guest checks", err)
 	}
 	return r.finish(ctx)
 }
