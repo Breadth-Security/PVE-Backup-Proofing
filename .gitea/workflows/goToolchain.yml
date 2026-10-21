@@ -1,4 +1,4 @@
-name: test
+name: go-toolchain
 
 # go vet and go test -race on the exact toolchain pinned in go.mod (the
 # `toolchain` line), which is also the toolchain the Docker image is built
@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  go-toolchain:
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local # use exactly the toolchain installed above; never switch
