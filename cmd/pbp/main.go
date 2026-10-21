@@ -92,11 +92,28 @@ func main() {
 		// The helper outlives a vanished SSH client on purpose (see
 		// catchNodeSignals); it runs until the process exits.
 		catchNodeSignals()
+	} else {
+		// A command whose SSH session dropped must not die from SIGPIPE
+		// on its next write to stdout before it has torn down.
+		signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals(os.Args[1:])...)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
+}
+
+// stopSignals are the signals that end a command gracefully (its context is
+// cancelled, so a run tears its guests down). SIGHUP counts too, so a
+// manual `pbp run` whose SSH session drops still cleans up (code review
+// I5); only the node helper, which outlives a hangup on purpose, leaves it
+// to catchNodeSignals.
+func stopSignals(args []string) []os.Signal {
+	sigs := []os.Signal{syscall.SIGTERM, syscall.SIGINT}
+	if len(args) == 0 || args[0] != "node" {
+		sigs = append(sigs, syscall.SIGHUP)
+	}
+	return sigs
 }
 
 // app is the CLI with its outside world injectable for tests.

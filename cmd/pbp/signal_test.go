@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,5 +202,26 @@ func TestNodeSurvivesHangup(t *testing.T) {
 	_ = stdin.Close() // empty payload: refused as bad-payload
 	if code := exitedNormally(t, cmd.Wait()); code != 250 {
 		t.Errorf("exit %d, want 250 (bad-payload refusal)", code)
+	}
+}
+
+// Every command but the node helper ends gracefully on SIGHUP too, so a
+// manual `pbp run` whose SSH session drops still tears its guest down
+// (code review I5). The helper keeps surviving a hangup on purpose.
+func TestStopSignals(t *testing.T) {
+	for args, wantHUP := range map[string]bool{
+		"run --guest 101": true,
+		"daemon":          true,
+		"check":           true,
+		"node":            false,
+		"":                true,
+	} {
+		got := stopSignals(strings.Fields(args))
+		if !slices.Contains(got, os.Signal(syscall.SIGTERM)) || !slices.Contains(got, os.Signal(syscall.SIGINT)) {
+			t.Errorf("%q: %v lacks SIGTERM or SIGINT", args, got)
+		}
+		if hup := slices.Contains(got, os.Signal(syscall.SIGHUP)); hup != wantHUP {
+			t.Errorf("%q: SIGHUP included = %v, want %v", args, hup, wantHUP)
+		}
 	}
 }

@@ -30,6 +30,8 @@ Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and th
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`. A backup of a template is always skipped ("template (not bootable)").
 
+A run on demand that is interrupted (Ctrl-C, or its SSH session dropping) still tears its guest down and records the result. Under Docker, it runs inside the PBP container through `docker compose exec`, so it ends abruptly if that container is stopped or restarted meanwhile: let it finish first. Anything it leaves behind is cleaned up by the next run's janitor.
+
 ## Logs
 
 Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` host, `./logs` with Docker), named with the time the run started and what started it (`schedule` or `manual`):
