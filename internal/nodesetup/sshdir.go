@@ -340,7 +340,8 @@ func writeFileAt(env Env, dir int, name string, content []byte, mode os.FileMode
 // The plan was made by path before the y/N prompt; were pbp's home ever
 // pbp's, it could hide .ssh while planning and put it back before this runs. So the
 // file is read again through the fd, and whatever is there now decides:
-// setup's own line needs no write, a file the plan did not expect (a
+// setup's own line needs no write unless the plan found its owner or mode
+// wrong (then it is rewritten without a backup), a file the plan did not expect (a
 // planned Create that finds one) is refused, and a planned Differs (only
 // reached with --replace) is backed up first.
 func applyAuthorizedKeys(env Env, ids ids, dir int, it Item) error {
@@ -355,8 +356,15 @@ func applyAuthorizedKeys(env Env, ids ids, dir int, it Item) error {
 		if err != nil {
 			return err
 		}
-		if string(have) == string(it.Content) {
+		same := string(have) == string(it.Content)
+		if same && it.Status != Differs {
 			return nil
+		}
+		if same {
+			// Setup's line, but the plan found the owner or mode wrong:
+			// rewrite it on a new inode, which sets both (code review I16).
+			// The bytes are unchanged, so there is nothing to back up.
+			return writeFileAt(env, dir, akName, it.Content, it.Mode, ids.uid[it.Owner], ids.gid[it.Group])
 		}
 		if it.Status != Differs {
 			return fmt.Errorf("%s appeared or changed after the plan was made; nothing was overwritten, run pbp node setup again", AuthorizedKeys)
