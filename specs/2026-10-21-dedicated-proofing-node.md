@@ -39,6 +39,21 @@ Today, on pve1, PBP proofs through the same storage (`PBS-qemu`, user `pbs@pbs`)
 | 7 | Notifications | They go out through the proofing node's `PVE::Notify`, so its notification targets must be configured. | Run once and receive the summary. |
 | 8 | Template install and node setup | `pbp setup` / `pbp node setup` work unchanged against the proofing node. | Run the guided setup against it from the PBP host. |
 
+## Results on pve2 (2026-10-21)
+
+The test setup: **pve2**, a standalone PVE 9.2.18 host on the same CPU model as pve1. Its `PBS-qemu` storage points at the same datastore, as `pbs@pbs` (the backups' owner), with the same encryption key. It has a new isolated bridge `vmbr99` and pbp 0.4.0 with node setup. The PBP host is **dev-scratch** (0.4.0 `.deb`, config written by the guided setup).
+
+| # | Result |
+|---|--------|
+| 1 | **With the owner's credentials (`pbs@pbs`): works.** `protected` was set and cleared, and the notes were written (VM108, CT120, VM102). The separate read-only user case is not tested: no such PBS user exists yet. |
+| 2 | **Yes.** pve1's view of the same backups shows pve2's verdict lines, with `protected=0` afterwards. Both nodes share the notes, so another PBP instance treats a backup proven on pve2 as "already proven". |
+| 3 | Not testable with the current backups: they all use `vmbr0`, which pve2 also has (as an OVS bridge). |
+| 4 | **`cpu: host` works** (VM108 PROVEN). **A named model works** (VM102 `x86-64-v2-AES` booted; it FAILED on the same sssd units as on pve1, which is consistent). Both hosts have the same CPU model, so a CPU mismatch is not tested. |
+| 5 | **A pinned machine type works** when the proofing node runs the same PVE: VM115 (`machine: pc-q35-9.0`, Windows, 466 GiB) restored in 11m49s and was running after 43s. The proof ended `ERROR` for an unrelated reason: the Windows guest agent's `guest-exec-status` timed out 27s after boot. That is a Windows probe issue, filed separately. |
+| 6 | **Works with the key:** the backups are encrypted, and pve2's storage has the key. Without the key, the restore cannot decrypt; that case is not tested. |
+| 7 | **Works:** pve2's `mail-to-root` target sent each summary (the run outcome was not `error`). |
+| 8 | **Works:** `pbp setup --deb` on dev-scratch plus `pbp node setup` on pve2, unchanged. `pbp check` passes. One network issue was found and fixed: pve2 still had an unused corosync address (`10.10.0.2/24`) on a port without a link, so its replies to dev-scratch (`10.10.0.1`) went nowhere. Setup reported it clearly ("could not reach … the check below shows whether it works"). |
+
 ## Host requirements for the test
 
 - Proxmox VE 9.x, same or newer than production; enough RAM and disk for the largest guest to be proofed.
