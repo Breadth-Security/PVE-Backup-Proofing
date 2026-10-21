@@ -117,8 +117,10 @@ type GuestResult struct {
 type RunSummary struct {
 	ID, Trigger    string
 	Started, Ended time.Time
-	Results        []GuestResult
-	RunError       string
+	// LogDir is the run's log folder ("" when the run logs to stdout only).
+	LogDir   string
+	Results  []GuestResult
+	RunError string
 	// EnvironmentErrors are problems with the node PBP found but did not
 	// act on (e.g. a pbp-tagged guest outside the VMID range).
 	EnvironmentErrors []string

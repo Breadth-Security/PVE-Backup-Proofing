@@ -80,36 +80,6 @@ func PruneRunLogs(dir string, retain int) error {
 	return firstErr
 }
 
-// LogGuest logs one record per guest plus one Info per not-covered finding.
-func LogGuest(l *slog.Logger, r model.GuestResult) {
-	checks := make([]string, 0, len(r.Checks))
-	for _, c := range r.Checks {
-		s := c.Name + "=ok"
-		if !c.OK {
-			s = c.Name + "=fail"
-		}
-		if c.Detail != "" {
-			s += " (" + c.Detail + ")"
-		}
-		checks = append(checks, s)
-	}
-	l.Info("guest result",
-		"guest", r.Backup.Key.String(),
-		"volid", r.Backup.VolID,
-		"verdict", string(r.Verdict),
-		"reason", r.Reason,
-		"temp_vmid", r.TempVMID,
-		"restore_s", r.RestoreDuration.Seconds(),
-		"boot_s", r.BootDuration.Seconds(),
-		"failed_units", r.FailedUnits,
-		"ignored_units", r.IgnoredUnits,
-		"checks", checks,
-	)
-	for _, n := range r.NotCovered {
-		l.Info(n.LogLine())
-	}
-}
-
 // LevelDetail marks records written to run.log but not to stdout.
 const LevelDetail = slog.LevelDebug
 

@@ -36,26 +36,6 @@ func failedSummary() model.RunSummary {
 	}
 }
 
-func TestLogGuest(t *testing.T) {
-	var buf bytes.Buffer
-	l := NewLogger(&bytes.Buffer{}, &buf)
-	nc := model.NotCovered{Unit: "qemu/101", Piece: model.MissingPiece{Kind: "excluded-disk", Key: "scsi1"}}
-	LogGuest(l, model.GuestResult{
-		Verdict: model.Failed, Reason: "boom", FailedUnits: []string{"a.service"},
-		RestoreDuration: 3 * time.Second, NotCovered: []model.NotCovered{nc},
-		Checks: []model.CheckResult{{Name: "agent", OK: true}},
-	})
-	out := buf.String()
-	if !strings.Contains(out, `"verdict":"FAILED"`) || !strings.Contains(out, nc.LogLine()) {
-		t.Fatal(out)
-	}
-	for _, k := range []string{"guest", "reason", "restore_s", "boot_s", "failed_units", "ignored_units", "checks"} {
-		if !strings.Contains(out, `"`+k+`"`) {
-			t.Errorf("missing attr %s: %s", k, out)
-		}
-	}
-}
-
 func TestNewLoggerStdoutOnly(t *testing.T) {
 	var out bytes.Buffer
 	NewLogger(&out, nil).Info("hello")

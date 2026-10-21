@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -245,26 +244,14 @@ func TestRunWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"msg":"guest result"`) || !strings.Contains(string(b), `"verdict":"SKIPPED"`) ||
-		strings.Contains(string(b), "qemu/102") {
+	const result = `"msg":"VM101 SKIPPED · `
+	if !strings.Contains(string(b), result) || strings.Contains(string(b), "qemu/102") {
 		t.Errorf("run log = %s", b)
 	}
-	if n := strings.Count(string(b), `"msg":"guest result"`); n != 1 {
+	if n := strings.Count(string(b), result); n != 1 {
 		t.Errorf("guest 101 logged %d result records, want exactly 1:\n%s", n, b)
 	}
-	// The record carries the run correlation and precedes "run finished".
-	var rec struct{ Run, Trigger string }
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.Contains(line, `"msg":"guest result"`) {
-			if err := json.Unmarshal([]byte(line), &rec); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if rec.Run != id || rec.Trigger != "manual" {
-		t.Errorf("guest record run/trigger = %+v", rec)
-	}
-	if strings.Index(string(b), `"msg":"guest result"`) > strings.Index(string(b), `"msg":"run finished"`) {
+	if strings.Index(string(b), result) > strings.Index(string(b), `"msg":"run finished`) {
 		t.Errorf("guest result logged after run finished:\n%s", b)
 	}
 	ents, _ := os.ReadDir(e.logDir)

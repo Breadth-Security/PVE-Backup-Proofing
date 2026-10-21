@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/targetfake"
@@ -916,7 +918,7 @@ func TestRunUsesGivenRunID(t *testing.T) {
 type panicOnSkip struct{ slog.Handler }
 
 func (h panicOnSkip) Handle(ctx context.Context, r slog.Record) error {
-	if r.Message == "guest skipped" {
+	if strings.HasPrefix(r.Message, "skipped: ") {
 		panic("dispatcher boom")
 	}
 	return h.Handler.Handle(ctx, r)
@@ -967,5 +969,140 @@ func TestNewRunIDHasMilliseconds(t *testing.T) {
 	}
 	if strings.ContainsAny(a, "/\\: ") {
 		t.Errorf("id %q is not filename-safe", a)
+	}
+}
+
+// withRunLog sends the fixture's run and guest logs to a report.RunLog in a
+// temporary folder, read back from disk. It returns the folder and stdout.
+func (f *runFixture) withRunLog(t *testing.T) (string, *bytes.Buffer) {
+	t.Helper()
+	rl, err := report.NewRunLog(t.TempDir(), now, "manual", f.clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rl.Close() })
+	var stdout bytes.Buffer
+	f.d.Log = rl.Logger(&stdout) // before Guest, so guest warnings reach it
+	f.d.GuestLog = rl.Guest
+	f.d.Version = "test"
+	return rl.Dir(), &stdout
+}
+
+func readLog(t *testing.T, dir, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// wantInOrder checks that each of wants appears in text after the previous one.
+func wantInOrder(t *testing.T, name, text string, wants ...string) {
+	t.Helper()
+	rest := text
+	for _, w := range wants {
+		i := strings.Index(rest, w)
+		if i < 0 {
+			t.Errorf("%s: %q missing or out of order in:\n%s", name, w, text)
+			return
+		}
+		rest = rest[i+len(w):]
+	}
+}
+
+func TestRunLogsSteps(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	dir, stdout := f.withRunLog(t)
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	wantResult(t, byVMID(t, s)[101], model.Proven, "")
+	wantInOrder(t, "run.log", readLog(t, dir, "run.log"),
+		"run started (manual) · PBP test · node pve1",
+		"preflight ok (",
+		"discovery: 1 backups on pbs; 0 already proven, 1 to proof",
+		"VM101 started (VM101.log)",
+		"VM101 PROVEN · ",
+		"run finished in ")
+	wantInOrder(t, "VM101.log", readLog(t, dir, "VM101.log"),
+		"backup pbs:backup/qemu/101/",
+		"capacity ok: ",
+		"backup marked protected (was not)",
+		"restore to 990000 …",
+		"restore done in ",
+		"made safe: ",
+		"started; waiting for the guest (up to 5m0s)",
+		"running after ",
+		"verdict PROVEN · ",
+		"teardown done in ",
+		"notes: PBP PROVEN ")
+	if strings.Contains(stdout.String(), "started (VM101.log)") {
+		t.Errorf("stdout has the detail line:\n%s", stdout)
+	}
+}
+
+// A failed PVE task: the reason keeps only the task's exit status; the task
+// log goes to the guest's file only.
+func TestRestoreTaskFailureLogged(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.RestoreErr = map[int]error{990000: fmt.Errorf("restore …: %w", &pve.TaskError{
+		UPID: "UPID:x", ExitStatus: "unable to restore", Log: []string{"line one", "TASK ERROR: unable to restore"}})}
+	dir, _ := f.withRunLog(t)
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	r := byVMID(t, s)[101]
+	if r.Reason != "restore failed: unable to restore" {
+		t.Errorf("reason = %q", r.Reason)
+	}
+	if n := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(strings.SplitN(n, "\n", 2)[0], "· restore failed: unable to restore") {
+		t.Errorf("notes = %q", n)
+	}
+	runLog := readLog(t, dir, "run.log")
+	// "unable to restore" names no node fault, so ClassifyRestoreError calls
+	// the backup bad: FAILED.
+	if !strings.Contains(runLog, "VM101 FAILED · restore failed: unable to restore") || strings.Contains(runLog, "UPID") {
+		t.Errorf("run.log:\n%s", runLog)
+	}
+	wantInOrder(t, "VM101.log", readLog(t, dir, "VM101.log"),
+		"PVE task log (last 2 lines):\n", "    line one\n", "    TASK ERROR: unable to restore\n")
+}
+
+func TestSkipLoggedToGuestFile(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	tmpl := f.add("pbs", model.KindQEMU, 101, 1024, "golden")
+	f.api.BackupConfigs[tmpl.VolID] += "template: 1\n"
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	if g := readLog(t, dir, "VM101.log"); !strings.Contains(g, "skipped: template (not bootable)") {
+		t.Errorf("VM101.log:\n%s", g)
+	}
+	if r := readLog(t, dir, "run.log"); !strings.Contains(r, "VM101 SKIPPED · template (not bootable)") {
+		t.Errorf("run.log:\n%s", r)
+	}
+}
+
+func TestDestroyFailureForwarded(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.DestroyErr = map[int]error{990000: errors.New("destroy timed out")}
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	if r := readLog(t, dir, "run.log"); !strings.Contains(r, "VM101 destroy temporary guest failed; left for the janitor") {
+		t.Errorf("run.log:\n%s", r)
+	}
+}
+
+func TestRunSummaryLogDir(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	if s := f.run(context.Background(), Options{Trigger: "manual", LogDir: "/x"}); s.LogDir != "/x" {
+		t.Errorf("LogDir = %q", s.LogDir)
 	}
 }
