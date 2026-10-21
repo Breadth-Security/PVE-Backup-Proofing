@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
@@ -149,6 +150,9 @@ func TestConcurrentUse(t *testing.T) {
 				t.Error(err)
 			}
 			if _, err := f.Start(ctx, "pve1", model.KindQEMU, vmid); err != nil {
+				t.Error(err)
+			}
+			if _, err := f.Stop(ctx, "pve1", model.KindQEMU, vmid); err != nil {
 				t.Error(err)
 			}
 			if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, vmid); err != nil {
@@ -317,7 +321,8 @@ func TestFailOnOtherMethods(t *testing.T) {
 	}
 }
 
-// SetVolumeAttrs logs the guest the backup belongs to, "unknown" for an unseeded volid.
+// SetVolumeAttrs logs the guest the backup belongs to, "unknown" for an
+// unseeded volid, which fails like on PVE.
 func TestSetVolumeAttrsLogsGuest(t *testing.T) {
 	ctx := context.Background()
 	f := New()
@@ -325,11 +330,59 @@ func TestSetVolumeAttrsLogsGuest(t *testing.T) {
 	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", "PBS:nope", nil, nil); err != nil {
-		t.Fatal(err)
+	if err := f.SetVolumeAttrs(ctx, "pve1", "PBS", "PBS:nope", nil, nil); err == nil {
+		t.Fatal("unknown volid accepted")
 	}
 	want := []string{"SetVolumeAttrs pve1 PBS " + volid + " guest=qemu/100", "SetVolumeAttrs pve1 PBS PBS:nope guest=unknown"}
 	if got := f.CallLog(); !reflect.DeepEqual(got, want) {
 		t.Errorf("calls = %q", got)
+	}
+}
+
+// Like PVE: a running guest cannot be destroyed, calls naming another node
+// fail, the listing shows the config's tags and name, and FailOn can fail
+// one particular call (code review I20).
+func TestBehavesLikePVE(t *testing.T) {
+	ctx := context.Background()
+	f := seeded()
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9000, volid, "scratch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 9000, map[string]string{"tags": "pbp;web", "name": "pbp-9000"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := f.Guests(ctx)
+	if i := slices.IndexFunc(g, func(r pve.GuestRef) bool { return r.Key.VMID == 9000 }); i < 0 ||
+		!slices.Equal(g[i].Tags, []string{"pbp", "web"}) || g[i].Name != "pbp-9000" {
+		t.Errorf("listing: %+v", g)
+	}
+	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 9000); err == nil {
+		t.Error("destroyed a running guest")
+	}
+	if _, err := f.Stop(ctx, "pve2", model.KindQEMU, 9000); err == nil {
+		t.Error("call on another node accepted")
+	}
+	f.Node = "pve2"
+	if _, err := f.Stop(ctx, "pve2", model.KindQEMU, 9000); err != nil {
+		t.Errorf("configured node refused: %v", err)
+	}
+	boom := errors.New("boom")
+	n := 0
+	f.FailOn = func(method string, args []string) error {
+		if method == "SetGuestConfig" && args[2] == "9000" {
+			if n++; n == 2 {
+				return boom
+			}
+		}
+		return nil
+	}
+	if err := f.SetGuestConfig(ctx, "pve2", model.KindQEMU, 9000, map[string]string{"a": "1"}, nil); err != nil {
+		t.Errorf("first call: %v", err)
+	}
+	if err := f.SetGuestConfig(ctx, "pve2", model.KindQEMU, 9000, map[string]string{"a": "2"}, nil); err != boom {
+		t.Errorf("second call: %v, want boom", err)
 	}
 }

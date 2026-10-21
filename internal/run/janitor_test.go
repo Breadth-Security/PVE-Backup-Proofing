@@ -42,11 +42,12 @@ func (t *destroyLog) Destroy(ctx context.Context, kind model.GuestKind, vmid int
 }
 
 type janitorFixture struct {
-	d      Deps
-	api    *pvefake.Fake
-	tgt    *destroyLog
-	store  *state.Store
-	logBuf *bytes.Buffer
+	d       Deps
+	api     *pvefake.Fake
+	tgt     *destroyLog
+	store   *state.Store
+	logBuf  *bytes.Buffer
+	allowed map[string]bool // volids it may write: seeded in-flight records, ownBackup
 }
 
 // newJanitorFixture uses the real existing-node target so that ownership
@@ -71,6 +72,7 @@ func newJanitorFixture(t *testing.T) *janitorFixture {
 		Log: slog.New(slog.NewTextHandler(&logBuf, nil)),
 		Now: func() time.Time { return now },
 	}
+	t.Cleanup(func() { assertWritesOnly(t, api.CallLog(), f.allowed) })
 	return f
 }
 
@@ -111,6 +113,7 @@ func (f *janitorFixture) inFlight(jobs ...state.Job) {
 	err := f.store.Update(func(st *state.State) error {
 		for _, j := range jobs {
 			st.InFlight[j.TempVMID] = j
+			f.allow(j.VolID)
 		}
 		return nil
 	})
@@ -300,4 +303,11 @@ func TestJanitorUnrelatedNotFoundKeepsEntry(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (f *janitorFixture) allow(volid string) {
+	if f.allowed == nil {
+		f.allowed = map[string]bool{}
+	}
+	f.allowed[volid] = true
 }

@@ -1155,3 +1155,36 @@ func TestSanitizeReportsChanges(t *testing.T) {
 		t.Errorf("Changes = %q, want %q", got.Changes, want)
 	}
 }
+
+// When the config cannot be re-read after sanitizing, neither Sanitize nor
+// Start lets the guest run: PBP cannot show it is safe to start (code
+// review I20).
+func TestSanitizeReReadFails(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = vmConf
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	sanitized := false
+	f.FailOn = func(method string, args []string) error {
+		switch {
+		case method == "SetGuestConfig" && strings.Contains(strings.Join(args, " "), "net0"):
+			sanitized = true
+		case method == "GuestConfig" && sanitized:
+			return boom
+		}
+		return nil
+	}
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-read config") {
+		t.Fatalf("Sanitize: %v, want the re-read error", err)
+	}
+	if err := n.Start(ctx, model.KindQEMU, 990000); err == nil || !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("Start: %v, want refusal", err)
+	}
+	if s, _ := f.GuestStatus(ctx, node, model.KindQEMU, 990000); s == "running" {
+		t.Error("guest started")
+	}
+}

@@ -41,7 +41,7 @@ restore:
   probe_timeout: 5m            # default; at least 30s. Bounds all checks inside one booted
                                # guest; a probe cut short is ERROR, never FAILED
   reproof: false
-  # max_run_duration: 6h       # unset or 0 = no limit; otherwise at least 1s
+  # max_run_duration: 6h       # no new proof starts after this long (those in progress finish); unset or 0 = no limit; otherwise at least 1s
 
 checks:
   command_timeout: 60s         # default; at least 1s. Bounds each command run inside a guest;

@@ -611,3 +611,54 @@ func TestPlanRefusal(t *testing.T) {
 		t.Errorf("ok: %v", err)
 	}
 }
+
+// An authorized_keys whose bytes are already setup's line but whose mode
+// (or owner) is wrong is fixed by --replace: rewritten on a new inode with
+// the planned mode and owner, so setup converges and the file is no longer
+// writable by pbp (code review I16).
+func TestApplyReplaceFixesAuthorizedKeysModeWithRightContent(t *testing.T) {
+	f, env := newApplyFake(t, "/bin/bash")
+	a := applyArgs()
+	layoutComplete(t, env.Root)
+	f.complete("pve1")
+	mustMkdir(t, env.path(SSHDir), 0o700)
+	var want Item
+	for _, it := range buildPlan(t, env, a).Items {
+		if it.Path == AuthorizedKeys && it.Kind == KindFile {
+			want = it
+		}
+	}
+	if want.Content == nil {
+		t.Fatal("no authorized_keys item in the plan")
+	}
+	mustWrite(t, env.path(AuthorizedKeys), string(want.Content), 0o666)
+	if err := os.Chmod(env.path(AuthorizedKeys), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range buildPlan(t, env, a).Items {
+		if it.Path == AuthorizedKeys && it.Kind == KindFile && it.Status != Differs {
+			t.Fatalf("plan before: %v, want Differs", it.Status)
+		}
+	}
+	f.events = nil
+	if _, err := apply(t, env, a, ApplyOpts{Replace: true}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	fi, err := os.Stat(env.path(AuthorizedKeys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != want.Mode.Perm() {
+		t.Errorf("mode %v, want %v", fi.Mode().Perm(), want.Mode.Perm())
+	}
+	if got := readFile(t, env.path(AuthorizedKeys)); got != string(want.Content) {
+		t.Errorf("content changed: %q", got)
+	}
+	// The rewrite sets the owner on the new file before renaming it in.
+	if !slices.ContainsFunc(f.events, func(e string) bool { return strings.HasPrefix(e, "chown ") && strings.Contains(e, "/.ssh/.pbp.tmp-") }) {
+		t.Errorf("owner not set: %q", f.events)
+	}
+	if p := buildPlan(t, env, a); !p.Complete() {
+		t.Fatalf("plan after Apply is not complete:\n%s", dump(p))
+	}
+}

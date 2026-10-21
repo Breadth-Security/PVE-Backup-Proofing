@@ -159,6 +159,9 @@ type runFixture struct {
 	notif  *fakeNotifier
 	clock  *fakeClock
 	logBuf *bytes.Buffer
+	// allowed are the volids a run may write: those it proofed (any
+	// verdict but SKIPPED) and those of in-flight records a test seeded.
+	allowed map[string]bool
 }
 
 // newRunFixture: VMID range [lo, hi], storages pbs and pbs-sync, restore
@@ -208,7 +211,34 @@ func newRunFixture(t *testing.T, lo, hi int) *runFixture {
 		Now:      clock.Now,
 		Notifier: f.notif,
 	}
+	t.Cleanup(func() { assertWritesOnly(t, f.api.CallLog(), f.allowed) })
 	return f
+}
+
+// allow lets the run write volid's attributes: a backup it proofed, or one
+// whose in-flight record the test seeded for the janitor.
+func (f *runFixture) allow(volid string) {
+	if f.allowed == nil {
+		f.allowed = map[string]bool{}
+	}
+	f.allowed[volid] = true
+}
+
+// assertWritesOnly checks that every SetVolumeAttrs names an allowed volid:
+// the backups PBP proofed (or whose in-flight record it finished), never
+// any other backup (code review I19). Calls are logged as
+// "SetVolumeAttrs node storage volid guest=…".
+func assertWritesOnly(t *testing.T, calls []string, allowed map[string]bool) {
+	t.Helper()
+	for _, c := range calls {
+		f := strings.Fields(c)
+		if len(f) < 4 || f[0] != "SetVolumeAttrs" {
+			continue
+		}
+		if !allowed[f[3]] {
+			t.Errorf("wrote the attributes of %s, which this run did not proof: %q", f[3], c)
+		}
+	}
 }
 
 // add seeds a backup of kind/vmid on storage with a 1 GiB size and an
@@ -230,7 +260,13 @@ func (f *runFixture) add(storage string, kind model.GuestKind, vmid, memMiB int,
 }
 
 func (f *runFixture) run(ctx context.Context, opt Options) model.RunSummary {
-	return Run(ctx, f.d, opt)
+	s := Run(ctx, f.d, opt)
+	for _, r := range s.Results {
+		if r.Verdict != model.Skipped {
+			f.allow(r.Backup.VolID)
+		}
+	}
+	return s
 }
 
 // byVMID indexes results by original VMID.
@@ -1006,7 +1042,8 @@ func (h panicOnSkip) WithGroup(n string) slog.Handler { return panicOnSkip{h.Han
 
 func TestRunDispatcherPanicWaitsForJobs(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
-	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	b := f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.allow(b.VolID) // proofed, but the panic leaves it out of the summary
 	f.add("pbs", model.KindQEMU, 102, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok")
 	f.d.Log = slog.New(panicOnSkip{slog.NewTextHandler(f.logBuf, nil)})
 	entered, release := make(chan struct{}), make(chan struct{})

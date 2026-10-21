@@ -35,6 +35,8 @@ That login is locked to one command. The key in `/var/lib/pbp/.ssh/authorized_ke
 
 **What a stolen PBP key gets:** those four things, within the range. It does not get a shell, any other command, a guest outside the range or untagged, forwarding, or root. The range, tag and bridge are read from `/etc/pbp/node.yaml` on the node, which the key cannot change. The key file, its `.ssh` directory and the `pbp` account's home `/var/lib/pbp` all belong to root, so a process running as `pbp` cannot rewrite its own forced command or swap the key file. `pbp node setup` also checks that sshd reads `pbp`'s keys from nowhere else (no `authorized_keys2`, no other `AuthorizedKeysFile`, no `AuthorizedKeysCommand`, no SSH user CA) and that the sudo rule is exactly the one above.
 
+**What it does reach is production data.** `pct exec` runs as root inside the container, and every `pbp`-tagged container in the range is a running copy of a production container while PBP proofs it. A stolen key can therefore read anything in that copy (database files, TLS and SSH private keys, application secrets) during the proof window and carry it out over the same SSH session, and from inside it reach the other proof guests on the isolated bridge. Protect the PBP SSH key like a root credential for your production containers, not like a low-value service login.
+
 The node still trusts PBP's API token (below), so protect the PBP host and its secrets as you would any admin credential.
 
 ## The API token

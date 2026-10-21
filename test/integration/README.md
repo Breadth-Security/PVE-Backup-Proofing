@@ -26,7 +26,18 @@ The node runs production guests. The tests only create, start and destroy
 guests inside `target.vmid_range`, only on the isolated bridge, and only
 change `notes` and `protected` on the backups they proof (restoring
 `protected`). The one exception is `TestBrokenBackupFails`, which creates its
-own backup and deletes exactly that backup again.
+own backup and deletes exactly that backup again. Each proof and crash test
+checks this: it records every guest outside the range (status, name, tags
+and config, without `lock`) and the `protected` flag and notes of every
+backup on the source storages, and fails if any of them changed other than
+the proofed backup; a guest outside the range that is gone fails too.
+Guests that appear, and backups that appear or go away during the test (a
+scheduled backup or prune), are not compared. A production guest that an
+admin stops, starts or reboots during the test also fails it: rerun.
+
+There is no Windows case: the suite has no Windows guest to proof. The
+PowerShell check is unit-tested against a real capture
+(internal/probe/testdata), and Windows proofing is otherwise tested by hand.
 
 ## Environment
 
@@ -96,11 +107,14 @@ The values above are from the author's test node: 110 `dnstest` (unprivileged CT
   systemd-logind fails in an unprivileged Debian 12 container). PBP must
   clear protection on its restored copy so it can be destroyed; expects
   `PROVEN` and an empty range.
-- **TestCrashRecovery**: builds `pbp`, starts `pbp run --guest PBP_IT_LXC`
-  (with `notify.when: problems`, only the storage holding that backup), kills
-  it with SIGKILL once its job reaches stage `started`, checks the guest and
-  the protected flag were left behind, then runs preflight on the same state
-  directory: the janitor must destroy the guest and restore `protected`.
+- **TestCrashRecovery** (subtests `restored` and `started`): builds `pbp`,
+  starts `pbp run --guest PBP_IT_LXC` (with `notify.when: problems`, only the
+  storage holding that backup), kills it with SIGKILL once its job reaches
+  the stage (for `restored`, once PVE has created the guest, so PVE's restore
+  task is still running), checks the guest and the protected flag were left
+  behind, then runs preflight on the same state directory, retrying every
+  15 s for up to 10 minutes while the restore task still holds the guest: the
+  janitor must destroy the guest and restore `protected`.
 
 The throwaway tests (`TestBrokenBackupFails`, `TestProofAlpine*`,
 `TestProofProtectedGuest`) build their source container inside the range,

@@ -1,0 +1,6 @@
+Bonjour Service	1066	4294967295	7024	The Bonjour Service service terminated with the following service-specific error: %%4294967295	False
+DoSvc	0	0			True
+edgeupdate	0	0			True
+MapsBroker	0	0			True
+sppsvc	0	0			True
+WslInstaller	0	0			False
