@@ -1136,9 +1136,9 @@ func TestRestoreTaskFailureLogged(t *testing.T) {
 		t.Errorf("notes = %q", n)
 	}
 	runLog := readLog(t, dir, "run.log")
-	// "unable to restore" names no node fault, so ClassifyRestoreError calls
-	// the backup bad: FAILED.
-	if !strings.Contains(runLog, "VM101 FAILED · restore failed: unable to restore") || strings.Contains(runLog, "UPID") {
+	// "unable to restore" names no backup damage, so it is ERROR, not FAILED
+	// (code review I6).
+	if !strings.Contains(runLog, "VM101 ERROR · restore failed: unable to restore") || strings.Contains(runLog, "UPID") {
 		t.Errorf("run.log:\n%s", runLog)
 	}
 	wantInOrder(t, "VM101.log", readLog(t, dir, "VM101.log"),
