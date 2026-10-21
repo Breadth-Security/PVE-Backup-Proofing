@@ -50,6 +50,7 @@ func (f *janitorFixture) ownBackup() model.Backup {
 	b := model.Backup{Storage: "pbs", VolID: ownVol, Key: model.GuestKey{Kind: model.KindQEMU, VMID: 101}}
 	f.api.Backups["pbs"] = append(f.api.Backups["pbs"], b)
 	f.api.BackupConfigs[ownVol] = "name: db01\nprotection: 1\n"
+	f.allow(ownVol)
 	return b
 }
 
