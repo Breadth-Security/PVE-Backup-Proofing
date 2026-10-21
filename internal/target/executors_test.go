@@ -74,3 +74,23 @@ func TestVMExecOtherStatusErrorFails(t *testing.T) {
 		t.Fatalf("err = %v after %d polls, want the error after 1", err, api.calls)
 	}
 }
+
+// A missing binary in a VM is an agent error, not an exit status. As seen
+// on pve1 (PVE 9.2, qemu-ga on Debian), it maps to exit 127 like `pct exec`
+// gives for a container, so the probe's fallbacks for a missing command work
+// in VMs too (code review I13). Other exec errors stay errors.
+func TestVMExecMissingBinaryIsExit127(t *testing.T) {
+	fake := healthyFake()
+	fake.Fail["AgentExec"] = &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu/990000/agent/exec",
+		Message: "Agent error: Guest agent command failed, error was 'Failed to execute child process “systemctl” (No such file or directory)'"}
+	n := newTarget(t, fake, fake, nil)
+	res, err := n.Executor(model.KindQEMU, 990000).Exec(context.Background(), []string{"systemctl", "is-system-running"})
+	if err != nil || res.ExitCode != 127 {
+		t.Fatalf("got %+v, %v; want exit 127", res, err)
+	}
+
+	fake.Fail["AgentExec"] = &pve.APIError{Status: 500, Message: "Agent error: Guest agent command failed, error was 'Failed to execute child process “x” (Permission denied)'"}
+	if _, err := n.Executor(model.KindQEMU, 990000).Exec(context.Background(), []string{"x"}); err == nil {
+		t.Error("a permission error must stay an error")
+	}
+}
