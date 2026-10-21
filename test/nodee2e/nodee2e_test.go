@@ -623,6 +623,13 @@ func TestAttackerSameKey(t *testing.T) {
 		{"forced pty no command", []string{"-tt", "127.0.0.1"}, sshExit, "PTY allocation request failed"},
 		{"forced pty id", []string{"-tt", "127.0.0.1", "id"}, sshExit, "PTY allocation request failed"},
 		{"stdio forward", []string{"-W", "127.0.0.1:22", "127.0.0.1"}, sshExit, "prohibited"},
+		// Remote forwarding, agent forwarding and SetEnv (code review
+		// 7.12): restrict denies the first two, and sshd sets
+		// SSH_ORIGINAL_COMMAND itself, so a client value cannot steer the
+		// helper.
+		{"remote forward", []string{"-o", "ExitOnForwardFailure=yes", "-R", "127.0.0.1:0:127.0.0.1:22", "127.0.0.1", "id"}, sshExit, "forwarding failed"},
+		{"agent forward", []string{"-A", "127.0.0.1", "id"}, refusedExit, "refused"},
+		{"setenv original command", []string{"-o", "SetEnv=SSH_ORIGINAL_COMMAND=version", "127.0.0.1", "id"}, refusedExit, "refused"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

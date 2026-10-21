@@ -63,10 +63,13 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Building version $v"
-      - name: Test version mapping
+      - name: Test version mapping and package scripts
+        # postinst_test.sh too, so a tag build never ships package scripts
+        # the go-toolchain workflow did not check (code review 7.10).
         run: |
           packaging/debversion_test.sh
           packaging/versionfile_test.sh
+          packaging/postinst_test.sh
       - name: Check the tag against the VERSION file
         if: github.event_name == 'push' && github.ref_type == 'tag'
         # v0.2.0 and v0.2.0-rc1 both need VERSION 0.2.0: the Docker image is

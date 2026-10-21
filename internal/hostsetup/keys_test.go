@@ -78,3 +78,19 @@ func TestEnsureKeyMismatchedPub(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// The deb layout's private key: 0640 root:pbp, like its token, so the
+// daemon (group pbp) reads it and nobody else does (code review 7.11).
+func TestEnsureKeyDebMode(t *testing.T) {
+	_, owners := fakeOwners(t)
+	l := Layout{Deb: true}
+	if _, _, err := EnsureKey(l); err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(t, l.KeyPath()); m != 0o640 {
+		t.Errorf("deb key mode %o, want 640", m)
+	}
+	if o := owners()[l.KeyPath()]; o != (owned{0, 4242}) {
+		t.Errorf("deb key owner %v, want root:pbp", o)
+	}
+}

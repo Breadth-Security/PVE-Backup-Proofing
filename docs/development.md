@@ -20,6 +20,8 @@ The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build
 - **Node end-to-end test** (`test/nodee2e`): sets up a throwaway Debian container as a fake Proxmox node with the real `.deb`, `pbp setup` and `pbp node setup`, then attacks it over real SSH with PBP's key. It needs a Docker host with Go: `test/nodee2e/run.sh [ssh-host]` copies the checkout there and runs it. Never point it at a Proxmox node.
 - **Integration suite** (`test/integration`): proofs real backups on a real PVE node. See [`test/integration/README.md`](../test/integration/README.md) for what it needs and what it touches.
 
+CI compiles and vets both suites but runs neither: one needs Docker, the other a real node. They are the only tests of the forced command, the sudo rule and real PVE behaviour, so run the node end-to-end test before merging anything that touches `internal/node`, `internal/nodesetup`, `packaging/` or the SSH options, and the integration suite before a release.
+
 ## Code scanning
 
 Workflows in [`.gitea/workflows/`](../.gitea/workflows/) check every pull request and every push to `main`, and each **blocks** the pull request when it fails:

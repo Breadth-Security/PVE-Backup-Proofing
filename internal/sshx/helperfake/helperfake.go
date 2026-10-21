@@ -17,7 +17,7 @@ import (
 // Fake is a mutex-safe sshx.Runner that speaks the helper protocol.
 type Fake struct {
 	// Handler answers one decoded request; stdin is the request's payload.
-	// Nil answers every request with a zero Result (exit 0, no output).
+	// Nil fails every request (exit 127); use OK for one that succeeds.
 	Handler func(req nodeproto.Request, stdin []byte) (sshx.Result, error)
 
 	mu   sync.Mutex
@@ -45,10 +45,15 @@ func (f *Fake) Run(ctx context.Context, cmd string, stdin []byte) (sshx.Result, 
 	f.reqs = append(f.reqs, req)
 	f.mu.Unlock()
 	if f.Handler == nil {
-		return sshx.Result{}, nil
+		// Fail by default, as bridgetest does: a test that forgets its
+		// Handler must not see every request succeed (code review 7.13).
+		return sshx.Result{ExitCode: 127, Stderr: "helperfake: no Handler for " + req.Op + "\n"}, nil
 	}
 	return f.Handler(req, stdin)
 }
+
+// OK is a Handler under which every request succeeds with no output.
+func OK(nodeproto.Request, []byte) (sshx.Result, error) { return sshx.Result{}, nil }
 
 // Requests returns the decoded requests received so far, in order.
 func (f *Fake) Requests() []nodeproto.Request {

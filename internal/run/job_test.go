@@ -209,6 +209,10 @@ func newFixture(t *testing.T) *fixture {
 		Log: slog.New(slog.NewTextHandler(&logBuf, nil)),
 		Now: func() time.Time { return now },
 	}
+	// A job writes the attributes of its own backup only (code review I19,
+	// carried to this fixture by the #49 review). f.b is read at cleanup, so
+	// a test that changes it is covered too.
+	t.Cleanup(func() { assertWritesOnly(t, f.api.CallLog(), map[string]bool{f.b.VolID: true}) })
 	return f
 }
 

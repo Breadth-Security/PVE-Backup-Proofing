@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -482,15 +483,26 @@ func TestRunNeverSharesVMID(t *testing.T) {
 	for v := 101; v <= 116; v++ {
 		f.add("pbs", model.KindQEMU, v, 512, "")
 	}
-	f.tgt.onRestore = func(int) { time.Sleep(2 * time.Millisecond) }
+	// The first restores wait for a second to start, so jobs really
+	// overlap: a broken reservation cannot pass by running them one at a
+	// time (code review 7.9).
+	var restoring atomic.Int32
+	f.tgt.onRestore = func(int) {
+		restoring.Add(1)
+		defer restoring.Add(-1)
+		for deadline := time.Now().Add(2 * time.Second); restoring.Load() < 2 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
 	if len(f.tgt.dupes) != 0 {
 		t.Errorf("VMIDs given to two jobs at once: %v", f.tgt.dupes)
 	}
-	if f.tgt.maxHeld > 4 {
-		t.Errorf("max concurrent guests = %d", f.tgt.maxHeld)
+	if f.tgt.maxHeld > 4 || f.tgt.maxHeld < 2 {
+		t.Errorf("max concurrent guests = %d, want 2 to 4 (jobs must overlap)", f.tgt.maxHeld)
 	}
 	for _, r := range s.Results {
 		if r.Verdict != model.Proven {
