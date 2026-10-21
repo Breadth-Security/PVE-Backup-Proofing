@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -325,6 +326,20 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 		return code
 	}
 	defer release()
+	// A guest excluded by a guests rule is refused before any run starts.
+	// One excluded only by tag is known after the run reads the tags.
+	ex := cfg.Selection.Exclude
+	if guest != 0 {
+		vm, ct := ex.ExcludedBy(string(model.KindQEMU), guest, nil), ex.ExcludedBy(string(model.KindLXC), guest, nil)
+		if vm != "" && ct != "" {
+			rule := vm
+			if ct != vm {
+				rule += "; " + ct
+			}
+			fprintf(a.stdout, "guest %d is excluded by config (%s); not proofed\n", guest, rule)
+			return exitFail
+		}
+	}
 	s := a.runOnce(ctx, cfg, run.Options{Trigger: "manual", OnlyVMID: guest})
 	c := s.Counts()
 	fprintf(a.stdout, "run %s: %s; proven %d, failed %d, booted %d, skipped %d, error %d\n",
@@ -334,6 +349,12 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 	}
 	if guest != 0 && s.RunError == "" && len(s.Results) == 0 {
 		fprintf(a.stdout, "no backup found for guest %d\n", guest)
+		return exitFail
+	}
+	if guest != 0 && len(s.Results) > 0 && !slices.ContainsFunc(s.Results, func(r model.GuestResult) bool { return !r.Excluded }) {
+		for _, r := range s.Results {
+			fprintf(a.stdout, "guest %d is %s; not proofed\n", guest, r.Reason)
+		}
 		return exitFail
 	}
 	if s.Severity() == "error" {

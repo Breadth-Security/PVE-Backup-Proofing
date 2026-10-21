@@ -59,7 +59,9 @@ func TestWriteConfigLoads(t *testing.T) {
 			t.Errorf("written config lacks %q:\n%s", want, text)
 		}
 	}
-	for _, bad := range []string{"profiles:", "guests:", "myapp", "ca_file:"} {
+	// The sample checks.guests entries are gone ("match:"); the empty
+	// selection.exclude.guests list stays.
+	for _, bad := range []string{"profiles:", "match:", "myapp", "ca_file:"} {
 		if strings.Contains(text, bad) && !strings.Contains(text, "# "+bad) {
 			t.Errorf("written config has %q:\n%s", bad, text)
 		}

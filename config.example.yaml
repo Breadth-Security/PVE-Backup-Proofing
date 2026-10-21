@@ -29,7 +29,10 @@ target:
 sources:
   storages: [pbs-main]         # PBS-type storages visible on the node
 
-selection: {}                  # reserved for future scoping; today: the newest backup of every guest
+selection:                     # by default the newest backup of every guest is proofed
+  exclude:                     # guests never proofed; see docs/operating.md
+    guests: []                 # VMIDs (104), VM104 / CT104 for one kind, or ranges (900-999)
+    tags: []                   # guests whose live or backed-up config has any of these tags
 
 restore:
   storage: local-zfs

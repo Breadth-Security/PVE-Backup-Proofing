@@ -188,7 +188,12 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 		return nil, errs
 	}
 	logDiscovery(d, queue, log)
-	p := &pool{d: d, log: log, inUse: map[int]bool{}}
+	live, err := liveTags(ctx, d)
+	if err != nil {
+		log.Error("read guest tags for selection.exclude.tags", "err", err)
+		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error())
+	}
+	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live}
 	results := p.run(ctx, queue, start)
 	return results, append(errs, p.errs...)
 }
@@ -277,6 +282,9 @@ type pool struct {
 	spaceRes int64 // bytes on the restore storage
 	ramRes   int64 // bytes of node memory
 	errs     []string
+	// liveTags are the live guests' tags, read only when exclusion by
+	// tag is configured.
+	liveTags map[model.GuestKey][]string
 }
 
 // lease is what an admitted job holds until it ends, and the backup's
@@ -298,6 +306,10 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 
 	for i, b := range queue {
 		glog := guestLogger(d, b.Key)
+		if rule := d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, p.liveTags[b.Key]); rule != "" {
+			results[i] = p.exclude(glog, b, rule)
+			continue
+		}
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
 			results[i] = p.skip(glog, b, reasonAlreadyProven)
 			results[i].AlreadyProven = true
@@ -365,6 +377,34 @@ func (p *pool) logResult(r model.GuestResult) {
 	p.log.Info(r.Backup.Key.Label() + " " + string(r.Verdict) + " · " + r.Reason)
 }
 
+// exclude is the result for a guest excluded by config (issue #32): a skip
+// that nothing in the guest's backup records and that does not raise the
+// run's severity.
+func (p *pool) exclude(glog *slog.Logger, b model.Backup, rule string) model.GuestResult {
+	r := p.skip(glog, b, "excluded by config ("+rule+")")
+	r.Excluded = true
+	p.logResult(r)
+	return r
+}
+
+// liveTags reads the tags of every guest when selection.exclude.tags is
+// set, so a tag added in the Proxmox UI excludes the guest at the next
+// run; otherwise it reads nothing.
+func liveTags(ctx context.Context, d Deps) (map[model.GuestKey][]string, error) {
+	if len(d.Cfg.Selection.Exclude.Tags) == 0 {
+		return nil, nil
+	}
+	guests, err := d.API.Guests(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tags := make(map[model.GuestKey][]string, len(guests))
+	for _, g := range guests {
+		tags[g.Key] = g.Tags
+	}
+	return tags, nil
+}
+
 func (p *pool) addErr(msg string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -419,6 +459,13 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		return l, res
 	}
 	orig := sanitize.ParseConfigText(raw)
+	// Exclusion by a tag in the backed-up config: the guest may be gone or
+	// retagged since (the live tags were checked before admission).
+	if rule := d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, sanitize.SplitList(orig["tags"])); rule != "" {
+		l, res := fail(model.Skipped, "excluded by config ("+rule+")")
+		res.Excluded = true
+		return l, res
+	}
 	// A template cannot be started, so it cannot be proven. The backed-up
 	// config decides, not the live guest, which may be gone or converted.
 	if orig["template"] == "1" {
