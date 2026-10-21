@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Docs: [Proofing on your disaster-recovery standby](docs/dedicated-node.md#proofing-on-your-disaster-recovery-standby) recommends proofing on the hardware your disaster recovery plan would restore to, and covers cold spares that are woken for the run, standbys at another site, and the capacity proofing borrows ([#40](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/40)).
 - `WslInstaller` is on the default Windows ignore list: on Windows 11 it checks or installs WSL at boot, then exits, so "automatic but stopped" is its normal state (it made VM115 `FAILED` in testing). A `checks.windows_ignore_services` in your config replaces the defaults, so add it there too if you set your own list.
 - **A slow guest agent no longer ends a proof** ([#41](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/41)). When the QEMU guest agent was slow to answer a status poll (`qga command 'guest-exec-status' failed - got timeout`, seen on a Windows VM shortly after boot), the proof ended `ERROR · probe transport error`. PBP now polls again, within the command's own time limit (`checks.command_timeout`); other agent errors still end the command at once.
 - The guest log no longer shows a spurious `verdict now` line, or a verdict line split over several lines, when the reason contains line breaks ([#42](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/42)).
