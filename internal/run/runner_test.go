@@ -1396,3 +1396,39 @@ func TestRunStopsAdmittingWhenStopping(t *testing.T) {
 		t.Errorf("notes = %q", n)
 	}
 }
+
+// stopOnExec closes stop on the first command run in its guest, i.e. while
+// that guest's proof is in flight, then behaves like ex.
+type stopOnExec struct {
+	ex   probe.Executor
+	once *sync.Once
+	stop chan struct{}
+}
+
+func (s stopOnExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	s.once.Do(func() { close(s.stop) })
+	return s.ex.Exec(ctx, argv)
+}
+
+// A stop requested while a proof is in flight lets that proof finish
+// (PROVEN, notes written) and starts no further one (code review I3).
+func TestRunStopMidProofFinishesInFlight(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs", model.KindQEMU, 102, 1024, "")
+	stop := make(chan struct{})
+	f.tgt.Exec[990000] = stopOnExec{ex: healthy(), once: &sync.Once{}, stop: stop}
+
+	s := f.run(context.Background(), Options{Trigger: "schedule", Stop: stop})
+
+	got := byVMID(t, s)
+	if r := got[101]; r.Verdict != model.Proven {
+		t.Errorf("in-flight guest 101: got %s %q, want PROVEN", r.Verdict, r.Reason)
+	}
+	if r := got[102]; r.Verdict != model.Skipped || r.Reason != "PBP stopping" {
+		t.Errorf("guest 102: got %s %q, want SKIPPED \"PBP stopping\"", r.Verdict, r.Reason)
+	}
+	if rs := f.tgt.restores(); len(rs) != 1 {
+		t.Errorf("restores = %q, want only guest 101", rs)
+	}
+}

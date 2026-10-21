@@ -216,12 +216,17 @@ func TestStopSignals(t *testing.T) {
 		"node":            false,
 		"":                true,
 	} {
-		got := stopSignals(strings.Fields(args))
+		got := stopSignals(strings.Fields(args), false)
 		if !slices.Contains(got, os.Signal(syscall.SIGTERM)) || !slices.Contains(got, os.Signal(syscall.SIGINT)) {
 			t.Errorf("%q: %v lacks SIGTERM or SIGINT", args, got)
 		}
 		if hup := slices.Contains(got, os.Signal(syscall.SIGHUP)); hup != wantHUP {
 			t.Errorf("%q: SIGHUP included = %v, want %v", args, hup, wantHUP)
 		}
+	}
+	// Under nohup SIGHUP is ignored; registering it would undo that and
+	// cancel a detached run at logout.
+	if got := stopSignals([]string{"run"}, true); slices.Contains(got, os.Signal(syscall.SIGHUP)) {
+		t.Errorf("nohup: SIGHUP registered: %v", got)
 	}
 }

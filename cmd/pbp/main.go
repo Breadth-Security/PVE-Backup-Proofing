@@ -97,7 +97,7 @@ func main() {
 		// on its next write to stdout before it has torn down.
 		signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), stopSignals(os.Args[1:])...)
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals(os.Args[1:], signal.Ignored(syscall.SIGHUP))...)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
@@ -106,11 +106,12 @@ func main() {
 // stopSignals are the signals that end a command gracefully (its context is
 // cancelled, so a run tears its guests down). SIGHUP counts too, so a
 // manual `pbp run` whose SSH session drops still cleans up (code review
-// I5); only the node helper, which outlives a hangup on purpose, leaves it
-// to catchNodeSignals.
-func stopSignals(args []string) []os.Signal {
+// I5). Not for the node helper, which outlives a hangup on purpose (see
+// catchNodeSignals), and not when SIGHUP is already ignored (nohup):
+// registering it would undo that, and logging out would cancel the run.
+func stopSignals(args []string, hupIgnored bool) []os.Signal {
 	sigs := []os.Signal{syscall.SIGTERM, syscall.SIGINT}
-	if len(args) == 0 || args[0] != "node" {
+	if !hupIgnored && (len(args) == 0 || args[0] != "node") {
 		sigs = append(sigs, syscall.SIGHUP)
 	}
 	return sigs
@@ -381,11 +382,19 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 	return exitOK
 }
 
+// recoverTimeout bounds startup recovery: it runs before scheduling starts,
+// so a hung task on the node must not hold the daemon up (what it leaves is
+// the first run's janitor's).
+const recoverTimeout = 15 * time.Minute
+
 // recoverAtStart, holding the run lock, marks a run that PBP's death
-// interrupted and cleans up jobs it left in flight (run.Recover). It
-// connects to the node only when there is something to recover; a busy lock
-// (a manual run) skips it, as that run's own start does the same.
+// interrupted and cleans up jobs it left in flight (run.Recover), within
+// recoverTimeout. It connects to the node only when there is something to
+// recover; a busy lock (a manual run) skips it, as that run's own start
+// does the same.
 func (a *app) recoverAtStart(ctx context.Context, cfg config.Config) {
+	ctx, cancel := context.WithTimeout(ctx, recoverTimeout)
+	defer cancel()
 	release, err := daemon.AcquireLock(daemon.LockPath())
 	if err != nil {
 		slog.Warn("startup recovery skipped", "err", err)
