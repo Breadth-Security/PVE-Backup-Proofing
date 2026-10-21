@@ -455,3 +455,20 @@ func TestStreamKillsProcessGroup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A background child that keeps the output pipe open does not hold the
+// command past waitDelay once the command itself exited (code review 2.3).
+func TestStreamBackgroundChildHoldingStdout(t *testing.T) {
+	old := waitDelay
+	waitDelay = 100 * time.Millisecond
+	defer func() { waitDelay = old }()
+	var out strings.Builder
+	start := time.Now()
+	exit, err := stream(context.Background(), "/bin/sh", []string{"-c", "sleep 3 & echo started"}, nil, &out, io.Discard)
+	if err != nil || exit != 0 || out.String() != "started\n" {
+		t.Errorf("exit %d err %v out %q", exit, err, out.String())
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("held for %v", el)
+	}
+}

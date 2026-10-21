@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
@@ -50,7 +51,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 			}
 		}
 		for _, n := range r.NotCovered {
-			notCovered = append(notCovered, label+": "+n.LogLine())
+			notCovered = append(notCovered, clipLine(label+": "+n.LogLine()))
 		}
 	}
 	skipped := []string{}
@@ -84,7 +85,24 @@ func guestLine(r model.GuestResult, loc *time.Location) string {
 	if r.Name != "" {
 		who += " " + r.Name
 	}
-	return fmt.Sprintf("%s · backup %s · %s", who, r.Backup.Time.In(loc).Format("Jan 2 15:04"), r.Reason)
+	return clipLine(fmt.Sprintf("%s · backup %s · %s", who, r.Backup.Time.In(loc).Format("Jan 2 15:04"), r.Reason))
+}
+
+// maxLine bounds one line of the notification; the full text is in the
+// guest's log file (code review I14).
+const maxLine = 600
+
+// clipLine cuts s to at most maxLine bytes on a rune boundary, marking the
+// cut.
+func clipLine(s string) string {
+	if len(s) <= maxLine {
+		return s
+	}
+	n := maxLine - len("…")
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // subjectSummary is the notification subject's text: the non-zero problem

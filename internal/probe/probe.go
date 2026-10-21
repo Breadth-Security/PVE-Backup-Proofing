@@ -69,9 +69,9 @@ func Run(ctx context.Context, ex Executor, in Input) Outcome {
 		case g.transportErr() != nil && out.Verdict == model.Failed:
 			out.Verdict, out.Reason = model.Error, transportReason(g.transportErr())
 		}
-		return out
+		return bound(out)
 	case Windows:
-		return runWindows(ctx, g, in)
+		return bound(runWindows(ctx, g, in))
 	default:
 		return Outcome{Verdict: model.Booted, Reason: "unknown guest OS"}
 	}

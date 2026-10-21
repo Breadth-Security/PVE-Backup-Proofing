@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
@@ -229,11 +230,56 @@ func execGuest(ctx context.Context, cfg Config, sys System, req nodeproto.Reques
 	if !slices.Contains(sanitize.SplitList(conf["tags"]), ownerTag) {
 		return 0, refused("untagged", "container %d does not carry the %s tag", req.VMID, ownerTag)
 	}
-	exit, err := sys.PctExec(ctx, req.VMID, req.Argv, stdin, stdout, stderr)
+	ectx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out := &capWriter{w: stdout, room: maxExecOutput, full: cancel}
+	errOut := &capWriter{w: stderr, room: maxExecOutput, full: cancel}
+	exit, err := sys.PctExec(ectx, req.VMID, req.Argv, stdin, out, errOut)
+	if out.over.Load() || errOut.over.Load() {
+		return 0, internalErr("guest output exceeds %d MiB on stdout or stderr; command killed", maxExecOutput>>20)
+	}
 	if err != nil {
 		return 0, internalErr("pct exec %d: %v", req.VMID, err)
 	}
 	return exit, nil
+}
+
+// maxExecOutput bounds what the helper passes on from a guest command, per
+// stream: a hostile or broken guest must not flood the daemon (code review
+// I14). Probe commands print a few KiB.
+const maxExecOutput = 8 << 20
+
+// capWriter passes writes on until room runs out; then it calls full (which
+// kills the command) and drops the rest. Writing to the wrapped writer
+// through a non-*os.File also gives the command pipes, so waitDelay applies.
+type capWriter struct {
+	w    io.Writer
+	room int
+	full func()
+	over atomic.Bool
+}
+
+func (c *capWriter) Write(p []byte) (int, error) {
+	if c.over.Load() {
+		return len(p), nil
+	}
+	if len(p) > c.room {
+		if c.room > 0 {
+			_, _ = c.w.Write(p[:c.room])
+		}
+		c.room = 0
+		c.over.Store(true)
+		c.full()
+		return len(p), nil
+	}
+	n, err := c.w.Write(p)
+	c.room -= n
+	if err != nil {
+		// The client went away: stop the command rather than leave it
+		// blocked on a full pipe until the deadline.
+		c.full()
+	}
+	return n, err
 }
 
 // notify validates the {severity, data, fields} payload, forces

@@ -3,14 +3,27 @@ package target
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
+
+// A command the node never answered (no session) reaches the probe as
+// probe.ErrNoAnswer, so it is a transport fault even when the command's own
+// timeout ended it (review of #48, I1).
+func TestExecErrNoSessionIsNoAnswer(t *testing.T) {
+	err := execErr(990000, fmt.Errorf("%w: %w", sshx.ErrNoSession, context.DeadlineExceeded))
+	if !errors.Is(err, probe.ErrNoAnswer) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+}
 
 // flakyStatus fails AgentExecStatus with err for its first fails calls (all
 // of them when fails < 0), then answers like the fake.

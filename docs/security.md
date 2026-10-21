@@ -28,7 +28,7 @@ PBP uses the Proxmox API with a token for almost everything. A few things have n
 
 That login is locked to one command. The key in `/var/lib/pbp/.ssh/authorized_keys` is marked `restrict,command="sudo /usr/bin/pbp node"`, so whatever the client asks for, sshd runs only the `pbp node` helper (no shell, no forwarding, no pty), and one sudo rule lets `pbp` run exactly that command as root. The helper does these four things, and only for guests it is allowed to touch:
 
-- it runs `pct exec` only in a container whose VMID is inside its `vmid_range` and which carries the `pbp` tag, and passes the command as an argument list, never through a shell,
+- it runs `pct exec` only in a container whose VMID is inside its `vmid_range` and which carries the `pbp` tag, and passes the command as an argument list, never through a shell; it passes on at most 8 MiB of the command's output per stream and kills a command that prints more, so a hostile proof container cannot flood PBP (which caps what it reads, too),
 - it reports the one configured bridge's state, read-only,
 - it sends notifications of type `pbp` through `PVE::Notify`, and
 - it prints its own configuration and version.

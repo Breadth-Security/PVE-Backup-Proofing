@@ -470,3 +470,43 @@ func TestBodyEnvironmentErrorsSection(t *testing.T) {
 		t.Errorf("body lacks the guarded Environment errors section:\n%s", body)
 	}
 }
+
+// A run with very many problems, or a guest with a huge reason, still
+// notifies: each line is clipped, and the lists are shortened until the
+// payload fits the helper's 1 MiB limit (code review I14).
+func TestSendFitsHelperLimit(t *testing.T) {
+	var gotIn []byte
+	n, _ := notifier("pve1", func(_ nodeproto.Request, stdin []byte) (sshx.Result, error) {
+		gotIn = stdin
+		return sshx.Result{}, nil
+	})
+	s := failedSummary()
+	s.Results = nil
+	for i := range 3000 {
+		s.Results = append(s.Results, model.GuestResult{
+			Backup:  model.Backup{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 1000 + i}},
+			Verdict: model.Failed,
+			Reason:  "failed: " + strings.Repeat("x", 2000),
+		})
+	}
+	if err := n.Send(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotIn) > 1<<20 {
+		t.Fatalf("payload %d bytes, over the helper's 1 MiB", len(gotIn))
+	}
+	var in struct{ Data map[string]any }
+	if err := json.Unmarshal(gotIn, &in); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := in.Data["failed"].([]any)
+	if len(failed) < 2 || len(failed) > 101 {
+		t.Fatalf("failed list has %d lines", len(failed))
+	}
+	if first := failed[0].(string); len(first) > 600 || !strings.HasSuffix(first, "…") {
+		t.Errorf("line not clipped: %d bytes", len(first))
+	}
+	if last := failed[len(failed)-1].(string); !strings.HasPrefix(last, "… and ") || !strings.HasSuffix(last, " more; see the run log") {
+		t.Errorf("last line %q", last)
+	}
+}

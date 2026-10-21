@@ -62,6 +62,9 @@ func execErr(vmid int, err error) error {
 			return fmt.Errorf("exec in container %d: %w: %w", vmid, ErrNotOwned, err)
 		}
 	}
+	if errors.Is(err, sshx.ErrNoSession) {
+		return fmt.Errorf("exec in container %d: %w: %w", vmid, probe.ErrNoAnswer, err)
+	}
 	return fmt.Errorf("exec in container %d: %w", vmid, err)
 }
 

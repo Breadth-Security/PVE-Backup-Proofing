@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
@@ -894,5 +895,64 @@ func TestOpenRCRootAndGuestChecks(t *testing.T) {
 	}
 	if len(o.Checks) != 3 {
 		t.Errorf("checks = %+v, want sshd, nginx and the command", o.Checks)
+	}
+}
+
+// What a guest prints cannot grow an Outcome without bound: a reason names
+// at most 10 units (all stay in FailedUnits), a check's detail and the
+// reason are clipped, and the boot log keeps its newest 256 KiB (code
+// review I14).
+func TestOutcomeBounded(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	var units []string
+	for i := range 50 {
+		units = append(units, fmt.Sprintf("u%02d.service loaded failed failed U", i))
+	}
+	ex[failedC] = out(strings.Join(units, "\n") + "\n")
+	ex["journalctl -b --no-pager -n 200"] = out(strings.Repeat("old line\n", 64<<10) + "newest line\n")
+	o := run(ex, config.Checks{})
+	want := "failed: u00.service, u01.service, u02.service, u03.service, u04.service, u05.service, u06.service, " +
+		"u07.service, u08.service, u09.service, … and 40 more"
+	if o.Verdict != model.Failed || o.Reason != want || len(o.FailedUnits) != 50 {
+		t.Fatalf("got %v %q with %d failed units", o.Verdict, o.Reason, len(o.FailedUnits))
+	}
+	if len(o.BootLog) > 256<<10+8 || !strings.HasSuffix(o.BootLog, "newest line\n") || !strings.HasPrefix(o.BootLog, "…\nold line") {
+		t.Errorf("boot log: %d bytes, starts %q", len(o.BootLog), o.BootLog[:20])
+	}
+
+	ex = healthy()
+	ex[enabledC] = out("postgresql.service enabled\n")
+	ex["sh -c pg_isready -q"] = probe.ExecResult{ExitCode: 2, Stderr: strings.Repeat("é", 4096)}
+	o = run(ex, config.Checks{})
+	if len(o.Checks) != 1 || len(o.Checks[0].Detail) > 512 || !utf8.ValidString(o.Checks[0].Detail) || !strings.HasSuffix(o.Checks[0].Detail, "…") {
+		t.Errorf("check detail not clipped: %+v", o.Checks)
+	}
+}
+
+// noAnswerExec stalls on one command until its ctx ends, then reports that
+// the transport never answered (the session was never opened).
+type noAnswerExec struct {
+	probetest.Scripted
+	cmd string
+}
+
+func (n noAnswerExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if strings.Join(argv, " ") == n.cmd {
+		<-ctx.Done()
+		return probe.ExecResult{}, fmt.Errorf("exec in container 990000: %w: %w", probe.ErrNoAnswer, ctx.Err())
+	}
+	return n.Scripted.Exec(ctx, argv)
+}
+
+// A command whose session never opened because the connection to the node
+// died is a transport fault, ERROR, even when the per-command timeout ends
+// it before the connection is found dead: it is not a check that timed out
+// (review of #48, I1).
+func TestStalledTransportIsError(t *testing.T) {
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
+	o := probe.Run(context.Background(), noAnswerExec{healthy(), ssC}, probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "probe transport error: ") {
+		t.Fatalf("got %v %q, want ERROR probe transport error", o.Verdict, o.Reason)
 	}
 }
