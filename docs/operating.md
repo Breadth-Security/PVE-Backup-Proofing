@@ -28,7 +28,7 @@ journalctl -u pbp -f                                              # logs; per-ru
 
 Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. Run as root, they would leave root-owned state files the daemon cannot write. The per-run files in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/run-*.log`).
 
-`run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`.
+`run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`. A backup of a template is always skipped ("template (not bootable)").
 
 ## Schedule and time zone
 
@@ -136,7 +136,7 @@ Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CO
 
 ## Notifications
 
-One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
+One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven or as a template), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 
@@ -156,4 +156,4 @@ PBP PROVEN 2026-10-19 02:14 · agent ok, 3 profiles ok
 PBP FAILED 2026-10-19 02:31 · failed: postgresql.service
 ```
 
-Your own notes are preserved below it. A previous PBP line is replaced, never stacked. PBP only ever modifies the `notes` and `protected` attributes of a backup.
+Your own notes are preserved below it. A previous PBP line is replaced, never stacked. A `SKIPPED` guest gets no line: its notes are left as they were. PBP only ever modifies the `notes` and `protected` attributes of a backup.
