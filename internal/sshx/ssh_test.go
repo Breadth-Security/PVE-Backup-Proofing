@@ -616,8 +616,8 @@ func TestRunHonoursCtxOnHalfOpenConnection(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := c.Run(ctx, "exit3", nil)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("got %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrNoSession) {
+		t.Fatalf("got %v, want ErrNoSession wrapping the deadline", err)
 	}
 	if el := time.Since(start); el > 2*time.Second {
 		t.Fatalf("Run blocked %v past its deadline", el)
@@ -627,9 +627,9 @@ func TestRunHonoursCtxOnHalfOpenConnection(t *testing.T) {
 // Keepalives find a half-open connection and drop it, so the next Run
 // reconnects instead of waiting on it (code review I15).
 func TestKeepaliveDropsDeadConnection(t *testing.T) {
-	oldEvery, oldWait := keepaliveInterval, keepaliveTimeout
-	keepaliveInterval, keepaliveTimeout = 50*time.Millisecond, 100*time.Millisecond
-	defer func() { keepaliveInterval, keepaliveTimeout = oldEvery, oldWait }()
+	old := keepaliveInterval
+	keepaliveInterval = 20 * time.Millisecond
+	defer func() { keepaliveInterval = old }()
 	c, _ := frozenClient(t)
 	waitFor(t, func() bool {
 		c.mu.Lock()
@@ -640,9 +640,9 @@ func TestKeepaliveDropsDeadConnection(t *testing.T) {
 
 // Keepalives leave a healthy connection alone.
 func TestKeepaliveKeepsLiveConnection(t *testing.T) {
-	oldEvery, oldWait := keepaliveInterval, keepaliveTimeout
-	keepaliveInterval, keepaliveTimeout = 20*time.Millisecond, time.Second
-	defer func() { keepaliveInterval, keepaliveTimeout = oldEvery, oldWait }()
+	old := keepaliveInterval
+	keepaliveInterval = 10 * time.Millisecond
+	defer func() { keepaliveInterval = old }()
 	s := newServer(t, true)
 	c, err := Dial(s.cfg)
 	if err != nil {
@@ -652,11 +652,29 @@ func TestKeepaliveKeepsLiveConnection(t *testing.T) {
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
+	// 50 intervals: dropped after 3 unanswered unless replies count.
+	time.Sleep(500 * time.Millisecond)
 	c.mu.Lock()
 	same := c.conn == conn
 	c.mu.Unlock()
 	if !same {
 		t.Fatal("healthy connection dropped")
+	}
+}
+
+// A command that started and then ran out of time is the command's own
+// timeout, not ErrNoSession.
+func TestRunStartedCommandTimeoutIsNotNoSession(t *testing.T) {
+	s := newServer(t, true)
+	c, err := Dial(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = c.Run(ctx, "sleep", nil)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNoSession) {
+		t.Fatalf("got %v, want a plain deadline", err)
 	}
 }

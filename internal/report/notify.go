@@ -55,8 +55,11 @@ func shortened(data map[string]any, keep int) map[string]any {
 		}
 	}
 	if p, _ := data["proven"].(string); len(p) > 4096 {
-		cut := strings.LastIndex(p[:4096], ", ")
-		out["proven"] = p[:max(cut, 0)] + ", … (see the run log)"
+		if cut := strings.LastIndex(p[:4096], ", "); cut > 0 {
+			out["proven"] = p[:cut] + ", … (see the run log)"
+		} else {
+			out["proven"] = "… (see the run log)"
+		}
 	}
 	return out
 }

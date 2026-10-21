@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -27,17 +28,24 @@ const dialTimeout = 15 * time.Second
 // Keepalives find a connection that died without a FIN or RST (a NAT or
 // firewall dropping it while idle through a long restore): without them the
 // next session would wait about 15 minutes for TCP to give up (code review
-// I15). A connection that does not answer one within keepaliveTimeout is
-// dropped, and the next Run reconnects. Vars for tests.
-var (
-	keepaliveInterval = 30 * time.Second
-	keepaliveTimeout  = 15 * time.Second
-)
+// I15). Like OpenSSH's ServerAliveInterval 15 / ServerAliveCountMax 3, a
+// connection that leaves keepaliveMisses intervals in a row unanswered is
+// dropped (about 45 s), and the next Run reconnects. One late answer does
+// not drop the connection every proof in flight shares. A var for tests.
+var keepaliveInterval = 15 * time.Second
+
+const keepaliveMisses = 3
 
 // maxOutput bounds each of stdout and stderr that Run collects. The node
 // helper caps a guest's output below this, so only a broken or hostile node
 // reaches it (code review I14). A var for tests.
 var maxOutput = 16 << 20
+
+// ErrNoSession: the node never answered: the session did not open, or the
+// command's start was not acknowledged, before ctx ended. A healthy sshd
+// answers both in milliseconds, so this is the connection's fault, not the
+// command's. It wraps ctx's error.
+var ErrNoSession = errors.New("sshx: no answer from the node")
 
 // ErrOutputTooLarge: the command printed more than maxOutput on stdout or
 // stderr; it was killed and its output dropped.
@@ -62,7 +70,7 @@ type Client struct {
 	cfg     *ssh.ClientConfig
 	timeout time.Duration // bounds TCP dial plus SSH handshake
 
-	keepEvery, keepWait time.Duration
+	keepEvery time.Duration
 
 	mu         sync.Mutex
 	conn       *ssh.Client
@@ -98,7 +106,7 @@ func dial(ctx context.Context, cfg config.SSH, timeout time.Duration) (*Client, 
 		return nil, fmt.Errorf("sshx: knownhosts: %w", err)
 	}
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	c := &Client{addr: addr, timeout: timeout, keepEvery: keepaliveInterval, keepWait: keepaliveTimeout}
+	c := &Client{addr: addr, timeout: timeout, keepEvery: keepaliveInterval}
 	c.cfg = &ssh.ClientConfig{
 		User: cfg.User,
 		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
@@ -188,40 +196,43 @@ func (c *Client) connect(ctx context.Context) (*ssh.Client, error) {
 	return conn, nil
 }
 
-// keepalive sends a keepalive request every keepEvery until conn closes, and
-// drops conn when one gets no answer within keepWait. Any answer counts:
-// OpenSSH replies "failure" to the unknown request type.
+// keepalive sends a keepalive request every keepEvery until conn closes,
+// and drops conn when one stays unanswered for keepaliveMisses intervals.
+// Any answer counts: OpenSSH replies "failure" to the unknown request type.
 func (c *Client) keepalive(conn *ssh.Client) {
 	closed := make(chan struct{})
 	go func() { _ = conn.Wait(); close(closed) }()
 	t := time.NewTicker(c.keepEvery)
 	defer t.Stop()
+	var pending chan error // the request in flight, if unanswered
+	misses := 0
 	for {
 		select {
 		case <-closed:
 			return
 		case <-t.C:
 		}
-		reply := make(chan error, 1)
-		go func() {
+		if pending != nil {
+			select {
+			case err := <-pending:
+				if err != nil {
+					c.dropConn(conn)
+					return
+				}
+				misses = 0
+			default:
+				if misses++; misses >= keepaliveMisses {
+					c.dropConn(conn)
+					return
+				}
+				continue
+			}
+		}
+		pending = make(chan error, 1)
+		go func(reply chan<- error) {
 			_, _, err := conn.SendRequest("keepalive@openssh.com", true, nil)
 			reply <- err
-		}()
-		wait := time.NewTimer(c.keepWait)
-		select {
-		case <-closed:
-			wait.Stop()
-			return
-		case err := <-reply:
-			wait.Stop()
-			if err != nil {
-				c.dropConn(conn)
-				return
-			}
-		case <-wait.C:
-			c.dropConn(conn)
-			return
-		}
+		}(pending)
 	}
 }
 
@@ -366,6 +377,9 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	}
 	sess, err := c.session(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Result{}, fmt.Errorf("%w: %w", ErrNoSession, ctx.Err())
+		}
 		return Result{}, err
 	}
 	defer func() { _ = sess.Close() }()
@@ -384,11 +398,13 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 		err     error
 	}
 	done := make(chan waited, 1)
+	var started atomic.Bool
 	go func() {
 		if err := sess.Start(cmd); err != nil {
 			done <- waited{err: err}
 			return
 		}
+		started.Store(true)
 		done <- waited{started: true, err: sess.Wait()}
 	}()
 
@@ -396,6 +412,9 @@ func (c *Client) Run(ctx context.Context, cmd string, stdin []byte) (Result, err
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGKILL)
 		_ = sess.Close()
+		if !started.Load() {
+			return Result{}, fmt.Errorf("%w: %w", ErrNoSession, ctx.Err())
+		}
 		return Result{}, ctx.Err()
 	case <-over:
 		_ = sess.Signal(ssh.SIGKILL)

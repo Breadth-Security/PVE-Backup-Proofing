@@ -22,6 +22,12 @@ type Executor interface {
 // ErrExecBlocked is returned by executors when the guest agent refuses exec.
 var ErrExecBlocked = errors.New("agent cannot run commands")
 
+// ErrNoAnswer is returned by executors when the transport never got the
+// command to the guest (for example the SSH connection to the node died
+// silently). It is a transport fault even when the command's own timeout
+// ended the wait: the check did not time out, it never ran.
+var ErrNoAnswer = errors.New("node did not answer")
+
 // OSFamily is the guest operating system family.
 type OSFamily string
 

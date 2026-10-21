@@ -274,6 +274,11 @@ func (c *capWriter) Write(p []byte) (int, error) {
 	}
 	n, err := c.w.Write(p)
 	c.room -= n
+	if err != nil {
+		// The client went away: stop the command rather than leave it
+		// blocked on a full pipe until the deadline.
+		c.full()
+	}
 	return n, err
 }
 

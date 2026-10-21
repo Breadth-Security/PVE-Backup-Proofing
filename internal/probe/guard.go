@@ -136,6 +136,8 @@ func (g *guard) run(ctx context.Context, argv []string) (ExecResult, error) {
 	switch {
 	case ctx.Err() != nil:
 		return res, fmt.Errorf("%w: %w", errProbeEnded, ctx.Err())
+	case errors.Is(err, ErrNoAnswer):
+		return res, err
 	case cctx.Err() != nil:
 		return res, fmt.Errorf("%w after %s: %w", errCommandTimeout, g.timeout, err)
 	}

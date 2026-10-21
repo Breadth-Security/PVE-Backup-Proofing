@@ -929,3 +929,30 @@ func TestOutcomeBounded(t *testing.T) {
 		t.Errorf("check detail not clipped: %+v", o.Checks)
 	}
 }
+
+// noAnswerExec stalls on one command until its ctx ends, then reports that
+// the transport never answered (the session was never opened).
+type noAnswerExec struct {
+	probetest.Scripted
+	cmd string
+}
+
+func (n noAnswerExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if strings.Join(argv, " ") == n.cmd {
+		<-ctx.Done()
+		return probe.ExecResult{}, fmt.Errorf("exec in container 990000: %w: %w", probe.ErrNoAnswer, ctx.Err())
+	}
+	return n.Scripted.Exec(ctx, argv)
+}
+
+// A command whose session never opened because the connection to the node
+// died is a transport fault, ERROR, even when the per-command timeout ends
+// it before the connection is found dead: it is not a check that timed out
+// (review of #48, I1).
+func TestStalledTransportIsError(t *testing.T) {
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
+	o := probe.Run(context.Background(), noAnswerExec{healthy(), ssC}, probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "probe transport error: ") {
+		t.Fatalf("got %v %q, want ERROR probe transport error", o.Verdict, o.Reason)
+	}
+}
