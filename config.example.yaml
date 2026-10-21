@@ -3,7 +3,7 @@
 # /etc/pbp/config.yaml; a .deb host reads /etc/pbp/config.yaml.
 # Secrets are referenced by file path, never inline.
 
-schedule: "0 2 * * *"          # cron, in the container's TZ (Docker: .env) or the host's
+schedule: "0 2 * * *"          # cron, in the container's TZ (Docker: .env) or the host's; see docs/operating.md
 workers: 1                     # default 1
 
 target:

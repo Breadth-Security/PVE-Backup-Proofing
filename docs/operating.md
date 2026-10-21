@@ -30,6 +30,91 @@ Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and th
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`.
 
+## Schedule and time zone
+
+### The schedule
+
+`schedule` in `config.yaml` says when the daemon starts a run; `pbp setup` asks for it, with `0 2 * * *` (02:00 every day) as the default. It is a standard cron expression: five fields, separated by spaces.
+
+```
+┌───────────── minute        0-59
+│ ┌─────────── hour          0-23
+│ │ ┌───────── day of month  1-31
+│ │ │ ┌─────── month         1-12 or JAN-DEC
+│ │ │ │ ┌───── day of week   0-6 (Sunday is 0) or SUN-SAT
+│ │ │ │ │
+0 2 * * *
+```
+
+Each field takes `*` (every value), a number, a list (`1,15`), a range (`1-5`) or a step (`*/6`, every 6). A few examples:
+
+| Schedule | Runs |
+|----------|------|
+| `0 2 * * *` | every day at 02:00 (the default) |
+| `30 3 * * 1-5` | Monday to Friday at 03:30 |
+| `0 4 * * SUN` | every Sunday at 04:00 |
+| `0 3 1 * *` | at 03:00 on the first day of each month |
+| `15 1 * * MON,THU` | Monday and Thursday at 01:15 |
+| `0 */6 * * *` | every six hours, on the hour |
+| `@daily` | every day at midnight (also `@weekly`, `@monthly`, `@hourly`) |
+
+[crontab.guru](https://crontab.guru) explains any five-field expression in plain words and is handy for trying one out. PBP's cron does not take a seconds field (six fields are refused) or the `L`, `W` and `#` extensions some cron implementations offer. `pbp setup`, `pbp check` and the daemon all refuse an invalid schedule and say why.
+
+A run takes as long as the proofs it has to do, and the next one starts only when that one has finished: a scheduled run that finds the previous one still going is skipped. `restore.max_run_duration` caps how long one run may take.
+
+### The time zone
+
+The time zone decides when the schedule fires. It also sets the time in each backup's note (`PBP PROVEN 2026-10-19 02:14 · …`, shown without a zone) and in the daemon's log. Run IDs (`20261019T020000.000Z-schedule`) are always in UTC.
+
+Where PBP gets it:
+
+- **Docker:** the `TZ` in `.env` next to `docker-compose.yml`. `pbp setup` asks for it and writes it. Without it, the compose file falls back to `Europe/London`.
+- **`.deb` host:** the host's own time zone (`timedatectl` shows it). PBP has no setting of its own for it.
+
+**Use a name from the tz database, in the form `Area/City`**, or `UTC`:
+
+| Zone | Standard time | Daylight saving time |
+|------|---------------|----------------------|
+| `Etc/UTC` | UTC | none |
+| `Europe/London` | UTC+0 | UTC+1 |
+| `Europe/Paris`, `Europe/Berlin`, `Europe/Amsterdam` | UTC+1 | UTC+2 |
+| `America/New_York`, `America/Toronto` | UTC−5 | UTC−4 |
+| `America/Chicago` | UTC−6 | UTC−5 |
+| `America/Denver` | UTC−7 | UTC−6 |
+| `America/Phoenix` | UTC−7 | none |
+| `America/Los_Angeles` | UTC−8 | UTC−7 |
+| `America/Sao_Paulo` | UTC−3 | none |
+| `Asia/Kolkata` | UTC+5:30 | none |
+| `Asia/Singapore` | UTC+8 | none |
+| `Asia/Tokyo` | UTC+9 | none |
+| `Australia/Sydney` | UTC+10 | UTC+11 |
+
+For every zone, run `timedatectl list-timezones` on any systemd host, or see the [list of tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones). Avoid abbreviations and offsets even where they are accepted: `EST` is a fixed UTC−5 with no daylight saving, `Etc/GMT-2` means UTC**+**2 (the sign is inverted), and `PST` or `+02:00` are refused.
+
+**To change it:**
+
+- **Docker:** `sudoedit .env` (setup leaves it read-only), set `TZ=Area/City`, then `docker compose up -d`. A `TZ` exported in the shell that runs `docker compose` takes precedence over `.env`, so unset it there or make it match.
+- **`.deb` host:** `sudo timedatectl set-timezone Area/City` changes the whole host. To change it for PBP only, run `sudo systemctl edit pbp` and add:
+
+  ```
+  [Service]
+  Environment=TZ=Area/City
+  ```
+
+  Then run `sudo systemctl restart pbp` either way.
+- **For the schedule alone:** start it with `CRON_TZ=`, for example `schedule: "CRON_TZ=America/New_York 0 3 * * *"` (03:00 New York time, whatever zone the host or container is in). The notes and the log keep the process's own zone.
+
+**Daylight saving.** On the day clocks go forward, a time that does not exist that night is skipped. On the day they go back, a time that happens twice runs twice: the second run skips the backups the first one proved (unless `restore.reproof: true`) and tries the others again. With the default `0 2 * * *`, that means:
+
+| Zone | Skipped | Runs twice |
+|------|---------|------------|
+| US and Canadian zones | the March night clocks go forward | none |
+| Central Europe (`Europe/Paris`, `Europe/Berlin`, …) | the last Sunday in March | the last Sunday in October |
+| `Australia/Sydney` | the first Sunday in October | the first Sunday in April |
+| `Europe/London`, `Etc/UTC`, zones without daylight saving | none | none |
+
+To avoid both, schedule outside 01:00 to 03:00 (for example `0 3 * * *` or later, which is safe in all of the zones above), or use `Etc/UTC`.
+
 ## Exit codes
 
 | Exit code | Meaning |

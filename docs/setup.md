@@ -84,8 +84,8 @@ Setup asks these only when there is no `config.yaml` yet. Enter accepts the defa
 | Isolated bridge on the node | `vmbr99` | `target.bridge` (step 2) |
 | Restore storage on the node | `local-zfs` | `restore.storage`: active, and able to hold VM images and container volumes |
 | PBS storage(s) to prove, comma-separated | none | `sources.storages`: the names of the PBS storages as the node knows them |
-| Schedule (cron) | `0 2 * * *` | `schedule` |
-| Time zone for the schedule (Docker only) | the `TZ` passed in | `.env`, which `docker-compose.yml` reads |
+| Schedule (cron) | `0 2 * * *` | `schedule`: five cron fields (minute, hour, day of month, month, day of week); see [The schedule](operating.md#the-schedule) |
+| Time zone for the schedule (Docker only; a `.deb` host uses its own zone) | the `TZ` passed in | `.env`, which `docker-compose.yml` reads; an `Area/City` name such as `Europe/Berlin` (see [The time zone](operating.md#the-time-zone)) |
 
 Everything else comes from [`config.example.yaml`](../config.example.yaml), with its comments, so `config.yaml` reads like the example. Edit it afterwards for the rest (checks, notifications, timeouts) with `sudoedit config.yaml` (Docker) or `sudoedit /etc/pbp/config.yaml` (`.deb`): setup leaves it read-only. Once `config.yaml` exists, setup never asks again: it reads the file and uses its values.
 
@@ -191,7 +191,7 @@ sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
 
 - `docker compose up` uses the image built from your checkout, stamped with the version in the top-level `VERSION` file (`docker compose exec pbp pbp version` shows it). The helper on the node must share its major.minor, which is why `pbp setup` installs the `.deb` of the same release there.
 - The image runs as the non-root uid/gid **65532** (distroless `nonroot`), which is why setup gives that uid the files it writes. Run logs are readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root, for example `sudo less logs/run-*.log`.
-- The schedule's time zone is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Change it there (`sudoedit .env`: setup leaves it read-only), not in the compose file, and run `docker compose up -d` again. A `TZ` exported in the shell that runs `docker compose` takes precedence over `.env`, so unset it there (or make it match).
+- The schedule's time zone is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Valid names, how to change it, and what daylight saving does to the schedule: [The time zone](operating.md#the-time-zone).
 - The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 
 ## PBP on the Proxmox node itself
