@@ -68,6 +68,15 @@ The node still trusts PBP's API token (below), so protect the PBP host and its s
 
 Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token change node-wide settings; weigh that before doing it. Proofing privileged containers also weakens what a stolen PBP SSH key can do: the helper runs `pct exec` in PBP's tagged containers, and in a privileged container that command runs as real root (uid 0 on the node), held back only by the container's namespaces and AppArmor profile instead of an unprivileged uid mapping. If that matters more to you than proofing those backups, leave them out: a privileged container that PBP cannot restore simply ends `ERROR` each run.
 
+## Where to run PBP
+
+**For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs.** Any small VM or machine elsewhere will do: PBP itself needs little, since the restores and boots happen on the node. Running PBP on the node itself works and is supported ([PBP on the Proxmox node itself](setup.md#pbp-on-the-proxmox-node-itself)), and suits a single-node lab or a trial; for production it gives up these:
+
+- **A warning when the node cannot send one.** The run summary is sent through the node. When the node, its SSH or its API is down, only a PBP outside it notices: its health check turns unhealthy and the scheduled run fails visibly. A PBP on the node goes down with it, and the night is silent.
+- **PBP off the hypervisor.** On the node, PBP's daemon, its API token and its SSH key sit on the machine that runs your production guests. A separate host keeps that software and those secrets away from the hypervisor: a compromised PBP host still holds the API token (so protect it), but it is not a shell on the hypervisor, and a compromised node does not also hand over PBP's own host.
+- **Independence from node maintenance and failure.** Upgrades and reboots of the node do not interrupt it, and losing a node does not take PBP's config and state with it: a tool whose job is proving your disaster recovery should not depend on the machine it is checking.
+- **Independence from the cluster.** In a cluster, another node of the same cluster is not separate enough: it shares the cluster's health, network and maintenance. Run PBP outside it.
+
 ## What setup never touches
 
 `pbp setup` and `pbp node setup` never create the bridge or reload networking, never touch root's `authorized_keys`, `/etc/ssh/sshd_config` or any guest, and never replace a file they did not write without `--replace` (which backs the old file up first). Both run only as root in an interactive terminal; the node side refuses to run from an SSH forced command or through the `pbp` account's sudo rule, so a stolen PBP key cannot reach them.

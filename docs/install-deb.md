@@ -68,7 +68,7 @@ Install the newer `.deb` the same way (`sudo apt install ./pbp_<new>_<arch>.deb`
 
 On the node, the package is the helper. Its install script creates the `pbp` user with the `nologin` shell and keeps the user's home `/var/lib/pbp` owned by root (`0755`, also on an upgrade), and it never touches sshd, sudo or `authorized_keys`. The node-only steps (the `pbp` login shell, the forced-command key, the sudo rule, `node.yaml`) are done by `pbp node setup` (or [by hand](manual-setup.md#node-setup)), never by the package, so a host that only runs the daemon never gets a `pbp` login.
 
-`pbp node setup` warns when the node also runs a PBP daemon (`/etc/pbp/config.yaml` exists or `pbp.service` is active), except in the [on-node setup](setup.md#pbp-on-the-proxmox-node-itself) you chose on purpose: the proofs then share a host with the guests they restore, so a separate PBP host is preferred.
+`pbp node setup` warns when the node also runs a PBP daemon (`/etc/pbp/config.yaml` exists or `pbp.service` is active), except in the [on-node setup](setup.md#pbp-on-the-proxmox-node-itself) you chose on purpose. For production, a separate PBP host is recommended: see [Where to run PBP](security.md#where-to-run-pbp).
 
 ## Remove
 
