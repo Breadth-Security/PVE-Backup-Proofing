@@ -21,6 +21,15 @@ type GuestKey struct {
 
 func (k GuestKey) String() string { return fmt.Sprintf("%s/%d", k.Kind, k.VMID) }
 
+// Label is the short guest ID shown to operators and used in log file names:
+// VM102 for a qemu guest, CT101 for a container.
+func (k GuestKey) Label() string {
+	if k.Kind == KindLXC {
+		return fmt.Sprintf("CT%d", k.VMID)
+	}
+	return fmt.Sprintf("VM%d", k.VMID)
+}
+
 type Backup struct {
 	Storage, VolID, Notes string
 	Key                   GuestKey
