@@ -103,6 +103,20 @@ func (f *Fake) VolumeNotes(ctx context.Context, node, storage, volid string) (st
 	return "", fmt.Errorf("volume %s does not exist", volid)
 }
 
+func (f *Fake) VolumeProtected(ctx context.Context, node, storage, volid string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin("VolumeProtected", node, storage, volid); err != nil {
+		return false, err
+	}
+	for _, b := range f.Backups[storage] {
+		if b.VolID == volid {
+			return b.Protected, nil
+		}
+	}
+	return false, fmt.Errorf("volume %s does not exist", volid)
+}
+
 func (f *Fake) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

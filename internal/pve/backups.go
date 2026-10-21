@@ -60,6 +60,18 @@ func (c *Client) VolumeNotes(ctx context.Context, node, storage, volid string) (
 	return r.Notes, nil
 }
 
+// VolumeProtected reads a backup volume's protected flag now (a listing may
+// be hours old).
+func (c *Client) VolumeProtected(ctx context.Context, node, storage, volid string) (bool, error) {
+	var r struct {
+		Protected flexBool `json:"protected"`
+	}
+	if err := c.do(ctx, http.MethodGet, volumePath(node, storage, volid), nil, nil, &r); err != nil {
+		return false, err
+	}
+	return bool(r.Protected), nil
+}
+
 func volumePath(node, storage, volid string) string {
 	return "/nodes/" + url.PathEscape(node) + "/storage/" + url.PathEscape(storage) + "/content/" + url.PathEscape(volid)
 }

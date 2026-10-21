@@ -273,6 +273,41 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+// The run's listing is old by the time a job starts: an admin may have
+// protected the backup since (code review I1). PBP reads the flag again
+// just before protecting, so it neither sets it nor clears it at teardown.
+func TestProtectedSinceListing(t *testing.T) {
+	f := newFixture(t)
+	f.api.Backups["pbs"][0].Protected = true // f.b, the listing, still says false
+	res := f.run(context.Background())
+	if res.Verdict != model.Proven {
+		t.Fatalf("verdict %s %q", res.Verdict, res.Reason)
+	}
+	for _, c := range f.rec.entries() {
+		if strings.HasPrefix(c, "SetProtected") {
+			t.Errorf("protected written: %s", c)
+		}
+	}
+	if !f.protected() {
+		t.Error("the admin's protection was removed")
+	}
+}
+
+// When the flag cannot be read, the proof stops before anything is changed.
+func TestProtectedReadFailure(t *testing.T) {
+	f := newFixture(t)
+	f.api.Fail["VolumeProtected"] = errors.New("api down")
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || !strings.HasPrefix(res.Reason, "read backup protected flag: ") {
+		t.Fatalf("got %s %q", res.Verdict, res.Reason)
+	}
+	for _, c := range f.rec.entries() {
+		if strings.HasPrefix(c, "SetProtected") || strings.HasPrefix(c, "Restore") {
+			t.Errorf("changed something: %s", c)
+		}
+	}
+}
+
 func TestAlreadyProtected(t *testing.T) {
 	f := newFixture(t)
 	f.b.Protected = true
