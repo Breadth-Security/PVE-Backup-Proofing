@@ -15,11 +15,11 @@ func DefaultIgnoreUnits() []string {
 
 // DefaultWindowsIgnore are Windows services that routinely stop or fail in an
 // isolated, uplink-less guest (activation, updates, time sync, delayed-start
-// brokers).
+// brokers), or that stop by design after doing their job at boot.
 func DefaultWindowsIgnore() []string {
 	return []string{
 		"sppsvc", "gupdate", "edgeupdate", "MapsBroker", "RemoteRegistry",
-		"CDPSvc", "tiledatamodelsvc", "wuauserv", "BITS", "W32Time",
+		"CDPSvc", "tiledatamodelsvc", "wuauserv", "BITS", "W32Time", "WslInstaller",
 	}
 }
 

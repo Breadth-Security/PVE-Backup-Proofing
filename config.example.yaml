@@ -78,6 +78,7 @@ checks:
     - wuauserv          # Windows Update: no uplink
     - BITS              # background transfer: no uplink
     - W32Time           # time sync: no time source without an uplink
+    - WslInstaller      # WSL installer: checks or installs WSL at boot, then exits
   profiles:
     - name: myapp
       unit: "myapp*.service"
