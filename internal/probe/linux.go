@@ -15,6 +15,8 @@ type linuxRun struct {
 	ex  *guard
 	in  Input
 	out Outcome
+	// nesting are failed units that fail only for lack of nesting.
+	nesting []string
 }
 
 func (r *linuxRun) exec(ctx context.Context, argv ...string) (ExecResult, error) {
@@ -186,6 +188,12 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 }
 
 func (r *linuxRun) finish(ctx context.Context) Outcome {
+	if n := len(r.nesting); n > 0 {
+		// The production guest has the same failures: they say nothing
+		// about the backup, but the guest cannot be proven either.
+		return r.booted(fmt.Sprintf("container without nesting: %d units cannot start sandboxed (%s); enable nesting=1",
+			n, strings.Join(r.nesting, ", ")))
+	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
 			return r.fail(ctx, "check timed out: "+c.Name)
@@ -270,6 +278,9 @@ func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) 
 	covered, untraced := traceMissing(ctx, r.ex, real, r.in.Missing)
 	r.out.FailedUnits = untraced
 	r.out.NotCovered = covered
+	if r.in.NoNesting && len(untraced) > 0 {
+		r.nesting, untraced = nestingFailures(ctx, r.ex, untraced)
+	}
 	if len(untraced) > 0 {
 		return r.fail(ctx, "failed: "+strings.Join(untraced, ", ")), true
 	}

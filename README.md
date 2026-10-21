@@ -32,7 +32,7 @@ For each run, PBP:
 |---------|---------|-----|
 | `PROVEN` | Restored, booted, all checks passed | Yes: good |
 | `FAILED` | Restore failed, boot failed, or any check failed | Yes: bad |
-| `BOOTED` | The guest reached running but PBP could not look inside (a VM without the guest agent, or an agent without exec rights) | Partially |
+| `BOOTED` | The guest reached running but PBP could not look inside (a VM without the guest agent, or an agent without exec rights), or a container without `nesting=1` whose systemd cannot start its sandboxed units ([details](docs/checks.md#containers-without-nesting)) | Partially |
 | `SKIPPED` | Not attempted (a template, not enough space or RAM, already proven, run deadline reached) | No |
 | `ERROR` | A PBP or node problem (SSH or API failure, node out of RAM, a guest that cannot be made safe) | No |
 

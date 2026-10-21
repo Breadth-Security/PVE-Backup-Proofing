@@ -46,6 +46,8 @@ When a guest in a run failed or errored, look first at that guest's own log file
 | `pbp-node: refused: bad-request` / `no request` | Something other than PBP used the key, or the sudo rule lost its `env_keep` of `SSH_ORIGINAL_COMMAND`. Run the `pbp node setup` line again. |
 | `pbp-node: timeout` on long probe commands | `request_timeout` in `/etc/pbp/node.yaml` is shorter than the command needs; keep it at or above `restore.probe_timeout`. |
 | `guest still starting after 4m30s (waiting on: <units>)` | The guest booted, but systemd still had jobs queued when the probe ran out of time (`restore.probe_timeout`). The units named are what boot waits on; the guest's log file has the full job list. A unit that waits on the network can wait for ever on the isolated bridge; if it is only slow, raise `restore.probe_timeout`. |
+| `BOOTED · container without nesting: … enable nesting=1` | An unprivileged container without `nesting=1`: its systemd cannot start sandboxed units, in production as in the copy. Enable nesting on the container; see [Containers without nesting](checks.md#containers-without-nesting). |
+| `ERROR · raw lxc config (…) needs root@pam to restore` | The container's config has raw `lxc.*` lines, which PVE drops when PBP's token restores, so PBP does not proof it. See [Security model](security.md#the-api-token). |
 | `a run is already in progress` (exit 3) | Another run or check holds the run lock, usually the daemon's scheduled run. Wait for it to finish. |
 
 ## A run on demand

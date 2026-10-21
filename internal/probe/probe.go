@@ -24,6 +24,10 @@ type Input struct {
 	Checks  config.Checks
 	Guest   GuestInfo
 	Missing []model.MissingPiece
+	// NoNesting: an unprivileged container without features nesting=1. Its
+	// systemd cannot sandbox units, so units that fail only for that (as
+	// they do in the production guest) make it BOOTED, not FAILED.
+	NoNesting bool
 	// WindowsSettlePoll is how often a Windows guest's stopped automatic
 	// services are re-checked while they may still be starting (0 = 15s).
 	WindowsSettlePoll time.Duration

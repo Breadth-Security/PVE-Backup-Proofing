@@ -218,6 +218,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	out := probe.Run(pctx, d.Target.Executor(kind, j.vmid), probe.Input{
 		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
+		NoNesting: kind == model.KindLXC && !sanitize.Nesting(j.orig),
 	})
 	res.Verdict, res.Reason = out.Verdict, out.Reason
 	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits

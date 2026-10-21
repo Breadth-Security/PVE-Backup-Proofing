@@ -728,6 +728,30 @@ func TestRunSkipsTemplates(t *testing.T) {
 	}
 }
 
+// A container whose backed-up config has raw lxc.* lines cannot be restored
+// as it is: PVE drops those lines unless root@pam restores (issue #34, CT111
+// lost lxc.apparmor.profile). It is ERROR before anything is reserved or
+// restored, and its notes say why.
+func TestRunRawLXCConfigIsError(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	raw := f.add("pbs", model.KindLXC, 101, 1024, "")
+	f.api.BackupConfigs[raw.VolID] += "lxc.apparmor.profile: unconfined\n"
+	f.add("pbs", model.KindLXC, 102, 1024, "")
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	const want = "raw lxc config (lxc.apparmor.profile) needs root@pam to restore"
+	if r := byVMID(t, s)[101]; r.Verdict != model.Error || r.Reason != want {
+		t.Errorf("got %s %q, want ERROR %q", r.Verdict, r.Reason, want)
+	}
+	if rs := f.tgt.restores(); len(rs) != 1 || strings.Contains(rs[0], "/101/") {
+		t.Errorf("restores = %q, want only guest 102", rs)
+	}
+	if got := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(got, " · "+want) {
+		t.Errorf("notes = %q", got)
+	}
+}
+
 // Node-wide capacity errors (storage status, node memory, VMID allocation)
 // say nothing about the backup: they stay out of its notes.
 func TestRunNodeCapacityErrorsStayOutOfNotes(t *testing.T) {

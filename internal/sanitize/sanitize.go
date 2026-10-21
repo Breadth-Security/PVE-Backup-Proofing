@@ -83,6 +83,34 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 	return p
 }
 
+// Nesting reports whether a container config enables nesting
+// (features: nesting=1). Without it, systemd in an unprivileged container
+// cannot set up the mount namespaces its sandboxed units use (issue #34).
+func Nesting(cfg map[string]string) bool {
+	for _, f := range strings.Split(cfg["features"], ",") {
+		if f == "nesting=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// RawLXCKeys lists, sorted, the raw lxc.* keys of a container config read
+// by ParseConfigText (which gathers those lines under "lxc"). PVE restores
+// them only for root@pam and silently drops them for PBP's token, so the
+// restored copy would differ from the guest it stands for; Sanitize's own
+// "lxc" check never sees them in the restored config.
+func RawLXCKeys(cfg map[string]string) []string {
+	var keys []string
+	for _, line := range strings.Split(cfg["lxc"], "\n") {
+		if k, _, ok := strings.Cut(line, ":"); ok && !slices.Contains(keys, strings.TrimSpace(k)) {
+			keys = append(keys, strings.TrimSpace(k))
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // SplitList splits a PVE list value (tags, storage content) on ';', ',' or
 // whitespace, dropping empty items.
 func SplitList(s string) []string {
