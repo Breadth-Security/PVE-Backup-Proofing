@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,6 +284,81 @@ func (e *env) assertRangeEmpty(t *testing.T, ctx context.Context) {
 	}
 }
 
+// nodeState is what a run must not change outside its own guests and the
+// backup it proofs: every guest outside the VMID range (status, name, tags
+// and config) and every backup's protected flag and notes on the source
+// storages.
+type nodeState struct {
+	guests  map[model.GuestKey]string
+	backups map[string]string
+}
+
+// snapshot reads nodeState. Config keys PVE itself changes while a guest
+// runs or is backed up ("lock") are left out.
+func (e *env) snapshot(t *testing.T, ctx context.Context, cfg config.Config) nodeState {
+	t.Helper()
+	s := nodeState{guests: map[model.GuestKey]string{}, backups: map[string]string{}}
+	gs, err := e.api.Guests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo, hi := e.cfg.Target.VMIDRange[0], e.cfg.Target.VMIDRange[1]
+	for _, g := range gs {
+		if g.Key.VMID >= lo && g.Key.VMID <= hi {
+			continue
+		}
+		c, err := e.api.GuestConfig(ctx, g.Node, g.Key.Kind, g.Key.VMID)
+		if err != nil {
+			t.Fatalf("config of %s: %v", g.Key, err)
+		}
+		delete(c, "lock")
+		keys := slices.Sorted(maps.Keys(c))
+		var b strings.Builder
+		fmt.Fprintf(&b, "status=%s name=%s tags=%s", g.Status, g.Name, strings.Join(g.Tags, ";"))
+		for _, k := range keys {
+			fmt.Fprintf(&b, "\n%s: %s", k, c[k])
+		}
+		s.guests[g.Key] = b.String()
+	}
+	for _, st := range cfg.Sources.Storages {
+		bs, err := e.api.ListBackups(ctx, cfg.Target.Node, st)
+		if err != nil {
+			t.Fatalf("list %s: %v", st, err)
+		}
+		for _, x := range bs {
+			n, err := e.api.VolumeNotes(ctx, cfg.Target.Node, st, x.VolID)
+			if err != nil {
+				t.Fatalf("notes of %s: %v", x.VolID, err)
+			}
+			s.backups[x.VolID] = fmt.Sprintf("protected=%v notes=%q", x.Protected, n)
+		}
+	}
+	return s
+}
+
+// assertUntouched compares the node with before, ignoring the backup that
+// was proofed (its notes change by design) and guests or backups that
+// appeared or went away meanwhile (a scheduled backup or prune on the node
+// is not PBP's doing). This is what a real node can show that no fake can:
+// an unexpected side effect (code review I22).
+func (e *env) assertUntouched(t *testing.T, ctx context.Context, cfg config.Config, before nodeState, proofed string) {
+	t.Helper()
+	after := e.snapshot(t, ctx, cfg)
+	for k, was := range before.guests {
+		if now, ok := after.guests[k]; ok && now != was {
+			t.Errorf("guest %s outside the range changed:\nbefore: %s\nafter:  %s", k, was, now)
+		}
+	}
+	for v, was := range before.backups {
+		if v == proofed {
+			continue
+		}
+		if now, ok := after.backups[v]; ok && now != was {
+			t.Errorf("backup %s changed: before %s, after %s", v, was, now)
+		}
+	}
+}
+
 // userNotes is what PBP must preserve below its line: the notes without any
 // PBP line.
 func userNotes(n string) string {
@@ -324,6 +400,7 @@ func (e *env) proofCfg(t *testing.T, cfg config.Config, key model.GuestKey) mode
 	cfg.Restore.Reproof = true
 	before := e.volume(t, ctx, e.newest(t, ctx, cfg, key))
 	t.Logf("proofing %s (protected=%v, notes=%q)", before.VolID, before.Protected, before.Notes)
+	node := e.snapshot(t, ctx, cfg)
 
 	d := e.deps(t, t.TempDir(), cfg)
 	d.API = kindAPI{API: e.api, key: key}
@@ -356,6 +433,7 @@ func (e *env) proofCfg(t *testing.T, cfg config.Config, key model.GuestKey) mode
 	if st := d.Store.Snapshot(); len(st.InFlight) != 0 {
 		t.Errorf("in-flight jobs left in state: %+v", st.InFlight)
 	}
+	e.assertUntouched(t, ctx, cfg, node, before.VolID)
 	return r
 }
 
@@ -603,11 +681,19 @@ func TestBrokenBackupFails(t *testing.T) {
 	}
 }
 
-// TestCrashRecovery kills a real "pbp run" process once its job reached stage
-// "started", then runs again: the janitor must destroy the leftover guest and
-// restore the backup's protected flag.
+// TestCrashRecovery kills a real "pbp run" process once its job reached a
+// stage, then runs again: the janitor must destroy the leftover guest and
+// restore the backup's protected flag. At stage "restored" the kill comes
+// while PVE's restore task is still running; at "started", once the copy
+// runs (code review I22: both, not only "started").
 func TestCrashRecovery(t *testing.T) {
 	e := setup(t)
+	for _, stage := range []string{state.StageRestored, state.StageStarted} {
+		t.Run(stage, func(t *testing.T) { e.crashAt(t, stage) })
+	}
+}
+
+func (e *env) crashAt(t *testing.T, stage string) {
 	vmid := envInt(t, "PBP_IT_LXC")
 	ctx := context.Background()
 	cfg := e.cfg
@@ -649,6 +735,7 @@ func TestCrashRecovery(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	stateDir := filepath.Join(dir, "state")
+	node := e.snapshot(t, ctx, cfg)
 	// If the test fails after the kill, still clean up what it left.
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -672,12 +759,12 @@ wait:
 	for {
 		select {
 		case err := <-exited:
-			t.Fatalf("pbp run exited before stage started: %v", err)
+			t.Fatalf("pbp run exited before stage %s: %v", stage, err)
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
 			_ = cmd.Process.Kill()
-			t.Fatal("stage started not reached")
+			t.Fatalf("stage %s not reached", stage)
 		}
 		b, err := os.ReadFile(filepath.Join(stateDir, "state.json"))
 		if err != nil {
@@ -688,7 +775,9 @@ wait:
 			continue
 		}
 		for _, j := range st.InFlight {
-			if j.Stage == state.StageStarted {
+			// At "restored", wait until PVE has created the guest, so
+			// the kill leaves one behind mid-restore.
+			if j.Stage == stage && (stage != state.StageRestored || e.exists(t, ctx, j.TempVMID)) {
 				job = j
 				break wait
 			}
@@ -698,14 +787,10 @@ wait:
 		t.Fatal(err)
 	}
 	waitErr := <-exited // a SIGKILLed process exits with an error; expected
-	t.Logf("killed pbp at stage started (%v): %+v", waitErr, job)
+	t.Logf("killed pbp at stage %s (%v): %+v", stage, waitErr, job)
 
 	// The kill left a guest and (if it was off) the protected flag set.
-	gs, err := e.tgt.Owned(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(gs, func(g pve.GuestRef) bool { return g.Key.VMID == job.TempVMID }) {
+	if !e.exists(t, ctx, job.TempVMID) {
 		t.Errorf("guest %d not left behind by the kill", job.TempVMID)
 	}
 	if mid := e.volume(t, ctx, before); !before.Protected && !mid.Protected {
@@ -713,10 +798,21 @@ wait:
 	}
 
 	// Run again on the same state: preflight's janitor cleans up. Only the
-	// janitor is wanted here, so run preflight rather than a full proof.
+	// janitor is wanted here, so run preflight rather than a full proof. A
+	// guest still locked by PVE's restore task cannot be destroyed yet: the
+	// janitor keeps its record and preflight refuses, so retry until the
+	// task is over, as the next scheduled run would.
 	d := e.deps(t, stateDir, cfg)
-	if err := run.Preflight(ctx, d); err != nil {
-		t.Fatal(err)
+	for try := 1; ; try++ {
+		err := run.Preflight(ctx, d)
+		if err == nil {
+			break
+		}
+		if try == 40 {
+			t.Fatalf("preflight after the crash: %v", err)
+		}
+		t.Logf("preflight try %d: %v", try, err)
+		time.Sleep(15 * time.Second)
 	}
 	e.assertRangeEmpty(t, ctx)
 	if after := e.volume(t, ctx, before); after.Protected != before.Protected {
@@ -725,6 +821,17 @@ wait:
 	if st := d.Store.Snapshot(); len(st.InFlight) != 0 {
 		t.Errorf("in-flight jobs left: %+v", st.InFlight)
 	}
+	e.assertUntouched(t, ctx, cfg, node, before.VolID)
+}
+
+// exists reports whether a guest with vmid exists on the node.
+func (e *env) exists(t *testing.T, ctx context.Context, vmid int) bool {
+	t.Helper()
+	gs, err := e.api.Guests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.ContainsFunc(gs, func(g pve.GuestRef) bool { return g.Key.VMID == vmid })
 }
 
 // throwaway builds a container at vmid from tmpl (unprivileged, rootfs on

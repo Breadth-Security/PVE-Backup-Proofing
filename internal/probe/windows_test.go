@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -308,5 +309,32 @@ func TestWindowsDelayedStartWaited(t *testing.T) {
 		probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
 	if o.Verdict != model.Proven || polls != 3 {
 		t.Fatalf("never started: got %v %q after %d polls, want PROVEN after 3", o.Verdict, o.Reason, polls)
+	}
+}
+
+// The real output of WindowsServicesScript in a restored Windows 11 guest
+// (VM115 on pve2, 2026-10-21): Bonjour Service failed with event 7024, and
+// delayed-start services that stopped cleanly. With PBP's default ignore
+// list the guest is FAILED for Bonjour alone, with the event as the
+// reason; with Bonjour ignored it is PROVEN (code review I21).
+func TestWindowsRealCapture(t *testing.T) {
+	b, err := os.ReadFile("testdata/windows-services-vm115.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := probetest.Scripted{winCmd: out(string(b))}
+	ck := config.Checks{WindowsIgnoreServices: config.DefaultWindowsIgnore()}
+	o := runWin(ex, ck)
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: Bonjour Service" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+	want := "Bonjour Service stopped: event 7024: The Bonjour Service service terminated with the following " +
+		"service-specific error: %%4294967295 (service-specific exit code 0xFFFFFFFF)"
+	if o.BootLog != want {
+		t.Errorf("why:\n got %q\nwant %q", o.BootLog, want)
+	}
+	ck.WindowsIgnoreServices = append(ck.WindowsIgnoreServices, "Bonjour Service")
+	if o := runWin(ex, ck); o.Verdict != model.Proven {
+		t.Errorf("Bonjour ignored: got %v %q", o.Verdict, o.Reason)
 	}
 }
