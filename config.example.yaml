@@ -62,6 +62,8 @@ checks:
   guests:
     - match: { vmid: 105 }
       services: [postgresql]
+    # - match: { tag: haos }
+    #   allow_readonly_root: true  # root is read-only by design (Home Assistant OS, Fedora CoreOS)
 
 notify:
   when: always                 # always | problems

@@ -1226,6 +1226,9 @@ func TestStartRefusesForeignDisks(t *testing.T) {
 		{"efidisk0", "local-lvm:vm-990001-disk-0,efitype=4m", false},
 		{"ide2", "nfs:iso/win.iso,media=cdrom", true},
 		{"ide3", "none,media=cdrom", true},
+		{"ide0", "local-lvm:vm-100-disk-5,media=cdrom", false},
+		{"sata1", "local-lvm:vm-990000-cloudinit,media=cdrom", true},
+		{"sata2", "cdrom,media=cdrom", true},
 		{"scsi2", "local-lvm:base-101-disk-0/vm-990000-disk-3,size=8G", true},
 		{"sata0", "local:990000/vm-990000-disk-4.qcow2,size=8G", true},
 	} {

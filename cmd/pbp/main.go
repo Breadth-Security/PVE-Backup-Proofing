@@ -557,7 +557,10 @@ func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) m
 			RunError: "run not started: state store: " + err.Error(), LogDir: opt.LogDir}
 		// Tell the node, so the night is not silent on hosts without
 		// health monitoring (code review 6.10).
-		if w.sshErr == nil && w.notifier != nil {
+		switch {
+		case w.sshErr != nil:
+			log.Error("SSH TO THE NODE FAILED too: no notification can be sent", "err", w.sshErr)
+		case w.notifier != nil:
 			if nerr := w.notifier.Send(ctx, s); nerr != nil {
 				log.Error("send notification", "err", nerr)
 			}

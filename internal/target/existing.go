@@ -550,7 +550,8 @@ var reVolOwner = regexp.MustCompile(`^(?:vm|subvol)-(\d+)-`)
 
 // foreignDisk says why disk key k with value v may not belong to the
 // temporary guest vmid ("" when it does): a host path, or a volume named
-// after another VMID. A CD-ROM, "none" and non-disk keys are not judged.
+// after another VMID. "none", an ISO image or the host's CD drive as a
+// CD-ROM, and non-disk keys are not judged.
 // PVE's restore always creates the copy's own volumes; this guards against
 // a change in that, so the copy can never boot from a production disk
 // (code review 1.9).
@@ -559,8 +560,16 @@ func foreignDisk(k, v string, vmid int) string {
 		return ""
 	}
 	vol, opts, _ := strings.Cut(v, ",")
-	if vol == "none" || slices.Contains(strings.Split(opts, ","), "media=cdrom") {
+	if vol == "none" {
 		return ""
+	}
+	if slices.Contains(strings.Split(opts, ","), "media=cdrom") {
+		// An ISO image or the host's drive is read-only media, not a
+		// disk; any other volume as a CD-ROM is judged like a disk
+		// (#50 review): a production volume must not be attached at all.
+		if _, name, ok := strings.Cut(vol, ":"); vol == "cdrom" || (ok && strings.HasPrefix(name, "iso/")) {
+			return ""
+		}
 	}
 	if strings.HasPrefix(vol, "/") {
 		return fmt.Sprintf("%s is a host path (%s)", k, vol)

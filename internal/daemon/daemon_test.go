@@ -230,7 +230,9 @@ func TestServeGivesUpWhenLockStaysHeld(t *testing.T) {
 	fc.set(at(2, 0, 1))
 	eventually(t, func() bool { return strings.Contains(buf.String(), "retrying") }, "the retry")
 	fc.set(at(2, 30, 0)) // past the retry window
-	eventually(t, func() bool { return strings.Contains(buf.String(), "previous run still active, skipping") }, "the skip")
+	eventually(t, func() bool {
+		return strings.Contains(buf.String(), "run lock still held by another pbp command; skipping")
+	}, "the skip")
 	stop()
 	if err := <-done; err != nil {
 		t.Fatal(err)

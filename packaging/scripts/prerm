@@ -11,7 +11,7 @@ fi
 # The node's PVE user and token outlive the package: say so, since a PBP
 # host holding the token secret keeps API access (code review 3.8).
 if [ "$1" = "remove" ] && command -v pveum >/dev/null 2>&1 &&
-    pveum user list --output-format json 2>/dev/null | grep -q '"userid":"pbp@pve"'; then
+    pveum user list --output-format json 2>/dev/null | grep -q 'pbp@pve'; then
     echo "pbp: the PVE user pbp@pve and its API token stay on this node; to remove them and their ACLs," >&2
     echo "pbp: run 'pbp node uninstall --remove-token' first, or 'pveum user delete pbp@pve' and 'pveum role delete PBPProofer'." >&2
 fi

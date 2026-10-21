@@ -94,10 +94,19 @@ func serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Contex
 		fired := next
 
 		release, err := AcquireLock(LockPath())
+		retried := false
 		if errors.Is(err, ErrBusy) && !own.Load() {
+			retried = true
 			release, err = retryLock(ctx, log, c, fired)
+			if err == nil && ctx.Err() != nil {
+				// Got the lock just as shutdown came: start nothing.
+				release()
+				return shutdown(log, &wg, cancelRuns)
+			}
 		}
 		switch {
+		case errors.Is(err, ErrBusy) && retried:
+			log.Warn("run lock still held by another pbp command; skipping this run", "scheduled", fired, "waited", c.retryFor)
 		case errors.Is(err, ErrBusy):
 			log.Warn("previous run still active, skipping", "scheduled", fired)
 		case ctx.Err() != nil && err != nil:
@@ -109,8 +118,10 @@ func serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Contex
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer release()
+				// own clears after the lock is free, so a tick between
+				// the two never mistakes this run's lock for another's.
 				defer own.Store(false)
+				defer release()
 				defer func() {
 					if p := recover(); p != nil {
 						log.Error("panic in scheduled run", "panic", p)
@@ -127,8 +138,8 @@ func serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Contex
 // retryLock waits for a lock another pbp command holds, every
 // c.retryEvery for up to c.retryFor; ErrBusy if it stays held.
 func retryLock(ctx context.Context, log *slog.Logger, c clock, scheduled time.Time) (func(), error) {
-	log.Warn("run lock held by another pbp command; retrying", "scheduled", scheduled, "for", c.retryFor)
 	deadline := c.now().Add(c.retryFor)
+	log.Warn("run lock held by another pbp command; retrying", "scheduled", scheduled, "for", c.retryFor)
 	for c.now().Before(deadline) {
 		if !sleep(ctx, c.retryEvery) {
 			return nil, ctx.Err()
