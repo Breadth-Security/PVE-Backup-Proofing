@@ -55,6 +55,7 @@ When a guest in a run failed or errored, look first at that guest's own log file
 | Message | Cause and fix |
 |---------|---------------|
 | `no backup found for guest N` (`pbp run --guest N`) | None of the PBS storages in `sources.storages` holds a backup of guest N, or its VMID is inside PBP's own range (those are never proofed). |
+| The guest is `SKIPPED` as `excluded by config (…)` | `selection.exclude` in `config.yaml` names it; the brackets give the rule (`guests: 104`, `tag no-proof`). Remove the entry, or the tag from the guest and its next backup, to proof it again. See [Excluding guests](operating.md#excluding-guests). |
 | The guest is `SKIPPED` as `template (not bootable)` | The backup is of a VM or container template (`template: 1` in its stored config). A template cannot be started, so PBP never proofs it; this is by design and does not make the run a `warning`. To prove a template's contents, proof a guest cloned from it. |
 | The guest is `SKIPPED` as `already proven` | Its newest backup already carries a `PBP PROVEN` line. Set `restore.reproof: true` in `config.yaml` to proof it again, or wait for a newer backup. |
 

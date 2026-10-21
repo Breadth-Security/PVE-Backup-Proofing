@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Exclude guests from proofing** ([#32](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/32)). `selection.exclude.guests` takes VMIDs (`104`), labels for one kind (`VM104`, `CT109`) and ranges (`900-999`); `selection.exclude.tags` excludes guests whose live or backed-up config carries a tag. An excluded guest is `SKIPPED · excluded by config (<rule>)` before anything is reserved or restored, its backup is not touched, and the skip does not raise the run's severity. `pbp run --guest N` refuses an excluded guest. See [Excluding guests](docs/operating.md#excluding-guests).
+
 ## v0.4.0
 
 **Upgrade both sides.** The daemon and the node helper must share major.minor, so a 0.3 helper does not work with a 0.4 daemon: follow [Upgrading](docs/upgrading.md). Running the `pbp node setup` line also installs this version's notification templates, which changed; until then preflight reports `notification templates on the node: … differs from this version's`.

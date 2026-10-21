@@ -287,6 +287,50 @@ func TestRunWiring(t *testing.T) {
 	}
 }
 
+// `pbp run --guest N` refuses a guest that selection.exclude names (issue
+// #32). A rule covering both kinds (a bare VMID or a range) is known from
+// the config, so no run starts and nothing is sent. A kind-specific rule
+// (VM101) cannot tell before the run whether a container 101 exists too:
+// the run skips the excluded guest, then the command names the rule. Both
+// exit 1.
+func TestRunGuestExcludedRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		rule    string
+		started bool
+	}{
+		{"101", false},
+		{"100-110", false},
+		{"VM101", true},
+	} {
+		t.Run(tc.rule, func(t *testing.T) {
+			e := newEnv(t)
+			e.backup(101, "")
+			cfg, err := os.ReadFile(e.cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(e.cfgPath, append(cfg, "selection: {exclude: {guests: ["+tc.rule+"]}}\n"...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if code := e.run("run", "--guest", "101"); code != exitFail {
+				t.Fatalf("exit %d; out %q", code, e.out)
+			}
+			want := "guest 101 is excluded by config (guests: " + tc.rule + "); not proofed\n"
+			if !strings.HasSuffix(e.out.String(), want) {
+				t.Errorf("stdout = %q, want it to end %q", e.out, want)
+			}
+			ents, _ := os.ReadDir(e.logDir)
+			if started := len(ents) > 0 || len(e.notif.sent) > 0; started != tc.started {
+				t.Errorf("run started = %t, want %t (log dir %v, notifications %d)", started, tc.started, ents, len(e.notif.sent))
+			}
+			if !tc.started && e.out.String() != want {
+				t.Errorf("stdout = %q, want only %q", e.out, want)
+			}
+		})
+	}
+}
+
 func TestRunWiringLogDirUnwritable(t *testing.T) {
 	e := newEnv(t)
 	e.backup(101, "PBP PROVEN 2026-10-18 02:14 · agent ok")

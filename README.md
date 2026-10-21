@@ -18,7 +18,7 @@ PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or dire
 For each run, PBP:
 
 1. **Preflight.** Checks the API token and SSH, the node helper (its version, and that its VMID range and bridge match your config), the node's PVE version, that the proof bridge is really isolated, the restore storage and the notification templates. It cleans up after any crashed run (the janitor), and checks that the VMID range holds no guest PBP does not own.
-2. **Discovery.** Picks the newest backup of each guest across all configured PBS storages. Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A backup that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
+2. **Discovery.** Picks the newest backup of each guest across all configured PBS storages, leaving out guests you [exclude](docs/operating.md#excluding-guests). Guests whose last `PROVEN` verdict is oldest (or who were never proven) go first. A backup that already carries a `PBP PROVEN` line is skipped unless `restore.reproof: true`.
 3. **Templates.** A backup of a VM or container template (`template: 1` in the config stored in the backup) is skipped: a template cannot be started, so it cannot be proven. Nothing is restored and the backup is not touched.
 4. **Capacity gate.** Skips a guest if the backup does not fit in the restore storage (free space, minus space reserved by restores in progress, minus `space_margin_percent`) or the node lacks free RAM.
 5. **Protect, restore, sanitize.** Marks the backup `protected` so pruning cannot remove it mid-proof, and restores it to the next free VMID in the reserved range (name `pbp-<vmid>-<timestamp>`, tag `pbp`). It then puts every NIC on the isolated bridge (a container's DHCP and IPv6 autoconfiguration become `manual`, since nothing answers them there), sets `onboot=0`, clears `protection` (a backup of a protected guest restores protected, and could then never be destroyed) and removes host passthrough. Anything that cannot be made safe is an `ERROR`; the guest is never started.
@@ -33,7 +33,7 @@ For each run, PBP:
 | `PROVEN` | Restored, booted, all checks passed | Yes: good |
 | `FAILED` | Restore failed, boot failed, or any check failed | Yes: bad |
 | `BOOTED` | The guest reached running but PBP could not look inside (a VM without the guest agent, or an agent without exec rights), or a container without `nesting=1` whose systemd cannot start its sandboxed units ([details](docs/checks.md#containers-without-nesting)) | Partially |
-| `SKIPPED` | Not attempted (a template, not enough space or RAM, already proven, run deadline reached) | No |
+| `SKIPPED` | Not attempted (excluded by config, a template, not enough space or RAM, already proven, run deadline reached) | No |
 | `ERROR` | A PBP or node problem (SSH or API failure, node out of RAM, a guest that cannot be made safe) | No |
 
 **Only `FAILED` indicts the backup.** `SKIPPED` and `ERROR` mean "not proven yet", and `BOOTED` means "starts, but not looked inside". Every `BOOTED` guest is listed with its reason in each run summary, under "BOOTED: started, not looked inside".

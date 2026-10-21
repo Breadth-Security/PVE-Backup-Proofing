@@ -728,6 +728,55 @@ func TestRunSkipsTemplates(t *testing.T) {
 	}
 }
 
+// Guests excluded by config (issue #32) are SKIPPED before anything is
+// reserved or restored, by a guests rule, by a tag on the live guest or by
+// a tag in the backed-up config. Nothing is written to their backups, and
+// the skip does not raise the run's severity.
+func TestRunExcludesGuests(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Selection.Exclude = config.Exclude{Guests: []string{"101", "150-160"}, Tags: []string{"no-proof"}}
+	byRule := f.add("pbs", model.KindQEMU, 101, 1024, "own note")
+	inRange := f.add("pbs", model.KindLXC, 155, 1024, "")
+	liveTag := f.add("pbs", model.KindQEMU, 102, 1024, "")
+	f.api.GuestList = append(f.api.GuestList, pve.GuestRef{Key: liveTag.Key, Node: "pve1", Tags: []string{"web", "No-Proof"}})
+	backedTag := f.add("pbs", model.KindLXC, 103, 1024, "")
+	f.api.BackupConfigs[backedTag.VolID] += "tags: no-proof\n"
+	f.add("pbs", model.KindQEMU, 104, 1024, "")
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	got := byVMID(t, s)
+	for vmid, want := range map[int]string{
+		101: "excluded by config (guests: 101)",
+		155: "excluded by config (guests: 150-160)",
+		102: "excluded by config (tag no-proof)",
+		103: "excluded by config (tag no-proof)",
+	} {
+		if r := got[vmid]; r.Verdict != model.Skipped || r.Reason != want || !r.Excluded {
+			t.Errorf("guest %d: got %s %q excluded=%t, want SKIPPED %q", vmid, r.Verdict, r.Reason, r.Excluded, want)
+		}
+	}
+	if r := got[104]; r.Verdict != model.Proven {
+		t.Errorf("guest 104: got %s %q", r.Verdict, r.Reason)
+	}
+	if rs := f.tgt.restores(); len(rs) != 1 || !strings.Contains(rs[0], "/104/") {
+		t.Errorf("restores = %q, want only guest 104", rs)
+	}
+	if sev := s.Severity(); sev != "info" {
+		t.Errorf("severity = %s, want info", sev)
+	}
+	for _, b := range []model.Backup{byRule, inRange, liveTag, backedTag} {
+		for _, c := range f.api.CallLog() {
+			if strings.HasPrefix(c, "SetVolumeAttrs") && strings.Contains(c, "guest="+b.Key.String()) {
+				t.Errorf("excluded backup written: %s", c)
+			}
+		}
+	}
+	if n := f.api.Backups["pbs"][0].Notes; n != "own note" {
+		t.Errorf("notes of excluded guest 101 = %q", n)
+	}
+}
+
 // A container whose backed-up config has raw lxc.* lines cannot be restored
 // as it is: PVE drops those lines unless root@pam restores (issue #34, CT111
 // lost lxc.apparmor.profile). It is ERROR before anything is reserved or

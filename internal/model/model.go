@@ -109,7 +109,10 @@ type GuestResult struct {
 	AlreadyProven bool
 	// Template: SKIPPED because the backup is of a template, which cannot
 	// boot. Skipped by design, so it does not raise severity either.
-	Template                      bool
+	Template bool
+	// Excluded: SKIPPED because selection.exclude in the config names the
+	// guest. Skipped by design, so it does not raise severity either.
+	Excluded                      bool
 	RestoreDuration, BootDuration time.Duration
 	BootLog                       string
 }
@@ -136,7 +139,8 @@ func (s RunSummary) Counts() map[Verdict]int {
 
 // Severity is "error" if the run errored or any guest FAILED, "warning" if
 // any guest was BOOTED/ERROR or SKIPPED for a reason other than already
-// proven or a template, or there are environment errors, else "info".
+// proven, a template or excluded by config, or there are environment
+// errors, else "info".
 func (s RunSummary) Severity() string {
 	if s.RunError != "" {
 		return "error"
@@ -149,7 +153,7 @@ func (s RunSummary) Severity() string {
 		case Booted, Error:
 			warn = true
 		case Skipped:
-			warn = warn || (!r.AlreadyProven && !r.Template)
+			warn = warn || (!r.AlreadyProven && !r.Template && !r.Excluded)
 		}
 	}
 	if warn || len(s.EnvironmentErrors) > 0 {

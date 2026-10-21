@@ -15,15 +15,15 @@ import (
 )
 
 type Config struct {
-	Schedule  string         `yaml:"schedule"`
-	Workers   int            `yaml:"workers"`
-	Target    Target         `yaml:"target"`
-	Sources   Sources        `yaml:"sources"`
-	Selection map[string]any `yaml:"selection"`
-	Restore   Restore        `yaml:"restore"`
-	Checks    Checks         `yaml:"checks"`
-	Notify    Notify         `yaml:"notify"`
-	Logging   Logging        `yaml:"logging"`
+	Schedule  string    `yaml:"schedule"`
+	Workers   int       `yaml:"workers"`
+	Target    Target    `yaml:"target"`
+	Sources   Sources   `yaml:"sources"`
+	Selection Selection `yaml:"selection"`
+	Restore   Restore   `yaml:"restore"`
+	Checks    Checks    `yaml:"checks"`
+	Notify    Notify    `yaml:"notify"`
+	Logging   Logging   `yaml:"logging"`
 }
 
 type Target struct {
@@ -224,6 +224,7 @@ func (c Config) validate() error {
 		bad("notify.when", "must be \"always\" or \"problems\", got %q", c.Notify.When)
 	}
 	c.validateChecks(bad)
+	c.Selection.Exclude.validate(bad)
 	return errors.Join(errs...)
 }
 

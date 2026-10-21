@@ -64,6 +64,24 @@ Only warnings and errors carry a level; a problem PBP itself has (not the guest)
 
 The notification names the run's folder (`Logs: /var/log/pbp/2026-10-21_02-00-00_schedule/`). With Docker that is the path inside the container, which `docker-compose.yml` maps to `./logs` on the host.
 
+## Excluding guests
+
+PBP proofs the newest backup of every guest it finds. To leave guests out, list them under `selection.exclude` in `config.yaml`:
+
+```yaml
+selection:
+  exclude:
+    guests: [104, CT109, VM5000, 900-999]
+    tags: [no-proof]
+```
+
+- **`guests`:** a VMID (`104`, a VM or a container with that number), a label for one kind (`VM104`, `CT109`), or an inclusive range (`900-999`).
+- **`tags`:** a guest is excluded if its live config or its backed-up config carries one of these tags (case does not matter). Tagging a guest in the Proxmox UI takes effect at the next run; a guest that no longer exists is judged by the tags in its backup.
+
+An excluded guest is never restored, nothing is reserved for it, and its backup's notes are left alone. It shows in the run summary as `SKIPPED · excluded by config (<rule>)`, for example `excluded by config (tag no-proof)`, and it does not raise the run's severity. `pbp run --guest N` refuses an excluded guest, names the rule and exits 1: edit the config to proof it. A malformed entry stops PBP from loading the config (exit 78), naming the entry.
+
+The daemon reads `config.yaml` when it starts, so restart it after editing (`sudo systemctl restart pbp`, or `docker compose restart pbp`); `pbp run --guest` reads the file each time.
+
 ## Schedule and time zone
 
 ### The schedule

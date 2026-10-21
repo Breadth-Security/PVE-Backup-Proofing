@@ -147,6 +147,7 @@ func TestSubjectSummary(t *testing.T) {
 		{"run error", model.RunSummary{RunError: "boom"}, "run error · 0 proven"},
 		{"run error with failure", model.RunSummary{RunError: "boom", Results: append(proven(1), res(model.Failed, nil))}, "run error, 1 failed · 1 proven"},
 		{"template skip", model.RunSummary{Results: []model.GuestResult{res(model.Skipped, func(r *model.GuestResult) { r.Template = true })}}, "nothing to proof"},
+		{"excluded skip", model.RunSummary{Results: []model.GuestResult{res(model.Proven, nil), res(model.Skipped, func(r *model.GuestResult) { r.Excluded = true })}}, "all 1 proven"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

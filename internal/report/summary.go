@@ -45,7 +45,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 				skipReasons = append(skipReasons, r.Reason)
 			}
 			skipGuests[r.Reason] = append(skipGuests[r.Reason], label)
-			if !r.AlreadyProven && !r.Template {
+			if !r.AlreadyProven && !r.Template && !r.Excluded {
 				problemSkips++
 			}
 		}
