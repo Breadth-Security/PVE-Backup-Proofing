@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -241,42 +241,67 @@ func TestRunWiring(t *testing.T) {
 	if !strings.Contains(e.out.String(), "run "+id+": info; proven 0, failed 0, booted 0, skipped 1, error 0") {
 		t.Errorf("stdout = %q", e.out)
 	}
-	b, err := os.ReadFile(filepath.Join(e.logDir, "run-"+id+".log"))
+	ents, _ := os.ReadDir(e.logDir)
+	var names []string
+	folder := ""
+	folderRe := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_manual$`)
+	for _, en := range ents {
+		if en.IsDir() && folderRe.MatchString(en.Name()) {
+			folder = en.Name()
+			continue
+		}
+		names = append(names, en.Name())
+	}
+	if folder == "" || !slices.Equal(names, []string{"run-c.log"}) {
+		t.Fatalf("logs after prune = %v, folder %q", ents, folder)
+	}
+	rb, err := os.ReadFile(filepath.Join(e.logDir, folder, "run.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"msg":"guest result"`) || !strings.Contains(string(b), `"verdict":"SKIPPED"`) ||
-		strings.Contains(string(b), "qemu/102") {
-		t.Errorf("run log = %s", b)
+	const result = "VM101 SKIPPED · already proven"
+	if !strings.Contains(string(rb), result) || strings.Contains(string(rb), "VM102") {
+		t.Errorf("run log = %s", rb)
 	}
-	if n := strings.Count(string(b), `"msg":"guest result"`); n != 1 {
-		t.Errorf("guest 101 logged %d result records, want exactly 1:\n%s", n, b)
+	if n := strings.Count(string(rb), result); n != 1 {
+		t.Errorf("guest 101 logged %d result lines, want exactly 1:\n%s", n, rb)
 	}
-	// The record carries the run correlation and precedes "run finished".
-	var rec struct{ Run, Trigger string }
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.Contains(line, `"msg":"guest result"`) {
-			if err := json.Unmarshal([]byte(line), &rec); err != nil {
-				t.Fatal(err)
-			}
-		}
+	if strings.Index(string(rb), result) > strings.Index(string(rb), "run finished in ") || !strings.Contains(string(rb), "run finished in ") {
+		t.Errorf("guest result logged after run finished:\n%s", rb)
 	}
-	if rec.Run != id || rec.Trigger != "manual" {
-		t.Errorf("guest record run/trigger = %+v", rec)
+	gb, err := os.ReadFile(filepath.Join(e.logDir, folder, "VM101.log"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Index(string(b), `"msg":"guest result"`) > strings.Index(string(b), `"msg":"run finished"`) {
-		t.Errorf("guest result logged after run finished:\n%s", b)
+	if !strings.Contains(string(gb), "skipped: already proven") {
+		t.Errorf("guest log = %s", gb)
 	}
-	ents, _ := os.ReadDir(e.logDir)
-	var names []string
-	for _, en := range ents {
-		names = append(names, en.Name())
+	if _, err := os.Stat(filepath.Join(e.logDir, folder, "VM102.log")); err == nil {
+		t.Error("guest 102 has a log file")
 	}
-	if !slices.Equal(names, []string{"run-" + id + ".log", "run-c.log"}) {
-		t.Errorf("logs after prune = %v", names)
+	if _, err := os.Stat(filepath.Join(e.logDir, folder, "qemu")); err == nil {
+		t.Error("qemu path in run folder")
 	}
 	if len(e.notif.sent) != 1 {
 		t.Errorf("notifications = %d", len(e.notif.sent))
+	}
+}
+
+func TestRunWiringLogDirUnwritable(t *testing.T) {
+	e := newEnv(t)
+	e.backup(101, "PBP PROVEN 2026-10-18 02:14 · agent ok")
+	if err := os.WriteFile(e.logDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := e.run("run", "--guest", "101"); code != exitOK {
+		t.Fatalf("exit %d; out %q err %q", code, e.out, e.errOut)
+	}
+	if !strings.Contains(e.out.String(), "open run log") {
+		t.Errorf("stdout = %q", e.out)
+	}
+	if len(e.notif.sent) != 1 || e.notif.sent[0].LogDir != "" {
+		t.Errorf("notifications = %+v", e.notif.sent)
 	}
 }
 

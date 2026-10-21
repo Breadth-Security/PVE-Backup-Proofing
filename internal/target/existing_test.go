@@ -645,7 +645,8 @@ func TestSanitize(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	missing, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	san, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	missing := san.Removed
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +680,8 @@ func TestSanitizeLXCBindMount(t *testing.T) {
 	if _, ok := f.Configs[990001]["hostname"]; !ok || f.Configs[990001]["hostname"] != "web" {
 		t.Errorf("LXC hostname must not be renamed: %q", f.Configs[990001]["hostname"])
 	}
-	missing, err := n.Sanitize(ctx, model.KindLXC, 990001)
+	san, err := n.Sanitize(ctx, model.KindLXC, 990001)
+	missing := san.Removed
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1107,5 +1109,27 @@ func TestStrayTagged(t *testing.T) {
 	f.Fail["Guests"] = errors.New("boom")
 	if _, err := newTarget(t, f, f, nil).StrayTagged(context.Background()); err == nil {
 		t.Error("want error")
+	}
+}
+
+func TestSanitizeReportsChanges(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = "name: delta1\nmemory: 2048\nagent: 1\nscsi0: local-lvm:vm-101-disk-0,size=32G\nnet0: virtio=AA:BB,bridge=vmbr0,tag=2\nonboot: 1\nusb0: host=1-1\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"net0: virtio=AA:BB,bridge=vmbr0,tag=2 \u2192 virtio=AA:BB,bridge=" + bridge,
+		"onboot: 1 \u2192 0",
+		"usb0 removed (host=1-1)",
+	}
+	if !slices.Equal(got.Changes, want) {
+		t.Errorf("Changes = %q, want %q", got.Changes, want)
 	}
 }

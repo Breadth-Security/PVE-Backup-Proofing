@@ -8,6 +8,15 @@ func TestGuestKeyString(t *testing.T) {
 	}
 }
 
+func TestGuestKeyLabel(t *testing.T) {
+	if got := (GuestKey{KindQEMU, 102}).Label(); got != "VM102" {
+		t.Fatal(got)
+	}
+	if got := (GuestKey{KindLXC, 101}).Label(); got != "CT101" {
+		t.Fatal(got)
+	}
+}
+
 func TestNotCoveredLogLine(t *testing.T) {
 	n := NotCovered{Unit: "postgresql.service", Piece: MissingPiece{Kind: "excluded-disk", Key: "scsi1", Path: "/srv/pgdata", Detail: "backup=0"}}
 	want := "Found postgresql.service depends on /srv/pgdata (disk scsi1, backup=0): not backed up, skipped"

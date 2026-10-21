@@ -71,6 +71,18 @@ func (e *TaskError) Error() string {
 	return msg
 }
 
+// TaskFailure reports whether err carries a failed PVE task. exit is the
+// task's one-line exit status (newlines turned into spaces); log is the tail
+// of its task log.
+func TaskFailure(err error) (exit string, log []string, ok bool) {
+	var te *TaskError
+	if !errors.As(err, &te) {
+		return "", nil, false
+	}
+	exit = strings.Join(strings.Fields(te.ExitStatus), " ")
+	return exit, te.Log, true
+}
+
 // New builds a client from the API configuration. TLS is verified either by
 // pinning the leaf certificate's SHA-256 fingerprint or against CAFile.
 func New(cfg config.API) (*Client, error) {

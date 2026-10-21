@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,10 +45,12 @@ const (
 // OnlyVMID, when non-zero, limits the run to that guest. RunID, when set,
 // names the run instead of the default derived from its start time and
 // trigger, so a caller can open the run's log file before the run starts.
+// LogDir is the run's log folder, passed on to the summary.
 type Options struct {
 	Trigger  string
 	OnlyVMID int
 	RunID    string
+	LogDir   string
 }
 
 // NewRunID names a run started at t: its UTC start time to the millisecond,
@@ -61,18 +64,18 @@ func NewRunID(t time.Time, trigger string) string {
 // gated proofing with Cfg.Workers workers, then history and notification.
 // It never panics and always returns a summary.
 func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
-	log := logger(d).With("trigger", opt.Trigger)
+	log := logger(d)
 	start := d.Now()
 	s := model.RunSummary{
 		ID:      opt.RunID,
 		Trigger: opt.Trigger,
 		Started: start,
+		LogDir:  opt.LogDir,
 	}
 	if s.ID == "" {
 		s.ID = NewRunID(start, opt.Trigger)
 	}
-	log = log.With("run", s.ID)
-	log.Info("run started")
+	log.Info(fmt.Sprintf("run started (%s) · PBP %s · node %s", opt.Trigger, d.Version, d.Cfg.Target.Node))
 
 	var runErrs []string
 	var envErrs []string
@@ -82,10 +85,12 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 		runErrs = append(runErrs, "record run: "+err.Error())
 	} else {
 		results, errs := guarded(log, func() ([]model.GuestResult, []string) {
+			t0 := d.Now()
 			if err := Preflight(ctx, d); err != nil {
 				log.Error("preflight failed", "err", err)
 				return nil, []string{"preflight: " + err.Error()}
 			}
+			log.Info("preflight ok (" + report.Dur(d.Now().Sub(t0)) + ")")
 			envErrs = strayTaggedErrors(ctx, d, log)
 			return execute(ctx, d, opt, start, log)
 		})
@@ -137,12 +142,9 @@ func guarded(log *slog.Logger, fn func() ([]model.GuestResult, []string)) (res [
 	return fn()
 }
 
-// finish logs each guest result once, then notifies and records the run's
-// outcome.
+// finish notifies, logs the run's totals and records its outcome. Each guest
+// result was logged as it became final.
 func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
-	for _, r := range s.Results {
-		report.LogGuest(log, r)
-	}
 	sev := s.Severity()
 	outcome := state.OutcomeOK
 	switch {
@@ -167,7 +169,10 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 			outcome = state.OutcomeError
 		}
 	}
-	log.Info("run finished", "outcome", outcome, "severity", sev, "run_error", s.RunError)
+	c := s.Counts()
+	log.Info(fmt.Sprintf("run finished in %s · %d proven, %d failed, %d booted, %d skipped, %d error · severity %s",
+		report.Dur(s.Ended.Sub(s.Started)), c[model.Proven], c[model.Failed], c[model.Booted], c[model.Skipped], c[model.Error], sev),
+		"outcome", outcome)
 
 	rec.Outcome, rec.Ended, rec.Counts = outcome, s.Ended, s.Counts()
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
@@ -182,6 +187,7 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 	if queue == nil {
 		return nil, errs
 	}
+	logDiscovery(d, queue, log)
 	p := &pool{d: d, log: log, inUse: map[int]bool{}}
 	results := p.run(ctx, queue, start)
 	return results, append(errs, p.errs...)
@@ -237,6 +243,28 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), errs
 }
 
+// logDiscovery logs how many backups were found, on which storages, and how
+// many of them are already proven.
+func logDiscovery(d Deps, queue []model.Backup, log *slog.Logger) {
+	var stores []string
+	proven := 0
+	for _, st := range d.Cfg.Sources.Storages {
+		if slices.ContainsFunc(queue, func(b model.Backup) bool { return b.Storage == st }) {
+			stores = append(stores, st)
+		}
+	}
+	for _, b := range queue {
+		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
+			proven++
+		}
+	}
+	on := ""
+	if len(stores) > 0 {
+		on = " on " + strings.Join(stores, ", ")
+	}
+	log.Info(fmt.Sprintf("discovery: %d backups%s; %d already proven, %d to proof", len(queue), on, proven, len(queue)-proven))
+}
+
 // pool admits jobs one at a time in priority order and proofs them on up to
 // Cfg.Workers goroutines. mu guards the VMIDs and the space and memory
 // reserved by admitted jobs that have not finished.
@@ -269,34 +297,42 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 	defer wg.Wait()
 
 	for i, b := range queue {
+		glog := guestLogger(d, b.Key)
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
-			results[i] = p.skip(b, reasonAlreadyProven)
+			results[i] = p.skip(glog, b, reasonAlreadyProven)
 			results[i].AlreadyProven = true
+			p.logResult(results[i])
 			continue
 		}
 		// Wait for a free worker; the gates below then see current figures.
 		select {
 		case slots <- struct{}{}:
 		case <-ctx.Done():
-			results[i] = p.skip(b, reasonCancelled)
+			results[i] = p.skip(glog, b, reasonCancelled)
+			p.logResult(results[i])
 			continue
 		}
 		if ctx.Err() != nil {
 			<-slots
-			results[i] = p.skip(b, reasonCancelled)
+			results[i] = p.skip(glog, b, reasonCancelled)
+			p.logResult(results[i])
 			continue
 		}
 		if limit := d.Cfg.Restore.MaxRunDuration; limit > 0 && !d.Now().Before(start.Add(limit)) {
 			<-slots
-			results[i] = p.skip(b, reasonDeadline)
+			results[i] = p.skip(glog, b, reasonDeadline)
+			p.logResult(results[i])
 			continue
 		}
-		l, res := p.admitGuarded(ctx, b)
+		l, res := p.admitGuarded(ctx, glog, b)
 		if res != nil {
 			<-slots
 			results[i] = *res
+			p.logResult(results[i])
 			continue
 		}
+		label := b.Key.Label()
+		p.log.Log(ctx, report.LevelDetail, label+" started ("+label+".log)")
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -304,22 +340,29 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 			defer p.release(l)
 			defer func() {
 				if r := recover(); r != nil {
-					p.log.Error("panic in job", "guest", b.Key.String(), "panic", r, "stack", string(debug.Stack()))
+					glog.Error("panic in job", "panic", r, "stack", string(debug.Stack()))
 					results[i] = model.GuestResult{Backup: b, TempVMID: l.vmid, Verdict: model.Error,
-						Reason: fmt.Sprintf("internal error: %v", r)}
+						Reason: oneLine(fmt.Sprintf("internal error: %v", r))}
 					p.addErr(fmt.Sprintf("internal error: %v", r))
 				}
+				p.logResult(results[i])
 			}()
-			results[i] = proofOne(ctx, d, b, l.vmid, l.orig)
+			results[i] = proofOne(ctx, d, b, l.vmid, l.orig, glog)
 		}()
 	}
 	wg.Wait()
 	return results
 }
 
-func (p *pool) skip(b model.Backup, reason string) model.GuestResult {
-	p.log.Info("guest skipped", "guest", b.Key.String(), "volid", b.VolID, "reason", reason)
+// skip logs reason to the guest's log and returns b's SKIPPED result.
+func (p *pool) skip(glog *slog.Logger, b model.Backup, reason string) model.GuestResult {
+	glog.Info("skipped: " + reason)
 	return model.GuestResult{Backup: b, Verdict: model.Skipped, Reason: reason}
+}
+
+// logResult writes a guest's final result to the run log.
+func (p *pool) logResult(r model.GuestResult) {
+	p.log.Info(r.Backup.Key.Label() + " " + string(r.Verdict) + " · " + r.Reason)
 }
 
 func (p *pool) addErr(msg string) {
@@ -330,44 +373,49 @@ func (p *pool) addErr(msg string) {
 
 // admitGuarded is admit with a panic turned into an ERROR result and a run
 // error.
-func (p *pool) admitGuarded(ctx context.Context, b model.Backup) (l lease, res *model.GuestResult) {
+func (p *pool) admitGuarded(ctx context.Context, glog *slog.Logger, b model.Backup) (l lease, res *model.GuestResult) {
 	defer func() {
 		if r := recover(); r != nil {
-			p.log.Error("panic while admitting job", "guest", b.Key.String(), "panic", r, "stack", string(debug.Stack()))
+			glog.Error("panic while admitting job", "panic", r, "stack", string(debug.Stack()))
 			msg := fmt.Sprintf("internal error: %v", r)
 			p.addErr(msg)
-			res = &model.GuestResult{Backup: b, Verdict: model.Error, Reason: msg}
+			res = &model.GuestResult{Backup: b, Verdict: model.Error, Reason: oneLine(msg)}
 		}
 	}()
-	return p.admit(ctx, b)
+	return p.admit(ctx, glog, b)
 }
 
 // admit runs the capacity gates for b (design section 6 step 4) and, if it
 // passes, reserves its space, memory and a VMID. Otherwise it returns the
-// SKIPPED or ERROR result for b.
-func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestResult) {
+// SKIPPED or ERROR result for b. glog is b's guest log.
+func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (lease, *model.GuestResult) {
 	d := p.d
 	node, store := d.Cfg.Target.Node, d.Cfg.Restore.Storage
 	fail := func(v model.Verdict, reason string) (lease, *model.GuestResult) {
+		reason = oneLine(reason)
 		if v == model.Error && ctx.Err() != nil {
 			// The failure is most likely the cancellation itself.
 			v, reason = model.Skipped, reasonCancelled
 		}
 		if v == model.Skipped {
-			r := p.skip(b, reason)
+			r := p.skip(glog, b, reason)
 			return lease{}, &r
 		}
-		p.log.Error("guest not proofed", "guest", b.Key.String(), "volid", b.VolID, "reason", reason)
+		// Info, so it is not forwarded: the result line reports it.
+		glog.Info("guest not proofed: " + reason)
 		return lease{}, &model.GuestResult{Backup: b, Verdict: v, Reason: reason}
 	}
 
+	at := d.Now()
+	glog.Info(fmt.Sprintf("backup %s (taken %s, %s old, %s)", b.VolID,
+		b.Time.In(at.Location()).Format("2006-01-02 15:04"), report.Age(at.Sub(b.Time)), report.Bytes(b.Size)))
 	raw, err := d.API.OriginalConfig(ctx, node, b.VolID)
 	if err != nil {
 		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
 		// Unlike the node-wide gates below, this failure is the backup's
 		// own, so its notes record it (annotate skips a SKIPPED result).
 		// p.mu is not held yet.
-		annotate(d, p.log.With("guest", b.Key.String(), "volid", b.VolID), b, *res)
+		annotate(d, glog, b, *res)
 		return l, res
 	}
 	orig := sanitize.ParseConfigText(raw)
@@ -388,7 +436,9 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 		return fail(model.Error, fmt.Sprintf("cannot read storage %s: %v", store, err))
 	}
 	margin := st.Total * int64(d.Cfg.Restore.SpaceMarginPercent) / 100
-	if b.Size > st.Avail-p.spaceRes-margin {
+	if freeSpace := st.Avail - p.spaceRes - margin; b.Size > freeSpace {
+		glog.Info(fmt.Sprintf("capacity: need %s, %s free on %s (after %s reserved, %s margin)",
+			report.Bytes(b.Size), report.Bytes(max(freeSpace, 0)), store, report.Bytes(p.spaceRes), report.Bytes(margin)))
 		return fail(model.Skipped, "insufficient space on "+store)
 	}
 
@@ -396,9 +446,16 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 	if err != nil {
 		return fail(model.Error, "cannot read node memory: "+err.Error())
 	}
-	if needRAM > mem.Available-p.ramRes {
+	freeRAM := mem.Available - p.ramRes
+	ramFigures := fmt.Sprintf("need %s RAM, %s free (after %s reserved)",
+		report.Bytes(needRAM), report.Bytes(max(freeRAM, 0)), report.Bytes(p.ramRes))
+	if needRAM > freeRAM {
+		glog.Info("capacity: " + ramFigures)
 		return fail(model.Skipped, reasonNoMemory)
 	}
+	glog.Info(fmt.Sprintf("capacity ok: need %s, %s free on %s (after %s reserved, %s margin); %s",
+		report.Bytes(b.Size), report.Bytes(max(st.Avail-p.spaceRes-margin, 0)), store,
+		report.Bytes(p.spaceRes), report.Bytes(margin), ramFigures))
 
 	vmid, err := d.Target.AllocateVMID(ctx, p.inUse)
 	if errors.Is(err, target.ErrNoFreeVMID) {
@@ -435,6 +492,15 @@ func guestMemoryMiB(kind model.GuestKind, orig map[string]string) int64 {
 		return defaultMemLXC
 	}
 	return defaultMemQEMU
+}
+
+// guestLogger is the log for one guest's steps: Deps.GuestLog, or the run log
+// with the guest's key when there is none.
+func guestLogger(d Deps, key model.GuestKey) *slog.Logger {
+	if d.GuestLog != nil {
+		return d.GuestLog(key)
+	}
+	return logger(d).With("guest", key.String())
 }
 
 func logger(d Deps) *slog.Logger {

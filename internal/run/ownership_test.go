@@ -61,7 +61,7 @@ func TestRestoreFailureLeavingGuestIsDestroyedViaState(t *testing.T) {
 	f.isolatedNode(restoreTaskFails{f.api})
 	b := f.ownBackup()
 
-	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]))
+	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
 
 	if res.Verdict != model.Failed || !strings.HasPrefix(res.Reason, "restore failed: ") || strings.Contains(res.Reason, "cleanup failed") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
@@ -87,7 +87,7 @@ func TestRestoreRefusedNeverDestroys(t *testing.T) {
 	f.stoppedGuest(990000, "x")
 	f.api.Fail["Restore"] = &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu", Message: "VM 990000 already exists"}
 
-	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]))
+	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
 
 	if res.Verdict != model.Error || strings.Contains(res.Reason, "cleanup failed") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
@@ -262,7 +262,7 @@ func TestRefusedRestoreWithStaleRecordFailsSafe(t *testing.T) {
 	b := f.ownBackup()
 	f.stoppedGuest(990000, "x") // the foreign guest that made the restore fail
 
-	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]))
+	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
 
 	if res.Verdict != model.Error || len(f.tgt.calls) != 0 {
 		t.Errorf("result %s %q, destroy calls %v", res.Verdict, res.Reason, f.tgt.calls)

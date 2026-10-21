@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Run logs and the notification are easier to read** ([#26](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/26)). Each run now writes a folder under `logging.dir` (for example `2026-10-21_02-00-00_schedule/`) with `run.log` and one `VM102.log` / `CT101.log` per guest, as readable text instead of JSON, with a line for every step as it happens. `logging.retain_runs` counts folders; old `run-*.log` files count toward it until they age out. A failed PVE task now shows only its error line as the reason, with the task log's tail in the guest's file. The notification leads with the problems, has a short subject (`PBP pve1: 9 failed, 9 error · 13 proven`), names guests `VM102` / `CT101` throughout, and gives the log folder. **After upgrading, reinstall the node's notification templates** (`pbp node install-templates`, or the `pbp node setup` line); preflight reports outdated ones.
 - Backups of VM and container templates (`template: 1` in the config stored in the backup) are skipped as `template (not bootable)` before anything is reserved or restored, instead of being proofed and failing to start. The backup's notes and `protected` flag are not touched, and the skip does not raise the run's severity. ([#27](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/27))
 
 ## v0.3.1

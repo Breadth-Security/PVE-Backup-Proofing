@@ -21,6 +21,15 @@ type GuestKey struct {
 
 func (k GuestKey) String() string { return fmt.Sprintf("%s/%d", k.Kind, k.VMID) }
 
+// Label is the short guest ID shown to operators and used in log file names:
+// VM102 for a qemu guest, CT101 for a container.
+func (k GuestKey) Label() string {
+	if k.Kind == KindLXC {
+		return fmt.Sprintf("CT%d", k.VMID)
+	}
+	return fmt.Sprintf("VM%d", k.VMID)
+}
+
 type Backup struct {
 	Storage, VolID, Notes string
 	Key                   GuestKey
@@ -108,8 +117,10 @@ type GuestResult struct {
 type RunSummary struct {
 	ID, Trigger    string
 	Started, Ended time.Time
-	Results        []GuestResult
-	RunError       string
+	// LogDir is the run's log folder ("" when the run logs to stdout only).
+	LogDir   string
+	Results  []GuestResult
+	RunError string
 	// EnvironmentErrors are problems with the node PBP found but did not
 	// act on (e.g. a pbp-tagged guest outside the VMID range).
 	EnvironmentErrors []string

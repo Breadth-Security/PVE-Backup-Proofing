@@ -124,7 +124,7 @@ func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origT
 	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
+func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (target.Sanitized, error) {
 	t.rec.add(ctx, "Sanitize")
 	return t.Fake.Sanitize(ctx, kind, vmid)
 }
@@ -201,7 +201,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) run(ctx context.Context) model.GuestResult {
-	return proofOne(ctx, f.d, f.b, tmpVMID, sanitize.ParseConfigText(f.api.BackupConfigs[f.b.VolID]))
+	return proofOne(ctx, f.d, f.b, tmpVMID, sanitize.ParseConfigText(f.api.BackupConfigs[f.b.VolID]), guestLogger(f.d, f.b.Key))
 }
 
 // notes returns the backup's notes as stored in the fake.
@@ -263,8 +263,8 @@ func TestHappyPath(t *testing.T) {
 			t.Errorf("SetVolumeAttrs went to %s, want the backup's storage pve1/pbs", s)
 		}
 	}
-	if f.logBuf.Len() != 0 {
-		t.Errorf("unexpected log: %s", f.logBuf)
+	if l := f.logBuf.String(); strings.Contains(l, "level=WARN") || strings.Contains(l, "level=ERROR") {
+		t.Errorf("unexpected warning or error: %s", l)
 	}
 }
 
@@ -787,5 +787,18 @@ func TestMissingPieces(t *testing.T) {
 	}
 	if len(removed) != 1 || cap(removed) != 1 {
 		t.Error("removed modified")
+	}
+}
+
+func TestOneLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":              "plain",
+		"a\nb":               "a b",
+		"a\r\n\r\nb\n":       "a b ",
+		"task failed:\nx\ny": "task failed: x y",
+	} {
+		if got := oneLine(in); got != want {
+			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

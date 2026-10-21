@@ -89,4 +89,4 @@ notify:
 
 logging:
   dir: /var/log/pbp
-  retain_runs: 30              # default; at least 1
+  retain_runs: 30              # runs (one folder each); default; at least 1

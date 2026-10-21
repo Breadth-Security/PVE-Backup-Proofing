@@ -304,7 +304,7 @@ func (a *app) lock(cmd string) (func(), int) {
 }
 
 func (a *app) daemon(ctx context.Context, cfg config.Config) int {
-	slog.SetDefault(report.NewLogger(a.stdout, nil))
+	slog.SetDefault(report.NewLogger(a.stdout))
 	slog.Info("pbp daemon starting", "version", version, "go", runtime.Version())
 	if err := writeStarted(startedPath(), a.now()); err != nil {
 		slog.Error("record daemon start", "err", err)
@@ -343,25 +343,27 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 }
 
 // runOnce performs one run with real wiring. The caller holds the run lock.
-// Logs go to stdout and to the run's own JSON log file.
+// Logs go to stdout and to the run's own folder (run.log and one file per guest).
 func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) model.RunSummary {
 	opt.RunID = run.NewRunID(a.now(), opt.Trigger)
-	f, logErr := report.OpenRunLog(cfg.Logging.Dir, opt.RunID)
+	d := run.Deps{Cfg: cfg, Now: a.now, Version: version}
+	rl, logErr := report.NewRunLog(cfg.Logging.Dir, a.now(), opt.Trigger, a.now)
 	var log *slog.Logger
 	if logErr != nil {
-		log = report.NewLogger(a.stdout, nil)
+		log = report.NewLogger(a.stdout)
 		log.Error("open run log", "err", logErr)
 	} else {
-		defer func() { _ = f.Close() }()
-		log = report.NewLogger(a.stdout, f)
-	}
-	defer func() {
-		if logErr == nil {
-			if err := report.PruneRunLogs(cfg.Logging.Dir, cfg.Logging.RetainRuns); err != nil {
+		defer func() { _ = rl.Close() }()
+		// Logger first: a guest logger captures the run handler when Guest is called.
+		log = rl.Logger(a.stdout)
+		d.GuestLog = rl.Guest
+		opt.LogDir = rl.Dir()
+		defer func() {
+			if err := report.PruneRuns(cfg.Logging.Dir, cfg.Logging.RetainRuns, rl.Dir()); err != nil {
 				log.Error("prune run logs", "err", err)
 			}
-		}
-	}()
+		}()
+	}
 
 	store, err := state.Open(statePath())
 	if err != nil {
@@ -377,7 +379,7 @@ func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) m
 	if w.apiErr != nil {
 		log.Error("PVE API CLIENT FAILED: the run fails", "err", w.apiErr)
 	}
-	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store, Log: log, Now: a.now, Notifier: w.notifier}
+	d.API, d.Target, d.Store, d.Log, d.Notifier = w.api, w.target, store, log, w.notifier
 	s := run.Run(ctx, d, opt)
 	return s
 }
@@ -453,7 +455,7 @@ func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.St
 		}
 	}
 	d := run.Deps{Cfg: cfg, API: w.api, Target: w.target, Store: store,
-		Log: report.NewLogger(a.stderr, nil), Now: a.now, Notifier: w.notifier}
+		Log: report.NewLogger(a.stderr), Now: a.now, Notifier: w.notifier}
 	if store != nil {
 		c.line(preflightName, run.Preflight(ctx, d))
 	} else {

@@ -1,7 +1,7 @@
-PBP backup proofing run {{run-id}} on {{node}}
-Started: {{started}}
-Duration: {{elapsed}}
-Result: {{summary}}
+{{headline}}
+{{#if logs}}
+Logs: {{logs}}
+{{/if}}
 {{#if run-error}}
 
 Run error: {{run-error}}
@@ -13,21 +13,42 @@ Environment errors:
   {{this}}
 {{/each}}
 {{/if}}
+{{#if failed}}
 
-Guests:
-{{#each guests}}
-  {{guest}} {{name}}: {{verdict}} - {{reason}}
+FAILED: the backup has a problem
+{{#each failed}}
+  {{this}}
 {{/each}}
+{{/if}}
+{{#if errored}}
+
+ERROR: PBP could not finish; says nothing about the backup
+{{#each errored}}
+  {{this}}
+{{/each}}
+{{/if}}
 {{#if booted}}
 
-Guests PBP could not look inside (booted only):
+BOOTED: started, not looked inside
 {{#each booted}}
-  {{guest}} {{name}}: {{reason}}
+  {{this}}
 {{/each}}
+{{/if}}
+{{#if skipped}}
+
+SKIPPED
+{{#each skipped}}
+  {{this}}
+{{/each}}
+{{/if}}
+{{#if proven}}
+
+PROVEN
+  {{proven}}
 {{/if}}
 {{#if not-covered}}
 
-Not covered by backup:
+Not covered by backup
 {{#each not-covered}}
   {{this}}
 {{/each}}
