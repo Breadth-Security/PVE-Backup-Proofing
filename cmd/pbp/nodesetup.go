@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
@@ -95,19 +96,41 @@ func (a *app) confirm(yes bool) bool {
 }
 
 // printPlan prints each item with its status and, if any, its diff.
+// Names and diff lines can come from files the pbp user controls (a planted
+// authorized_keys line, a file name in .ssh), so control characters are
+// shown escaped, never sent to root's terminal (code review 3.4).
 func printPlan(w io.Writer, p nodesetup.Plan) {
 	for _, it := range p.Items {
-		if strings.HasSuffix(it.Name, it.Path) {
-			fprintf(w, "  [%s] %s\n", it.Status, it.Name)
+		name, path := termSafe(it.Name), termSafe(it.Path)
+		if strings.HasSuffix(name, path) {
+			fprintf(w, "  [%s] %s\n", it.Status, name)
 		} else {
-			fprintf(w, "  [%s] %s (%s)\n", it.Status, it.Name, it.Path)
+			fprintf(w, "  [%s] %s (%s)\n", it.Status, name, path)
 		}
 		if it.Diff != "" {
 			for _, l := range strings.Split(strings.TrimRight(it.Diff, "\n"), "\n") {
-				fprintf(w, "        %s\n", l)
+				fprintf(w, "        %s\n", termSafe(l))
 			}
 		}
 	}
+}
+
+// termSafe escapes control characters (C0, DEL, C1, and invalid UTF-8) as
+// \xNN, so text read from the filesystem cannot drive the terminal.
+func termSafe(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && n == 1) || r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			for _, c := range []byte(s[i : i+n]) {
+				fmt.Fprintf(&b, "\\x%02x", c)
+			}
+		} else {
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 // nodeSetup runs `pbp node setup`.
@@ -180,6 +203,11 @@ type nodeRun struct {
 	// so the "also runs a PBP daemon" warning is noise. quiet: a second
 	// pass of the same run, whose warnings were already shown.
 	local, quiet bool
+	// saveSecret, in the local flow, writes a token secret created by a
+	// run that then failed to the host's token file instead of printing
+	// it: that flow promises the secret is never shown, and the next run
+	// would otherwise have to rotate it (code review 3.5).
+	saveSecret func(secret string) (where string, err error)
 }
 
 // nodeResult is what a node setup run ends with: the reply for the PBP host
@@ -207,7 +235,7 @@ func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRu
 	}
 	if !o.local && !o.quiet {
 		if w := nodesetup.DaemonWarning(ctx, env); w != "" {
-			fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+			fprintf(a.stderr, "pbp node setup: warning: %s\n", termSafe(w))
 		}
 	}
 	plan, err := nodesetup.BuildPlan(ctx, env, sa, nodeName)
@@ -216,7 +244,7 @@ func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRu
 	}
 	if !o.quiet {
 		for _, w := range plan.Warnings {
-			fprintf(a.stderr, "pbp node setup: warning: %s\n", w)
+			fprintf(a.stderr, "pbp node setup: warning: %s\n", termSafe(w))
 		}
 	}
 	// The reply needs the node's ed25519 host key and API certificate, which
@@ -260,7 +288,11 @@ func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRu
 	}
 	if applyErr != nil || selfErr != nil || repErr != nil {
 		if secret != "" {
-			a.handOverSecret(rep, repErr, secret)
+			if where, err := saveOrNot(o.saveSecret, secret); err == nil {
+				fprintf(a.stdout, "\nThe API token %s was created; its secret is saved in %s (not shown).\n", nodesetup.TokenID, where)
+			} else {
+				a.handOverSecret(rep, repErr, secret)
+			}
 		}
 		switch {
 		case applyErr != nil:
@@ -271,6 +303,14 @@ func (a *app) nodeSetupRun(ctx context.Context, sa nodeproto.SetupArgs, o nodeRu
 		return nodeResult{}, a.stepFailed(sub, "reply", repErr)
 	}
 	return nodeResult{reply: rep}, exitOK
+}
+
+// saveOrNot calls save, or reports that there is none.
+func saveOrNot(save func(string) (string, error), secret string) (string, error) {
+	if save == nil {
+		return "", errors.New("no token file to save to")
+	}
+	return save(secret)
 }
 
 // handOverSecret prints a token secret created by a run that then failed:

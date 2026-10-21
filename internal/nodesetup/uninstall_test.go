@@ -670,3 +670,31 @@ func TestUninstallExtraKeyFile(t *testing.T) {
 		t.Errorf("extra file: %v", err)
 	}
 }
+
+// --remove-token names what goes with the user and the role that setup did
+// not make: other tokens of pbp@pve, and other users' grants of
+// PBPProofer, which PVE drops with the role (code review 3.7).
+func TestUninstallNamesOthersCasualties(t *testing.T) {
+	f, env := newUninstallFake(t)
+	f.tokens[UserID] = append(f.tokens[UserID], "manual")
+	f.acls = append(f.acls, aclEntry{Path: "/vms/100", RoleID: RoleName, Type: "user", UGID: "alice@pve", Propagate: 1})
+	p := buildUninstallPlan(t, env, true)
+	var user, role Item
+	for _, it := range p.Items {
+		switch it.Kind {
+		case KindUser:
+			user = it
+		case KindRole:
+			role = it
+		}
+	}
+	if !strings.Contains(user.Diff, "-token pbp@pve!manual (not setup's") {
+		t.Errorf("user diff %q does not name the other token", user.Diff)
+	}
+	if !strings.Contains(role.Diff, "-acl /vms/100 alice@pve PBPProofer (not setup's") {
+		t.Errorf("role diff %q does not name alice's grant", role.Diff)
+	}
+	if strings.Count(role.Diff, "not setup's") != 1 {
+		t.Errorf("role diff names setup's own ACLs as others': %q", role.Diff)
+	}
+}

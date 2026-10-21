@@ -137,6 +137,51 @@ func (l Layout) HaveToken() bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
+// SecureSecrets gives the secrets directory, the private key and the token
+// file the layout's mode and owner when they exist: a key or token left
+// group- or world-readable by an older or manual install is tightened, not
+// left as it is (code review 3.3). It returns a line per mode it changed;
+// a symlink in place of one of them is refused.
+func (l Layout) SecureSecrets() ([]string, error) {
+	var fixed []string
+	uid, gid, err := l.owner()
+	if err != nil {
+		return nil, err
+	}
+	secure := func(path string, dir bool, mode os.FileMode) error {
+		fi, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return err
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return fmt.Errorf("%s is a symlink; pbp setup keeps secrets in plain files", path)
+		case fi.IsDir() != dir:
+			return fmt.Errorf("%s is not a %s", path, map[bool]string{true: "directory", false: "file"}[dir])
+		}
+		if have := fi.Mode().Perm(); have != mode {
+			if err := os.Chmod(path, mode); err != nil {
+				return err
+			}
+			fixed = append(fixed, fmt.Sprintf("%s mode %04o (was %04o)", path, mode, have))
+		}
+		if err := chown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := secure(l.SecretsDir(), true, l.pick(0o700, 0o750)); err != nil {
+		return fixed, err
+	}
+	for _, p := range []string{l.KeyPath(), l.TokenPath()} {
+		if err := secure(p, false, l.pick(0o400, 0o640)); err != nil {
+			return fixed, err
+		}
+	}
+	return fixed, nil
+}
+
 // owner is the uid and gid every file of the layout gets.
 func (l Layout) owner() (uid, gid int, err error) {
 	if !l.Deb {

@@ -485,6 +485,27 @@ func TestPlanTokenWithoutPrivsep(t *testing.T) {
 	}
 }
 
+// Without a token flag the token is not in the plan, but a privsep 0 token
+// is still warned about (code review 3.9).
+func TestPlanWarnsPrivsepZeroWithoutTokenFlag(t *testing.T) {
+	pve := &fakePVE{}
+	pve.complete("pve1")
+	pve.nosep = true
+	env := testEnv(t, pve, "/bin/sh")
+	layoutComplete(t, env.Root)
+	a := testArgs()
+	a.CreateToken = false
+	p := buildPlan(t, env, a)
+	for _, it := range p.Items {
+		if it.Kind == KindToken {
+			t.Errorf("token in the plan without a token flag: %+v", it)
+		}
+	}
+	if !slices.ContainsFunc(p.Warnings, func(w string) bool { return strings.Contains(w, "privsep 0") && strings.Contains(w, "--rotate-token") }) {
+		t.Errorf("no privsep warning: %q", p.Warnings)
+	}
+}
+
 func TestPlanOwnerDiffers(t *testing.T) {
 	pve := &fakePVE{}
 	pve.complete("pve1")
@@ -739,5 +760,26 @@ func TestPlanACLWithoutPropagate(t *testing.T) {
 	layoutComplete(t, env.Root)
 	if it := item(t, buildPlan(t, env, testArgs()), KindACL, "/vms"); it.Status != Create || !strings.Contains(it.Diff, "+token "+TokenID) {
 		t.Errorf("non-propagating /vms token ACL: status %v diff %q, want Create", it.Status, it.Diff)
+	}
+}
+
+// A Match block on the connection is named: the key-source check only sees
+// localhost (code review 3.2). A Match on the user alone is not.
+func TestPlanWarnsMatchByAddress(t *testing.T) {
+	pve := &fakePVE{}
+	pve.complete("pve1")
+	env := testEnv(t, pve, "/bin/sh")
+	layoutComplete(t, env.Root)
+	mustWrite(t, env.path("/etc/ssh/sshd_config"), "PermitRootLogin no\nMatch User backup\n  X11Forwarding no\n", 0o644)
+	mustWrite(t, env.path("/etc/ssh/sshd_config.d/10-lan.conf"), "Match Address 10.0.0.0/8\n  AuthorizedKeysFile /etc/ssh/keys/%u\n", 0o644)
+	p := buildPlan(t, env, testArgs())
+	var hits []string
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "key-source check only sees") {
+			hits = append(hits, w)
+		}
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0], "/etc/ssh/sshd_config.d/10-lan.conf:1") {
+		t.Errorf("warnings = %q", p.Warnings)
 	}
 }

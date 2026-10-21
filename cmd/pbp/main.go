@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
@@ -591,6 +592,9 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 type checkOut struct {
 	w  io.Writer
 	ok bool
+	// tokenRejected: the API answered 401, so the token secret is wrong
+	// (pbp setup then offers the --rotate-token line; code review 3.6).
+	tokenRejected bool
 }
 
 func (c *checkOut) line(name string, err error) {
@@ -625,6 +629,8 @@ func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.St
 			apiErr = err
 		}
 	}
+	var ae *pve.APIError
+	c.tokenRejected = errors.As(apiErr, &ae) && ae.Status == http.StatusUnauthorized
 	c.line("pve api "+cfg.Target.API.URL, apiErr)
 	c.line("ssh "+cfg.Target.SSH.Host, w.sshErr)
 	if !c.ok {

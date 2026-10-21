@@ -7,6 +7,15 @@ fi
 
 if [ "$1" = "purge" ]; then
     rm -rf /var/lib/pbp /var/log/pbp /etc/pbp
+    # pbp node setup's sudo rule, only when it is exactly setup's (an
+    # edited one is the admin's): a later user named pbp must not inherit
+    # it (code review 3.8). Keep in step with nodesetup.SudoersText.
+    if [ -f /etc/sudoers.d/pbp ] && printf '%s\n' \
+        'Defaults:pbp env_reset' \
+        'Defaults:pbp env_keep = "SSH_ORIGINAL_COMMAND SSH_CONNECTION"' \
+        'pbp ALL=(root) NOPASSWD: /usr/bin/pbp node' | cmp -s - /etc/sudoers.d/pbp; then
+        rm -f /etc/sudoers.d/pbp
+    fi
     if getent passwd pbp >/dev/null; then
         deluser --system pbp || true
     fi

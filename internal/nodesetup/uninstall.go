@@ -256,9 +256,24 @@ func planRemovePVE(ctx context.Context, env Env) ([]Item, error) {
 		return nil, err
 	}
 	for _, u := range users {
-		if u.UserID == UserID {
-			items = append(items, Item{Kind: KindUser, Name: "PVE user", Path: UserID, Status: Remove, Diff: "-" + UserID})
+		if u.UserID != UserID {
+			continue
 		}
+		// Removing the user removes all its tokens: name the ones setup
+		// did not make (code review 3.7).
+		d := []string{"-" + UserID}
+		var toks []struct {
+			TokenID string `json:"tokenid"`
+		}
+		if _, _, err := runPveum(ctx, env, &toks, "user", "token", "list", UserID); err != nil {
+			return nil, err
+		}
+		for _, t := range toks {
+			if t.TokenID != TokenName {
+				d = append(d, "-token "+UserID+"!"+t.TokenID+" (not setup's; removed with the user)")
+			}
+		}
+		items = append(items, Item{Kind: KindUser, Name: "PVE user", Path: UserID, Status: Remove, Diff: strings.Join(d, "\n")})
 	}
 
 	var roles []struct {
@@ -268,9 +283,26 @@ func planRemovePVE(ctx context.Context, env Env) ([]Item, error) {
 		return nil, err
 	}
 	for _, r := range roles {
-		if r.RoleID == RoleName {
-			items = append(items, Item{Kind: KindRole, Name: "PVE role", Path: RoleName, Status: Remove, Diff: "-" + RoleName})
+		if r.RoleID != RoleName {
+			continue
 		}
+		// PVE drops every ACL entry that uses a removed role, including
+		// grants to other users: name them (code review 3.7).
+		d := []string{"-" + RoleName}
+		var acls []struct {
+			Path   string `json:"path"`
+			RoleID string `json:"roleid"`
+			UGID   string `json:"ugid"`
+		}
+		if _, _, err := runPveum(ctx, env, &acls, "acl", "list"); err != nil {
+			return nil, err
+		}
+		for _, e := range acls {
+			if e.RoleID == RoleName && e.UGID != UserID && !strings.HasPrefix(e.UGID, UserID+"!") {
+				d = append(d, "-acl "+e.Path+" "+e.UGID+" "+RoleName+" (not setup's; dropped with the role)")
+			}
+		}
+		items = append(items, Item{Kind: KindRole, Name: "PVE role", Path: RoleName, Status: Remove, Diff: strings.Join(d, "\n")})
 	}
 	return items, nil
 }

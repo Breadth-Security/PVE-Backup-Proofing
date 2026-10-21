@@ -70,6 +70,13 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	if err := l.CheckPaths(cfg); err != nil {
 		return fail(err)
 	}
+	fixed, err := l.SecureSecrets()
+	if err != nil {
+		return fail(err)
+	}
+	for _, f := range fixed {
+		fprintf(a.stdout, "Secured %s\n", f)
+	}
 	pub, created, err := hostsetup.EnsureKey(l)
 	if err != nil {
 		return fail(err)
@@ -80,11 +87,17 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 
 	if !pending && l.HaveToken() && exists(l.KnownHostsPath()) {
 		var buf bytes.Buffer
-		if a.setupCheck(ctx, l, cfg, &buf) == exitOK {
+		code, rejected := a.setupCheck(ctx, l, cfg, &buf)
+		if code == exitOK {
 			fprintln(a.stdout, msgAlreadyComplete)
 			return exitOK
 		}
-		fprintf(a.stdout, "The existing setup does not pass the check:\n%s\nRun the lines below on the node to repair it.\n", buf.String())
+		fprintf(a.stdout, "The existing setup does not pass the check:\n%s", buf.String())
+		if rejected {
+			a.rotateHint(cfg, pub, l)
+			return exitFail
+		}
+		fprintln(a.stdout, "\nRun the lines below on the node to repair it.")
 	}
 
 	var rep nodeproto.SetupReply
@@ -131,7 +144,10 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if code := a.setupCheck(ctx, l, done, a.stdout); code != exitOK {
+	if code, rejected := a.setupCheck(ctx, l, done, a.stdout); code != exitOK {
+		if rejected {
+			a.rotateHint(done, pub, l)
+		}
 		return code
 	}
 	if l.Deb {
@@ -224,13 +240,27 @@ func (a *app) interruptible(ctx context.Context, fn func()) bool {
 
 // setupCheck runs pbp check's steps (not the state store, not the lock) on
 // a copy of cfg whose key, token and known_hosts paths are the layout's
-// on-disk files: the config names the paths the daemon sees.
-func (a *app) setupCheck(ctx context.Context, l hostsetup.Layout, cfg config.Config, out io.Writer) int {
+// on-disk files: the config names the paths the daemon sees. It also
+// reports whether the node rejected this host's token secret (HTTP 401).
+func (a *app) setupCheck(ctx context.Context, l hostsetup.Layout, cfg config.Config, out io.Writer) (int, bool) {
 	c := cfg
 	c.Target.SSH.KeyFile = l.KeyPath()
 	c.Target.API.TokenSecretFile = l.TokenPath()
 	c.Target.SSH.KnownHostsFile = l.KnownHostsPath()
-	return a.checkSteps(ctx, c, nil, &checkOut{w: out, ok: true})
+	co := &checkOut{w: out, ok: true}
+	code := a.checkSteps(ctx, c, nil, co)
+	return code, co.tokenRejected
+}
+
+// rotateHint tells the admin to replace a token whose secret this host
+// has wrong: the node rejected it, so no reply without a new secret can
+// fix the setup (code review 3.6).
+func (a *app) rotateHint(cfg config.Config, pub string, l hostsetup.Layout) {
+	sa := hostsetup.SetupArgs(cfg, pub, version, false)
+	sa.RotateToken = true
+	fprintf(a.stdout, "\nThe node rejects this host's token secret (%s): it was probably replaced elsewhere, or the file is wrong.\n"+
+		"Run this on the node. It replaces the token with a new secret: any other daemon using that token loses access "+
+		"until it gets the new secret.\n\n%s\n\nThen run pbp setup again and paste its reply.\n", l.TokenPath(), sa.Line())
 }
 
 // exists reports whether p exists.
@@ -296,7 +326,10 @@ func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
 // cannot show an existing secret again).
 func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string, replace bool) (nodeproto.SetupReply, int) {
 	sa := hostsetup.SetupArgs(cfg, pub, version, l.HaveToken())
-	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in, replace: replace, local: true})
+	save := func(secret string) (string, error) {
+		return l.TokenPath(), l.WriteSecretFile(l.TokenPath(), []byte(secret+"\n"))
+	}
+	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in, replace: replace, local: true, saveSecret: save})
 	if code != exitOK {
 		return nodeproto.SetupReply{}, code
 	}
@@ -314,7 +347,7 @@ func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.
 		return nodeproto.SetupReply{}, exitFail
 	}
 	sa.CreateToken, sa.RotateToken = true, true
-	if res, code = a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: true, replace: replace, local: true, quiet: true}); code != exitOK {
+	if res, code = a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: true, replace: replace, local: true, quiet: true, saveSecret: save}); code != exitOK {
 		return nodeproto.SetupReply{}, code
 	}
 	return res.reply, exitOK

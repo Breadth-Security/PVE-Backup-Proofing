@@ -72,4 +72,4 @@ On the node, the package is the helper. Its install script creates the `pbp` use
 
 ## Remove
 
-`apt remove pbp` stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp`, `/var/log/pbp` and the `pbp` user. `apt purge pbp` deletes all three directories and the user. On a node, that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs; to undo the node setup cleanly, use [`pbp node uninstall`](setup.md#removing-pbp-from-a-node).
+`apt remove pbp` stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp`, `/var/log/pbp` and the `pbp` user. `apt purge pbp` deletes all three directories and the user. On a node, that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs; to undo the node setup cleanly, use [`pbp node uninstall`](setup.md#removing-pbp-from-a-node). Purge also removes `/etc/sudoers.d/pbp` when it is exactly the rule setup wrote. The PVE user `pbp@pve`, its token and the `PBPProofer` role stay (removing the package says so): remove them with `pbp node uninstall --remove-token` before purging.

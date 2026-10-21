@@ -50,3 +50,17 @@ func TestDocsMatchState(t *testing.T) {
 		}
 	}
 }
+
+// postrm removes the sudo rule on purge only when it is exactly setup's: its
+// shell copy must match SudoersText (code review 3.8).
+func TestPostrmKnowsTheSudoRule(t *testing.T) {
+	b, err := os.ReadFile("../../packaging/scripts/postrm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(SudoersText, "\n"), "\n") {
+		if !strings.Contains(string(b), "'"+line+"'") {
+			t.Errorf("postrm does not have the sudoers line %q", line)
+		}
+	}
+}

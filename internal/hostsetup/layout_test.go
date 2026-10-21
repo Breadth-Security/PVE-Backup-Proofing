@@ -204,3 +204,44 @@ func TestCheckPaths(t *testing.T) {
 		}
 	}
 }
+
+// Secrets an older or manual install left readable are tightened to the
+// layout's mode; a symlink in their place is refused (code review 3.3).
+func TestSecureSecrets(t *testing.T) {
+	for _, deb := range []bool{false, true} {
+		dir := t.TempDir()
+		t.Cleanup(SetTestHooks(func(string, int, int) error { return nil }, func(string) (int, error) { return 4242, nil }, dir))
+		l := Layout{Dir: dir, Deb: deb}
+		if err := os.MkdirAll(l.SecretsDir(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{l.KeyPath(), l.TokenPath()} {
+			if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(p, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		fixed, err := l.SecureSecrets()
+		if err != nil || len(fixed) != 3 {
+			t.Fatalf("deb=%v: fixed %q, %v", deb, fixed, err)
+		}
+		want := map[string]os.FileMode{l.SecretsDir(): l.pick(0o700, 0o750), l.KeyPath(): l.pick(0o400, 0o640), l.TokenPath(): l.pick(0o400, 0o640)}
+		for p, m := range want {
+			if fi, _ := os.Stat(p); fi.Mode().Perm() != m {
+				t.Errorf("deb=%v: %s mode %v, want %v", deb, p, fi.Mode().Perm(), m)
+			}
+		}
+		if again, err := l.SecureSecrets(); err != nil || len(again) != 0 {
+			t.Errorf("second pass: %q, %v", again, err)
+		}
+		_ = os.Remove(l.TokenPath())
+		if err := os.Symlink("/etc/shadow", l.TokenPath()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l.SecureSecrets(); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("deb=%v: symlink accepted: %v", deb, err)
+		}
+	}
+}
