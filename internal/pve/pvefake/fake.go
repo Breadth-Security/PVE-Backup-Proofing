@@ -35,7 +35,8 @@ type Fake struct {
 	Fail map[string]error
 	// FailOn, if set, is asked on every call after Fail: a non-nil error
 	// fails that one call. args are the call's arguments as logged, so a
-	// test can fail, say, only the second SetGuestConfig of one VMID.
+	// test can fail, say, only the second SetGuestConfig of one VMID. It
+	// runs with the fake locked: it must not call the fake.
 	FailOn func(method string, args []string) error
 	// Node is the only node name the fake answers for, like a real
 	// cluster; "" means pve1. Calls naming another node fail.
@@ -127,6 +128,9 @@ func (f *Fake) ListBackups(ctx context.Context, node, storage string) ([]model.B
 	if err := f.begin("ListBackups", node, storage); err != nil {
 		return nil, err
 	}
+	if err := f.at(node); err != nil {
+		return nil, err
+	}
 	out := append([]model.Backup(nil), f.Backups[storage]...)
 	for i := range out {
 		// Like PBS: the listing shows only the first line ("comment").
@@ -142,6 +146,9 @@ func (f *Fake) VolumeNotes(ctx context.Context, node, storage, volid string) (st
 	if err := f.begin("VolumeNotes", node, storage, volid); err != nil {
 		return "", err
 	}
+	if err := f.at(node); err != nil {
+		return "", err
+	}
 	for _, b := range f.Backups[storage] {
 		if b.VolID == volid {
 			return b.Notes, nil
@@ -154,6 +161,9 @@ func (f *Fake) VolumeProtected(ctx context.Context, node, storage, volid string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin("VolumeProtected", node, storage, volid); err != nil {
+		return false, err
+	}
+	if err := f.at(node); err != nil {
 		return false, err
 	}
 	for _, b := range f.Backups[storage] {
@@ -204,6 +214,9 @@ func (f *Fake) StorageStatus(ctx context.Context, node, storage string) (pve.Sto
 	if err := f.begin("StorageStatus", node, storage); err != nil {
 		return pve.StorageStatus{}, err
 	}
+	if err := f.at(node); err != nil {
+		return pve.StorageStatus{}, err
+	}
 	s, ok := f.Storage[storage]
 	if !ok {
 		return pve.StorageStatus{}, fmt.Errorf("storage %s not found", storage)
@@ -217,6 +230,9 @@ func (f *Fake) NodeMemory(ctx context.Context, node string) (pve.NodeMemory, err
 	if err := f.begin("NodeMemory", node); err != nil {
 		return pve.NodeMemory{}, err
 	}
+	if err := f.at(node); err != nil {
+		return pve.NodeMemory{}, err
+	}
 	return f.Memory, nil
 }
 
@@ -224,6 +240,9 @@ func (f *Fake) NetIface(ctx context.Context, node, iface string) (pve.NetIface, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin("NetIface", node, iface); err != nil {
+		return pve.NetIface{}, err
+	}
+	if err := f.at(node); err != nil {
 		return pve.NetIface{}, err
 	}
 	n, ok := f.Ifaces[iface]
@@ -284,7 +303,7 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	cfg["onboot"] = "0"
 	f.Configs[vmid] = cfg
 	f.GuestList = append(f.GuestList, pve.GuestRef{
-		Key: model.GuestKey{Kind: kind, VMID: vmid}, Node: fakeNode, Status: "stopped",
+		Key: model.GuestKey{Kind: kind, VMID: vmid}, Node: node, Status: "stopped",
 	})
 	f.syncListing(vmid)
 	return upid("restore", vmid), nil
@@ -374,6 +393,9 @@ func (f *Fake) OriginalConfig(ctx context.Context, node, volid string) (string, 
 	if err := f.begin("OriginalConfig", node, volid); err != nil {
 		return "", err
 	}
+	if err := f.at(node); err != nil {
+		return "", err
+	}
 	s, ok := f.BackupConfigs[volid]
 	if !ok {
 		return "", fmt.Errorf("no config for %s", volid)
@@ -440,6 +462,9 @@ func (f *Fake) GuestStatus(ctx context.Context, node string, kind model.GuestKin
 	if err := f.begin("GuestStatus", node, kind, vmid); err != nil {
 		return "", err
 	}
+	if err := f.at(node); err != nil {
+		return "", err
+	}
 	i := f.find(vmid)
 	if i < 0 {
 		return "", fmt.Errorf("guest %d not found", vmid)
@@ -452,13 +477,19 @@ func (f *Fake) GuestStatus(ctx context.Context, node string, kind model.GuestKin
 func (f *Fake) AgentPing(ctx context.Context, node string, vmid int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.begin("AgentPing", node, vmid)
+	if err := f.begin("AgentPing", node, vmid); err != nil {
+		return err
+	}
+	return f.at(node)
 }
 
 func (f *Fake) AgentOSInfo(ctx context.Context, node string, vmid int) (pve.OSInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin("AgentOSInfo", node, vmid); err != nil {
+		return pve.OSInfo{}, err
+	}
+	if err := f.at(node); err != nil {
 		return pve.OSInfo{}, err
 	}
 	return pve.OSInfo{ID: "debian", Name: "Debian GNU/Linux"}, nil
@@ -470,6 +501,9 @@ func (f *Fake) AgentExec(ctx context.Context, node string, vmid int, argv []stri
 	if err := f.begin("AgentExec", node, vmid, strings.Join(argv, " ")); err != nil {
 		return 0, err
 	}
+	if err := f.at(node); err != nil {
+		return 0, err
+	}
 	return 1, nil
 }
 
@@ -477,6 +511,9 @@ func (f *Fake) AgentExecStatus(ctx context.Context, node string, vmid, pid int) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin("AgentExecStatus", node, vmid, pid); err != nil {
+		return pve.AgentExecStatus{}, err
+	}
+	if err := f.at(node); err != nil {
 		return pve.AgentExecStatus{}, err
 	}
 	return pve.AgentExecStatus{Exited: true}, nil

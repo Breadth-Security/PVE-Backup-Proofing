@@ -25,11 +25,15 @@ func stubBin(t *testing.T, scripts map[string]string) string {
 // stubs and the system's basic tools, and returns its exit code and run
 // time. The script's 1 s sleep makes each loop take a second.
 func runSettle(t *testing.T, bin string) (int, time.Duration) {
+	return runSettlePath(t, bin, bin+":/usr/bin:/bin")
+}
+
+func runSettlePath(t *testing.T, bin, path string) (int, time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", openRCSettleScript)
-	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "STATE=" + bin}
+	cmd.Env = []string{"PATH=" + path, "STATE=" + bin}
 	start := time.Now()
 	err := cmd.Run()
 	if ctx.Err() != nil {
@@ -54,7 +58,9 @@ const counter = `f="$STATE/.n-$(basename "$0")-$1"; n=$(( $(cat "$f" 2>/dev/null
 // review I21; the bug fixed in 4f6b70d lived in this logic).
 func TestOpenRCSettleScript(t *testing.T) {
 	t.Run("no rc-status exits 127", func(t *testing.T) {
-		if code, _ := runSettle(t, stubBin(t, nil)); code != 127 {
+		// Only the empty stub dir on PATH, so a host rc-status cannot answer.
+		bin := stubBin(t, nil)
+		if code, _ := runSettlePath(t, bin, bin); code != 127 {
 			t.Errorf("exit %d, want 127", code)
 		}
 	})
@@ -63,8 +69,9 @@ func TestOpenRCSettleScript(t *testing.T) {
 			"rc-status": `case "$1" in -r) echo default;; -a) echo " sshd   [  started  ]";; esac`,
 			"pidof":     "exit 1",
 		})
-		if code, el := runSettle(t, bin); code != 0 || el > 900*time.Millisecond {
-			t.Errorf("exit %d after %v, want 0 at once", code, el)
+		// One loop would take the script's 1 s sleep; allow for a slow host.
+		if code, el := runSettle(t, bin); code != 0 || el >= time.Second {
+			t.Errorf("exit %d after %v, want 0 without looping", code, el)
 		}
 	})
 	for _, tc := range []struct {

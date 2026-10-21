@@ -64,7 +64,7 @@ What the standby then has to meet every night is the list in [What the proofing 
 
 **A standby at another site** needs the PBS datastore from there: the same PBS over the WAN, or a PBS at that site that receives the backups through a sync job (see [Proofing from a sync target](#good-to-know)). The run summary goes out through that node's notification targets, so configure them for the site.
 
-**Proofing borrows the standby's capacity:** a VMID range, space on the restore storage and RAM, for the length of the run. Size the schedule and `restore.max_run_duration` so the window ends well before the standby might be needed, remembering that `max_run_duration` only stops new proofs from starting: the proof in progress at that point still restores, boots and is checked, so leave room for your largest guest after it, and pause PBP (`sudo systemctl stop pbp`, or `docker compose stop`) during a failover test or a real failover, so it does not compete with the guests you are bringing up.
+**Proofing borrows the standby's capacity:** a VMID range, space on the restore storage and RAM, for the length of the run. Size the schedule and `restore.max_run_duration` so the window ends well before the standby might be needed, remembering that `max_run_duration` only stops new proofs from starting: proofs in progress at that point still restore, boot and are checked, so leave room for your largest guests after it, and pause PBP (`sudo systemctl stop pbp`, or `docker compose stop`) during a failover test or a real failover, so it does not compete with the guests you are bringing up.
 
 ## Good to know
 

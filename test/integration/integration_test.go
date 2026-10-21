@@ -337,15 +337,22 @@ func (e *env) snapshot(t *testing.T, ctx context.Context, cfg config.Config) nod
 }
 
 // assertUntouched compares the node with before, ignoring the backup that
-// was proofed (its notes change by design) and guests or backups that
-// appeared or went away meanwhile (a scheduled backup or prune on the node
-// is not PBP's doing). This is what a real node can show that no fake can:
+// was proofed (its notes change by design), guests that appeared, and
+// backups that appeared or went away meanwhile (a scheduled backup or prune
+// on the node is not PBP's doing). A guest outside the range that is gone
+// fails. This is what a real node can show that no fake can:
 // an unexpected side effect (code review I22).
 func (e *env) assertUntouched(t *testing.T, ctx context.Context, cfg config.Config, before nodeState, proofed string) {
 	t.Helper()
 	after := e.snapshot(t, ctx, cfg)
 	for k, was := range before.guests {
-		if now, ok := after.guests[k]; ok && now != was {
+		now, ok := after.guests[k]
+		switch {
+		case !ok:
+			// Production guests do not vanish on their own (a migration
+			// keeps them listed): this is what a wrong Destroy would do.
+			t.Errorf("guest %s outside the range is gone (was %s)", k, was)
+		case now != was:
 			t.Errorf("guest %s outside the range changed:\nbefore: %s\nafter:  %s", k, was, now)
 		}
 	}
@@ -778,6 +785,13 @@ wait:
 			// At "restored", wait until PVE has created the guest, so
 			// the kill leaves one behind mid-restore.
 			if j.Stage == stage && (stage != state.StageRestored || e.exists(t, ctx, j.TempVMID)) {
+				job = j
+				break wait
+			}
+			if stage == state.StageRestored && j.Stage == state.StageStarted {
+				// The restore finished between two polls: crash here
+				// instead; the recovery checks still apply.
+				t.Logf("restore finished before it could be interrupted; killing at stage %s", j.Stage)
 				job = j
 				break wait
 			}

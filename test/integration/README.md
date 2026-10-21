@@ -30,8 +30,10 @@ own backup and deletes exactly that backup again. Each proof and crash test
 checks this: it records every guest outside the range (status, name, tags
 and config, without `lock`) and the `protected` flag and notes of every
 backup on the source storages, and fails if any of them changed other than
-the proofed backup. Guests and backups that appear or go away during the
-test (a scheduled backup or prune) are not compared.
+the proofed backup; a guest outside the range that is gone fails too.
+Guests that appear, and backups that appear or go away during the test (a
+scheduled backup or prune), are not compared. A production guest that an
+admin stops, starts or reboots during the test also fails it: rerun.
 
 There is no Windows case: the suite has no Windows guest to proof. The
 PowerShell check is unit-tested against a real capture
