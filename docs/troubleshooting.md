@@ -31,6 +31,8 @@ When a guest in a run failed or errored, look first at that guest's own log file
 
 | Message | Cause and fix |
 |---------|---------------|
+| `refusing to run as root: the state directory … belongs to pbp …` | You ran `pbp check`, `pbp run` or `pbp daemon` as root on a `.deb` host. Run it as the service user, as the message says: `sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check`. |
+| `RUN NOT STARTED: cannot open state store …: permission denied` | An older PBP was run as root and left root-owned files in the state directory. Give them back to the service user: `sudo chown -R pbp:pbp /var/lib/pbp/state`, and `sudo chown pbp:pbp` any run folder in `/var/log/pbp` that belongs to root. |
 | `pve api …: FAIL` | The API is not reachable at `target.api.url`, the TLS fingerprint does not match the node's certificate, or the token is wrong. Check the address, then run `pbp setup` again so it refreshes the fingerprint from the node. |
 | `ssh …: FAIL: … knownhosts: key mismatch` | The address answers SSH with a host key other than the one in `known_hosts`: either the address leads to another machine (see the first row above), or the node was reinstalled. Run `pbp setup` again; a new reply replaces `known_hosts`. |
 | `the pbp node helper is not reachable`, or `Permission denied (publickey)` | Run the `pbp node setup` line again: it shows what differs. The usual causes are a missing or edited key in `/var/lib/pbp/.ssh/authorized_keys`, wrong owners or modes there, or a reinstalled `pbp` package after an `apt purge`. The sshd log on the node says which. With the optional `maxlogins` cap, `There were too many logins for 'pbp'` means the cap is too low. |

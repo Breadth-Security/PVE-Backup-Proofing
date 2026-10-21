@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +134,9 @@ type app struct {
 	audit       auditLog
 	euid        func() int
 	templateDir string
+	// ownerOf returns the owner (uid and user name) of a path; a seam for
+	// the root refusal of daemon, run and check.
+	ownerOf func(path string) (uid int, name string, err error)
 
 	// pbp node setup and uninstall: whether stdin is a terminal, and every
 	// outside effect of the node setup library.
@@ -152,7 +158,7 @@ type app struct {
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
 		stdin: os.Stdin, nodeSys: node.NewSystem(),
-		euid: os.Geteuid, templateDir: node.DefaultTemplateDir,
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir, ownerOf: ownerOf,
 		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
@@ -272,6 +278,15 @@ func (a *app) main(ctx context.Context, args []string) int {
 		fprintf(a.stderr, "pbp run: --guest must be a positive integer VMID\n%s", usage)
 		return exitUsage
 	}
+	if cmd != "health" {
+		if err := a.refuseRoot(cmd); err != nil {
+			fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
+			if cmd == "daemon" {
+				return exitConfig
+			}
+			return exitFail
+		}
+	}
 
 	path := config.ResolvePath(*cfgFlag)
 	cfg, err := config.Load(path)
@@ -296,6 +311,49 @@ func (a *app) main(ctx context.Context, args []string) int {
 	default:
 		return a.health(cfg)
 	}
+}
+
+// refuseRoot stops daemon, run and check as root when the state directory
+// belongs to another user (the service's, pbp under the .deb). Everything
+// they write there (state.json, the run lock, run log folders) would be
+// root's, and the service could no longer read its own state (issue #63).
+// A root-only install, whose state directory is root's or not made yet, is
+// not refused.
+func (a *app) refuseRoot(cmd string) error {
+	if a.euid == nil || a.euid() != 0 || a.ownerOf == nil {
+		return nil
+	}
+	dir := daemon.StateDir()
+	uid, name, err := a.ownerOf(dir)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && uid == 0) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("as root: cannot check who owns the state directory %s: %w", dir, err)
+	}
+	if name == "" {
+		name = "#" + strconv.Itoa(uid)
+	}
+	return fmt.Errorf("refusing to run as root: the state directory %s belongs to %s, and files root writes there "+
+		"would lock the service out of its own state; run it as that user: sudo -u %s pbp %s", dir, name, name, cmd)
+}
+
+// ownerOf returns the owner of path, with the user name when it resolves.
+func ownerOf(path string) (int, string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, "", err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, "", fmt.Errorf("no owner for %s", path)
+	}
+	uid := int(st.Uid)
+	name := ""
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		name = u.Username
+	}
+	return uid, name, nil
 }
 
 // guestValid reports whether --guest was left unset or given a positive VMID.
