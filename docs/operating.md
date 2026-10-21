@@ -80,7 +80,7 @@ selection:
 - **`guests`:** a VMID (`104`, a VM or a container with that number), a label for one kind (`VM104`, `CT109`), or an inclusive range (`900-999`).
 - **`tags`:** a guest is excluded if its live config or its backed-up config carries one of these tags (case does not matter). Tagging a guest in the Proxmox UI takes effect at the next run; a guest that no longer exists is judged by the tags in its backup.
 
-An excluded guest is never restored, nothing is reserved for it, and its backup's notes are left alone. It shows in the run summary as `SKIPPED · excluded by config (<rule>)`, for example `excluded by config (tag no-proof)`, and it does not raise the run's severity. `pbp run --guest N` refuses an excluded guest, names the rule and exits 1: edit the config to proof it. A malformed entry stops PBP from loading the config (exit 78), naming the entry.
+An excluded guest is never restored, nothing is reserved for it, and its backup's notes are left alone. It shows in the run summary as `SKIPPED · excluded by config (<rule>)`, for example `excluded by config (tag no-proof)`, and it does not raise the run's severity. `pbp run --guest N` refuses an excluded guest, names the rule and exits 1: edit the config to proof it. A malformed entry stops PBP from loading the config, naming the entry (the daemon exits 78; `run`, `check` and `health` exit 1).
 
 The daemon reads `config.yaml` when it starts, so restart it after editing (`sudo systemctl restart pbp`, or `docker compose restart pbp`); `pbp run --guest` reads the file each time.
 
@@ -174,10 +174,10 @@ To avoid both, schedule outside 01:00 to 03:00 (for example `0 3 * * *` or later
 | Exit code | Meaning |
 |-----------|---------|
 | 0 | Success (`check` passed, or the run finished without error) |
-| 1 | Failure: bad config, `check` found a problem, the run ended in `ERROR`, or `run --guest` found no backup |
+| 1 | Failure: bad config (including a malformed `selection.exclude` entry), `check` found a problem, the run's severity is `error` (any guest `FAILED`, or a run-level error), or `run --guest` found no backup or names an excluded guest |
 | 2 | Usage error (unknown subcommand or flag, or `--guest` that is not a positive integer) |
 | 3 | Busy: another run or check holds the run lock. `run` and `check` both exit 3 and print "a run is already in progress" |
-| 78 | `daemon` only: the config is missing or unusable (for example a `config.yaml` that `pbp setup` has not finished). `pbp.service` does not restart on it; fix the config (run `pbp setup` again) and start the service |
+| 78 | `daemon` only: the config is missing or unusable (for example a `config.yaml` that `pbp setup` has not finished, or a malformed `selection.exclude` entry), or the daemon runs as root while its state or log directory belongs to the service user. `pbp.service` does not restart on it; fix the config (run `pbp setup` again) and start the service |
 
 Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp/state`, overridable with `PBP_STATE_DIR`. Errors and what to do about them: [Troubleshooting](troubleshooting.md).
 
@@ -190,7 +190,7 @@ Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CO
 
 ## Notifications
 
-One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven or as a template), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, and `error` for any `FAILED` or a run-level failure.
+One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven, as a template or as excluded by config), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, or for an environment error (such as a `pbp`-tagged guest outside the VMID range), and `error` for any `FAILED` or a run-level failure.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 

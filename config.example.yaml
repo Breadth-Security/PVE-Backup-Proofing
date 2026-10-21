@@ -36,7 +36,7 @@ selection:                     # by default the newest backup of every guest is 
 
 restore:
   storage: local-zfs
-  space_margin_percent: 10     # default; 0..100
+  space_margin_percent: 10     # default; 0..100, a percentage of the restore storage's total size kept free
   boot_timeout: 5m             # default; at least 30s. Durations need a unit (s, m, h)
   probe_timeout: 5m            # default; at least 30s. Bounds all checks inside one booted
                                # guest; a probe cut short is ERROR, never FAILED
@@ -52,8 +52,8 @@ checks:
   # (units and services that fail on the isolated proof network, or stop by
   # design; see docs/checks.md); entries here are added to them.
   use_default_ignores: true    # default; false = use only the two lists below
-  ignore_units: []             # e.g. [media-sync.service]
-  windows_ignore_services: []  # e.g. [Bonjour Service]
+  ignore_units: []             # e.g. [media-sync.service]; * and ? match like shell globs
+  windows_ignore_services: []  # e.g. ["Bonjour Service"]; globs, case ignored
   profiles:
     - name: myapp
       unit: "myapp*.service"

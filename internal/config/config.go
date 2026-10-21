@@ -112,7 +112,8 @@ type Logging struct {
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
 // explicit zero is kept (and validated) rather than replaced. The ignore
-// lists are defaulted after decoding instead (see orDefault).
+// lists are merged with the built-in ones after decoding instead (see
+// withDefaults).
 func defaults() Config {
 	return Config{
 		Workers: 1,
@@ -164,8 +165,6 @@ func parse(data []byte, name string) (Config, error) {
 	return c, nil
 }
 
-// orDefault returns list, or def() when list is nil: the key is absent or
-// null. Only an explicit [] (empty, not nil) means "none".
 // withDefaults returns the built-in entries followed by those of list that
 // are not already there (compared ignoring case if fold). A configured list
 // adds to the built-in one, so a new built-in entry reaches configs that pbp

@@ -5,7 +5,7 @@
 ```
 docker build -t pbp:latest .            # multi-stage; static binary on distroless, version from VERSION
 docker build --build-arg VERSION=$(git describe --tags --always) -t pbp:latest .   # stamp another version
-docker run --rm pbp:latest version      # prints the stamped version (VERSION, e.g. 0.3.0, unless overridden)
+docker run --rm pbp:latest version      # prints the stamped version (the VERSION file, unless overridden)
 go test ./... && go vet ./...
 packaging/build.sh 1.2.3 dist           # .debs, tarballs and SHA256SUMS for amd64 and arm64
 ```
@@ -24,10 +24,10 @@ The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build
 
 Workflows in [`.gitea/workflows/`](../.gitea/workflows/) check every pull request and every push to `main`, and each **blocks** the pull request when it fails:
 
-- **test**: `go vet` (with no build tag, and with the `integration` and `nodee2e` tags) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
+- **go-toolchain**: `go vet` (with no build tag, and with the `integration` and `nodee2e` tags) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
 - **Scanners**: Trivy, govulncheck, gosec, staticcheck and golangci-lint check the code and dependencies. gitleaks checks the **whole git history** for committed secrets; Trivy only sees the current files. The scanners also run weekly (Monday 06:17 UTC), so newly published vulnerabilities are caught in code that hasn't changed.
 
-The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the test workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
+The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the go-toolchain workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
 
 Tool versions are pinned in the workflow files. To run them locally from the repository root:
 

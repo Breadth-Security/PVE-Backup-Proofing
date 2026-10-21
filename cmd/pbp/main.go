@@ -38,7 +38,10 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp setup [--dir DIR] [--deb]\n       pbp node [install-templates|setup|uninstall]\n"
+// usage lists every subcommand; the node ones come from nodeUsage, so the
+// options shown match the ones parsed.
+var usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp setup [--dir DIR] [--deb [--replace]]\n" +
+	"       " + strings.TrimPrefix(nodeUsage, "usage: ")
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
