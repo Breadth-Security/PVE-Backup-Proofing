@@ -463,6 +463,31 @@ func TestBootNotSettledAtDeadline(t *testing.T) {
 	}
 }
 
+// A guest still starting at the deadline names the jobs boot is waiting on,
+// and keeps the job list as its boot log (issue #29: ifupdown2 waiting for
+// DHCPv6 on the isolated bridge). Without a job list the reason is unchanged.
+func TestBootNotSettledNamesPendingJobs(t *testing.T) {
+	const jobs = "99 networking.service start running\n104 app.service start waiting\n105 networking.service stop waiting\n"
+	for name, tc := range map[string]struct {
+		list   string
+		suffix string
+	}{
+		"jobs":    {jobs, " (waiting on: networking.service, app.service)"},
+		"no jobs": {"", ""},
+	} {
+		ex := healthy()
+		ex[sysStateNow] = out("starting\n")
+		ex["systemctl list-jobs --no-legend --plain --no-pager"] = out(tc.list)
+		o := probe.Run(context.Background(), hanging(ex, sysState), probe.Input{OS: probe.Linux, SettleTimeout: 50 * time.Millisecond})
+		if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") || !strings.HasSuffix(o.Reason, "s"+tc.suffix) {
+			t.Errorf("%s: got %v %q", name, o.Verdict, o.Reason)
+		}
+		if o.BootLog != tc.list {
+			t.Errorf("%s: boot log %q, want the job list", name, o.BootLog)
+		}
+	}
+}
+
 // A guest that is still starting is ERROR even when no probe deadline was
 // set: the settle wait has its own default bound.
 func TestBootSettleWithoutProbeDeadline(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,6 +31,29 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 		r.out.BootLog = res.Stdout
 	}
 	return r.out
+}
+
+// pendingJobs returns " (waiting on: <units>)" naming the units of the jobs
+// systemd still has queued, and keeps the job list as the boot log. Like the
+// journal in fail, it is read without recording errors; with no answer it
+// returns "".
+func (r *linuxRun) pendingJobs(ctx context.Context) string {
+	res, err := r.ex.run(ctx, []string{"systemctl", "list-jobs", "--no-legend", "--plain", "--no-pager"})
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	r.out.BootLog = res.Stdout
+	var units []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		// "<id> <unit> <type> <state>"
+		if f := strings.Fields(line); len(f) >= 2 && !slices.Contains(units, f[1]) {
+			units = append(units, f[1])
+		}
+	}
+	if len(units) == 0 {
+		return ""
+	}
+	return " (waiting on: " + strings.Join(units, ", ") + ")"
 }
 
 // errorOut finalizes an ERROR outcome: PBP could not judge the guest.
@@ -100,8 +124,8 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 			switch strings.TrimSpace(res.Stdout) {
 			case "starting", "initializing":
 				// Something in boot hung, but that alone doesn't show the
-				// backup is bad.
-				return r.errorOut("guest still starting after " + waited.String())
+				// backup is bad. Name what it waits on.
+				return r.errorOut("guest still starting after " + waited.String() + r.pendingJobs(ctx))
 			}
 		}
 	}

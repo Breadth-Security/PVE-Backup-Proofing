@@ -50,6 +50,9 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		switch {
 		case reNet.MatchString(k):
 			p.Set[k] = sanitizeNet(v, bridge)
+			if kind == model.KindLXC {
+				p.Set[k] = manualAddressing(p.Set[k])
+			}
 		case k == "hookscript":
 			p.Delete = append(p.Delete, k)
 		case kind == model.KindQEMU && k == "args":
@@ -152,4 +155,22 @@ func sanitizeNet(v, bridge string) string {
 		out = append(out, "bridge="+bridge)
 	}
 	return strings.Join(out, ",")
+}
+
+// manualAddressing turns a container NIC's dynamic addressing (ip=dhcp,
+// ip6=auto or ip6=dhcp) into ip=manual / ip6=manual. Nothing answers DHCP or
+// router solicitations on the isolated bridge, and the container's ifupdown2
+// waits for them with no timeout, so boot would never settle (issue #29).
+// Static addresses are kept.
+func manualAddressing(v string) string {
+	fields := strings.Split(v, ",")
+	for i, f := range fields {
+		switch f {
+		case "ip=dhcp":
+			fields[i] = "ip=manual"
+		case "ip6=auto", "ip6=dhcp":
+			fields[i] = "ip6=manual"
+		}
+	}
+	return strings.Join(fields, ",")
 }
