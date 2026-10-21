@@ -35,6 +35,31 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	return r.out
 }
 
+// rootOptions returns the mount options of the root filesystem: from
+// findmnt, or, when findmnt is missing or fails, from /proc/self/mounts (the
+// last "/" entry, which an overmount puts last). nil means neither could be
+// read (code review I8).
+func (r *linuxRun) rootOptions(ctx context.Context) ([]string, error) {
+	res, err := r.exec(ctx, "findmnt", "-n", "-o", "OPTIONS", "/")
+	if err != nil {
+		return nil, err
+	}
+	if s := strings.TrimSpace(res.Stdout); res.ExitCode == 0 && s != "" {
+		return strings.Split(s, ","), nil
+	}
+	res, err = r.exec(ctx, "cat", "/proc/self/mounts")
+	if err != nil || res.ExitCode != 0 {
+		return nil, err
+	}
+	var opts []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if f := strings.Fields(line); len(f) >= 4 && f[1] == "/" {
+			opts = strings.Split(f[3], ",")
+		}
+	}
+	return opts, nil
+}
+
 // waitUnsupported reports whether `systemctl is-system-running --wait` was
 // refused as an unknown option (systemd older than 240).
 func waitUnsupported(res ExecResult) bool {
@@ -184,16 +209,16 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 		return r.fail(ctx, "system state: "+state)
 	}
 
-	res, err = r.exec(ctx, "findmnt", "-n", "-o", "OPTIONS", "/")
+	opts, err := r.rootOptions(ctx)
 	if err != nil {
 		return r.execErr(ctx, "root filesystem", err)
 	}
-	if res.ExitCode == 0 {
-		for _, o := range strings.Split(strings.TrimSpace(res.Stdout), ",") {
-			if o == "ro" {
-				return r.fail(ctx, "root filesystem read-only")
-			}
-		}
+	if opts == nil {
+		// Never pass a guest whose root PBP could not check (code review I8).
+		return r.errorOut("cannot read the root filesystem's mount options")
+	}
+	if slices.Contains(opts, "ro") {
+		return r.fail(ctx, "root filesystem read-only")
 	}
 
 	res, err = r.exec(ctx, "systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager")

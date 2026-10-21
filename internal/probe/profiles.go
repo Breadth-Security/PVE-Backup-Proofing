@@ -86,9 +86,53 @@ func (c *checker) listening(ctx context.Context) (map[int]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.ports = parseListeningPorts(r.Stdout)
+	if r.ExitCode == 0 {
+		c.ports = parseListeningPorts(r.Stdout)
+		c.portsOK = true
+		return c.ports, nil
+	}
+	// No ss (or it failed): the kernel's own tables (code review I8). cat
+	// exits non-zero when tcp6 is absent but still prints tcp.
+	r, err = c.ex.Exec(ctx, []string{"cat", "/proc/net/tcp", "/proc/net/tcp6"})
+	if errors.Is(err, errCommandTimeout) {
+		c.portsOK, c.portsErr = true, err
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(r.Stdout) == "" {
+		c.portsOK, c.portsErr = true, errNoPortSource
+		return nil, errNoPortSource
+	}
+	c.ports = parseProcNetTCP(r.Stdout)
 	c.portsOK = true
 	return c.ports, nil
+}
+
+// errNoPortSource: neither ss nor /proc/net/tcp could be read, so port
+// checks cannot be judged (ERROR, never FAILED).
+var errNoPortSource = errors.New("cannot list listening ports: neither ss nor /proc/net/tcp is readable")
+
+// parseProcNetTCP reads /proc/net/tcp and tcp6: a socket listens when its
+// state (column 4) is 0A, and its port is the hex after the local address's
+// ':' (column 2).
+func parseProcNetTCP(out string) map[int]bool {
+	ports := map[int]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[3] != "0A" {
+			continue
+		}
+		i := strings.LastIndex(f[1], ":")
+		if i < 0 {
+			continue
+		}
+		if p, err := strconv.ParseUint(f[1][i+1:], 16, 16); err == nil {
+			ports[int(p)] = true
+		}
+	}
+	return ports
 }
 
 // parseListeningPorts reads `ss -ltnH` output; the local address is column 4

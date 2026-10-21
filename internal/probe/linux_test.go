@@ -675,3 +675,56 @@ func TestBootLogOnlyFromSuccessfulJournalctl(t *testing.T) {
 		}
 	}
 }
+
+const (
+	procMounts = "cat /proc/self/mounts"
+	procTCP    = "cat /proc/net/tcp /proc/net/tcp6"
+)
+
+// Without findmnt (or when it fails), the root's options come from
+// /proc/self/mounts, so a read-only root is never silently missed (code
+// review I8). The last "/" line counts (an overmount).
+func TestRootReadOnlyWithoutFindmnt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mounts  string
+		verdict model.Verdict
+	}{
+		"ro":        {"sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 ro,relatime 0 0\n", model.Failed},
+		"rw":        {"/dev/sda1 / ext4 rw,relatime 0 0\nproc /proc proc rw 0 0\n", model.Proven},
+		"overmount": {"/dev/sda1 / ext4 ro 0 0\noverlay / overlay rw,lowerdir=x 0 0\n", model.Proven},
+	} {
+		ex := healthy()
+		delete(ex, findmnt) // missing: exit 127
+		ex[procMounts] = out(tc.mounts)
+		if o := run(ex, config.Checks{}); o.Verdict != tc.verdict {
+			t.Errorf("%s: got %v %q, want %v", name, o.Verdict, o.Reason, tc.verdict)
+		}
+	}
+	ex := healthy()
+	delete(ex, findmnt)
+	if o := run(ex, config.Checks{}); o.Verdict != model.Error {
+		t.Errorf("neither findmnt nor /proc/self/mounts: got %v %q, want ERROR", o.Verdict, o.Reason)
+	}
+}
+
+// Without ss, listening ports come from /proc/net/tcp and tcp6 (state 0A),
+// so a guest without ss is not FAILED on its port checks (code review I8).
+func TestListeningPortsWithoutSS(t *testing.T) {
+	tcp := "  sl  local_address rem_address   st tx_queue rx_queue\n" +
+		"   0: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0 0 1 1 0\n" +
+		"   1: 0100007F:1F90 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0 0 2 1 0\n" +
+		"  sl  local_address                         remote_address                        st\n" +
+		"   0: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0 0 3 1 0\n"
+	ex := healthy()
+	delete(ex, ssC)
+	ex[procTCP] = out(tcp)
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Proven {
+		t.Fatalf("got %v %q, want PROVEN (443 and 22 listen; 8080 only connected)", o.Verdict, o.Reason)
+	}
+	ex = healthy()
+	delete(ex, ssC)
+	if o := run(ex, config.Checks{}); o.Verdict == model.Failed || o.Verdict == model.Proven {
+		t.Errorf("neither ss nor /proc/net/tcp: got %v %q, want ERROR", o.Verdict, o.Reason)
+	}
+}
