@@ -37,6 +37,14 @@ checks:
       services: [postgresql]
 ```
 
+## Containers without nesting
+
+In an unprivileged container without `features: nesting=1`, systemd 252 and later cannot set up the mount namespaces that sandboxed units use (`PrivateTmp=`, `ProtectSystem=` and similar). Those units fail with `226/NAMESPACE` ("Failed to set up mount namespacing … Permission denied"), and so do systemd's own mounts such as `tmp.mount` and `dev-mqueue.mount`. Proxmox warns about it when such a container starts: "Systemd 252 detected. You may need to enable nesting."
+
+The production container has the same failures, so they say nothing about the backup. PBP therefore ends such a container `BOOTED`, not `FAILED`, naming the units: `container without nesting: 4 units cannot start sandboxed (systemd-logind.service, …); enable nesting=1`. It counts a unit this way only when its failure is the namespace denial: a service that exited `226/NAMESPACE`, one of systemd's API mounts, or a socket whose service failed so. Any other failed unit still makes the guest `FAILED`.
+
+To fix it, enable nesting on the production container (Options > Features > Nesting, or `pct set <vmid> --features nesting=1`) and restart it; the next backup is then proven normally.
+
 ## What "not covered by backup" means
 
 A restore can legitimately lack things the original guest used: disks marked `backup=0`, container mount points excluded from backup, bind mounts and passthrough devices that PBP removes for safety, and network storage (NFS, CIFS, iSCSI) that the isolated bridge cannot reach.

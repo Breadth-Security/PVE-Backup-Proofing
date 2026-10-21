@@ -132,6 +132,33 @@ func TestSanitizeLXCNetDynamicAddressing(t *testing.T) {
 	}
 }
 
+func TestNesting(t *testing.T) {
+	for features, want := range map[string]bool{
+		"":                         false,
+		"keyctl=1":                 false,
+		"nesting=0":                false,
+		"nesting=1":                true,
+		"keyctl=1,nesting=1":       true,
+		"nesting=1,mount=cifs;nfs": true,
+	} {
+		if got := Nesting(map[string]string{"features": features}); got != want {
+			t.Errorf("features %q: Nesting = %v, want %v", features, got, want)
+		}
+	}
+}
+
+// Raw lxc.* lines in a backed-up container config, as ParseConfigText reads
+// them: PVE restores them only for root@pam.
+func TestRawLXCKeys(t *testing.T) {
+	orig := ParseConfigText("arch: amd64\nlxc.apparmor.profile: unconfined\nlxc.cgroup2.devices.allow: c 10:200 rwm\nhostname: x\n")
+	if got := RawLXCKeys(orig); !slices.Equal(got, []string{"lxc.apparmor.profile", "lxc.cgroup2.devices.allow"}) {
+		t.Errorf("RawLXCKeys = %q", got)
+	}
+	if got := RawLXCKeys(map[string]string{"hostname": "x"}); got != nil {
+		t.Errorf("RawLXCKeys = %q, want none", got)
+	}
+}
+
 func TestSanitizeLXCMounts(t *testing.T) {
 	p := Sanitize(model.KindLXC, map[string]string{
 		"mp0":  "/mnt/media,mp=/media",

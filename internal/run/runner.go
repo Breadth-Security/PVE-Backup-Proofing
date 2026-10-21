@@ -426,6 +426,14 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		res.Template = true
 		return l, res
 	}
+	// PVE drops raw lxc.* lines unless root@pam restores, so the copy would
+	// not be the guest it stands for. Like an unreadable config, this is the
+	// backup's own condition: its notes record it.
+	if keys := sanitize.RawLXCKeys(orig); b.Key.Kind == model.KindLXC && len(keys) > 0 {
+		l, res := fail(model.Error, "raw lxc config ("+strings.Join(keys, ", ")+") needs root@pam to restore")
+		annotate(d, glog, b, *res)
+		return l, res
+	}
 	needRAM := guestMemoryMiB(b.Key.Kind, orig) * (1 << 20) * 110 / 100
 
 	p.mu.Lock()
