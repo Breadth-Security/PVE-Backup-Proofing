@@ -1301,3 +1301,134 @@ func TestTeardownErrorHasVMID(t *testing.T) {
 		t.Errorf("run.log:\n%s", r)
 	}
 }
+
+// A VMID whose job left an InFlight record (its teardown failed, e.g. the
+// unprotect) stays reserved for the rest of the run: handing it to another
+// job would overwrite the record, and that backup would stay protected for
+// good (code review I2). Its space and RAM are still released.
+func TestReleaseKeepsVMIDWithInFlightRecord(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	orig := false
+	if err := f.d.Store.Update(func(st *state.State) error {
+		st.InFlight[990000] = state.Job{TempVMID: 990000, VolID: "pbs:backup/vm/101/x", Storage: "pbs", ProtectedOrig: &orig, Stage: state.StageDestroyed}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := &pool{d: f.d, inUse: map[int]bool{990000: true, 990001: true}, spaceRes: 3, ramRes: 5}
+	p.release(lease{vmid: 990000, space: 1, ram: 2})
+	p.release(lease{vmid: 990001, space: 2, ram: 3})
+	if !p.inUse[990000] {
+		t.Error("VMID 990000 freed while its InFlight record remains")
+	}
+	if p.inUse[990001] {
+		t.Error("VMID 990001 not freed")
+	}
+	if p.spaceRes != 0 || p.ramRes != 0 {
+		t.Errorf("reservations = %d space, %d RAM; want 0", p.spaceRes, p.ramRes)
+	}
+}
+
+// unprotectFails refuses to clear protected on one volume, as a PBS that
+// keeps refusing would.
+type unprotectFails struct {
+	pve.API
+	volid string
+}
+
+func (a unprotectFails) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
+	if volid == a.volid && protected != nil && !*protected {
+		return errors.New("unprotect refused")
+	}
+	return a.API.SetVolumeAttrs(ctx, node, storage, volid, notes, protected)
+}
+
+// A record the janitor cannot finish (its guest is gone, the unprotect
+// keeps failing) stops the run at preflight and is kept: no later run can
+// reuse its VMID and overwrite it (code review I2, across runs).
+func TestUnfinishedRecordStopsRun(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	stuck := f.add("pbs", model.KindQEMU, 102, 1024, "PBP PROVEN 2026-10-18 02:14 · ok")
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.d.API = unprotectFails{API: f.d.API, volid: stuck.VolID}
+	orig := false
+	if err := f.d.Store.Update(func(st *state.State) error {
+		st.InFlight[990000] = state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: stuck.VolID, Storage: "pbs", ProtectedOrig: &orig, Stage: state.StageDestroyed}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	if !strings.Contains(s.RunError, "janitor") || !strings.Contains(s.RunError, "unprotect refused") {
+		t.Errorf("RunError = %q, want the janitor's failure", s.RunError)
+	}
+	if rs := f.tgt.restores(); len(rs) != 0 {
+		t.Errorf("restores = %q; want none", rs)
+	}
+	if _, ok := f.d.Store.Snapshot().InFlight[990000]; !ok {
+		t.Error("the unfinished record for 990000 was lost")
+	}
+}
+
+// Once the daemon is stopping, no further proofs start: the remaining
+// guests are SKIPPED "PBP stopping", nothing is restored, and their backups'
+// notes are left alone (code review I3).
+func TestRunStopsAdmittingWhenStopping(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "own note")
+	f.add("pbs", model.KindQEMU, 102, 1024, "")
+	stop := make(chan struct{})
+	close(stop)
+
+	s := f.run(context.Background(), Options{Trigger: "schedule", Stop: stop})
+
+	for vmid, r := range byVMID(t, s) {
+		if r.Verdict != model.Skipped || r.Reason != "PBP stopping" {
+			t.Errorf("guest %d: got %s %q, want SKIPPED \"PBP stopping\"", vmid, r.Verdict, r.Reason)
+		}
+	}
+	if rs := f.tgt.restores(); len(rs) != 0 {
+		t.Errorf("restores = %q, want none", rs)
+	}
+	if n := f.api.Backups["pbs"][0].Notes; n != "own note" {
+		t.Errorf("notes = %q", n)
+	}
+}
+
+// stopOnExec closes stop on the first command run in its guest, i.e. while
+// that guest's proof is in flight, then behaves like ex.
+type stopOnExec struct {
+	ex   probe.Executor
+	once *sync.Once
+	stop chan struct{}
+}
+
+func (s stopOnExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	s.once.Do(func() { close(s.stop) })
+	return s.ex.Exec(ctx, argv)
+}
+
+// A stop requested while a proof is in flight lets that proof finish
+// (PROVEN, notes written) and starts no further one (code review I3).
+func TestRunStopMidProofFinishesInFlight(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs", model.KindQEMU, 102, 1024, "")
+	stop := make(chan struct{})
+	f.tgt.Exec[990000] = stopOnExec{ex: healthy(), once: &sync.Once{}, stop: stop}
+
+	s := f.run(context.Background(), Options{Trigger: "schedule", Stop: stop})
+
+	got := byVMID(t, s)
+	if r := got[101]; r.Verdict != model.Proven {
+		t.Errorf("in-flight guest 101: got %s %q, want PROVEN", r.Verdict, r.Reason)
+	}
+	if r := got[102]; r.Verdict != model.Skipped || r.Reason != "PBP stopping" {
+		t.Errorf("guest 102: got %s %q, want SKIPPED \"PBP stopping\"", r.Verdict, r.Reason)
+	}
+	if rs := f.tgt.restores(); len(rs) != 1 {
+		t.Errorf("restores = %q, want only guest 101", rs)
+	}
+}

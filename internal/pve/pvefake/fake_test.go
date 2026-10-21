@@ -32,7 +32,8 @@ func TestRestoreThenGuestConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"name": "delta1", "cores": "4", "net0": "virtio=BC:24:11:ED:57:35,bridge=vmbr0"}
+	// onboot=0 is the restore override the real client sends.
+	want := map[string]string{"name": "delta1", "cores": "4", "net0": "virtio=BC:24:11:ED:57:35,bridge=vmbr0", "onboot": "0"}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("cfg = %v", cfg)
 	}

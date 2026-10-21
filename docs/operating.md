@@ -30,6 +30,8 @@ Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and th
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`. A backup of a template is always skipped ("template (not bootable)").
 
+A run on demand that is interrupted (Ctrl-C, or its SSH session dropping) still tears its guest down and records the result. Under Docker, it runs inside the PBP container through `docker compose exec`, so it ends abruptly if that container is stopped or restarted meanwhile: let it finish first. Anything it leaves behind is cleaned up by the next run's janitor.
+
 ## Logs
 
 Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` host, `./logs` with Docker), named with the time the run started and what started it (`schedule` or `manual`):
@@ -181,7 +183,7 @@ Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CO
 
 ## Health check
 
-`pbp health` reports a problem when the last run ended in a run-level error (for example the node or SSH is unreachable, so no notification could be sent), when a scheduled run did not start, or when the current run has overrun. It prints `ok` and exits 0 when all is well, and otherwise prints the reason and exits 1. This is the backstop for a silent night when the node itself cannot notify you.
+`pbp health` reports a problem when the last run ended in a run-level error (for example the node or SSH is unreachable, so no notification could be sent, or the run was interrupted because PBP was stopped or crashed mid-run), when a scheduled run did not start, or when the current run has overrun. It prints `ok` and exits 0 when all is well, and otherwise prints the reason and exits 1. This is the backstop for a silent night when the node itself cannot notify you. When the daemon starts again after it was killed or crashed during a run, it marks that run as interrupted (so `pbp health` reports it) and, if it can reach the node, sends a notification about it and cleans up the guests the run left behind, within 15 minutes; otherwise the next run's janitor does. If a `pbp run` holds the lock at that moment, that run's own start marks it instead.
 
 - **Docker:** the image's `HEALTHCHECK` runs it, so the container reports **unhealthy**. Watch that with your usual container monitoring.
 - **`.deb` host:** run `sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp health` from your monitoring (a check script, or a systemd timer that alerts on failure).

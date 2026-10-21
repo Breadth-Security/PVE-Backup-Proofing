@@ -153,3 +153,26 @@ func TestVolumeNotes(t *testing.T) {
 		t.Errorf("%s %s", method, escPath)
 	}
 }
+
+// PVE reports protected as 0/1 (or a JSON boolean on some versions).
+func TestVolumeProtected(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"data":{"notes":"x","protected":1,"size":1}}`:    true,
+		`{"data":{"notes":"x","protected":true,"size":1}}`: true,
+		`{"data":{"notes":"x","protected":0,"size":1}}`:    false,
+		`{"data":{"notes":"x","size":1}}`:                  false,
+	} {
+		var escPath string
+		c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			escPath = r.URL.EscapedPath()
+			_, _ = w.Write([]byte(body))
+		}))
+		got, err := c.VolumeProtected(context.Background(), "pve1", "PBS", "PBS:backup/vm/101/2026-10-19T06:00:00Z")
+		if err != nil || got != want {
+			t.Errorf("%s: got %v, %v; want %v", body, got, err, want)
+		}
+		if p := "/api2/json/nodes/pve1/storage/PBS/content/PBS:backup%2Fvm%2F101%2F2026-10-19T06:00:00Z"; escPath != p {
+			t.Errorf("path %s", escPath)
+		}
+	}
+}

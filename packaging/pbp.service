@@ -16,9 +16,10 @@ Restart=on-failure
 # every 30s cannot fix it.
 RestartPreventExitStatus=78
 RestartSec=30s
-# On SIGTERM the daemon waits up to 10 minutes for an in-flight guest to be
-# torn down; do not shorten this.
-TimeoutStopSec=11min
+# On SIGTERM the daemon starts no further proofs and gives those in flight
+# up to 10 minutes to finish; then it cancels them, and their teardown and
+# the run's notification can take about 11 minutes more. Do not shorten this.
+TimeoutStopSec=25min
 
 NoNewPrivileges=yes
 ProtectSystem=strict

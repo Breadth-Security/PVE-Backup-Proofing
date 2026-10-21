@@ -38,9 +38,10 @@ func LockPath() string { return filepath.Join(StateDir(), "run.lock") }
 // Serve calls runFn with trigger "schedule" at each time cfg.Schedule names
 // (container time zone), holding the run lock for the whole call. A tick
 // that finds the lock taken is skipped. When ctx ends, Serve stops
-// scheduling and waits for an in-flight run: the run's own context is
-// cancelled only after shutdownGrace, so it can finish or tear down.
-func Serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Context, trigger string)) error {
+// scheduling and waits for an in-flight run: its stop channel closes at
+// once, so it starts no further proofs, and its own context is cancelled
+// only after shutdownGrace, so proofs in flight can finish or tear down.
+func Serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Context, stop <-chan struct{}, trigger string)) error {
 	sched, err := cron.ParseStandard(cfg.Schedule)
 	if err != nil {
 		return fmt.Errorf("schedule %q: %w", cfg.Schedule, err)
@@ -86,7 +87,7 @@ func Serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Contex
 					log.Error("panic in scheduled run", "panic", p)
 				}
 			}()
-			runFn(runCtx, "schedule")
+			runFn(runCtx, ctx.Done(), "schedule")
 		}()
 	}
 }

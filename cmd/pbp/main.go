@@ -92,11 +92,29 @@ func main() {
 		// The helper outlives a vanished SSH client on purpose (see
 		// catchNodeSignals); it runs until the process exits.
 		catchNodeSignals()
+	} else {
+		// A command whose SSH session dropped must not die from SIGPIPE
+		// on its next write to stdout before it has torn down.
+		signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals(os.Args[1:], signal.Ignored(syscall.SIGHUP))...)
 	code := newApp(os.Stdout, os.Stderr).main(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
+}
+
+// stopSignals are the signals that end a command gracefully (its context is
+// cancelled, so a run tears its guests down). SIGHUP counts too, so a
+// manual `pbp run` whose SSH session drops still cleans up (code review
+// I5). Not for the node helper, which outlives a hangup on purpose (see
+// catchNodeSignals), and not when SIGHUP is already ignored (nohup):
+// registering it would undo that, and logging out would cancel the run.
+func stopSignals(args []string, hupIgnored bool) []os.Signal {
+	sigs := []os.Signal{syscall.SIGTERM, syscall.SIGINT}
+	if !hupIgnored && (len(args) == 0 || args[0] != "node") {
+		sigs = append(sigs, syscall.SIGHUP)
+	}
+	return sigs
 }
 
 // app is the CLI with its outside world injectable for tests.
@@ -310,8 +328,9 @@ func (a *app) daemon(ctx context.Context, cfg config.Config) int {
 	if err := writeStarted(startedPath(), a.now()); err != nil {
 		slog.Error("record daemon start", "err", err)
 	}
-	err := daemon.Serve(ctx, cfg, func(ctx context.Context, trigger string) {
-		a.runOnce(ctx, cfg, run.Options{Trigger: trigger})
+	a.recoverAtStart(ctx, cfg)
+	err := daemon.Serve(ctx, cfg, func(ctx context.Context, stop <-chan struct{}, trigger string) {
+		a.runOnce(ctx, cfg, run.Options{Trigger: trigger, Stop: stop})
 	})
 	if err != nil {
 		slog.Error("daemon", "err", err)
@@ -361,6 +380,46 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 		return exitFail
 	}
 	return exitOK
+}
+
+// recoverTimeout bounds startup recovery: it runs before scheduling starts,
+// so a hung task on the node must not hold the daemon up (what it leaves is
+// the first run's janitor's).
+const recoverTimeout = 15 * time.Minute
+
+// recoverAtStart, holding the run lock, marks a run that PBP's death
+// interrupted and cleans up jobs it left in flight (run.Recover), within
+// recoverTimeout. It connects to the node only when there is something to
+// recover; a busy lock (a manual run) skips it, as that run's own start
+// does the same.
+func (a *app) recoverAtStart(ctx context.Context, cfg config.Config) {
+	ctx, cancel := context.WithTimeout(ctx, recoverTimeout)
+	defer cancel()
+	release, err := daemon.AcquireLock(daemon.LockPath())
+	if err != nil {
+		slog.Warn("startup recovery skipped", "err", err)
+		return
+	}
+	defer release()
+	store, err := state.Open(statePath())
+	if err != nil {
+		slog.Error("startup recovery: open state", "err", err)
+		return
+	}
+	snap := store.Snapshot()
+	if len(snap.InFlight) == 0 && !slices.ContainsFunc(snap.Runs, func(r state.RunRecord) bool { return r.Outcome == state.OutcomeRunning }) {
+		return
+	}
+	w := a.connect(cfg)
+	defer w.close()
+	d := run.Deps{Cfg: cfg, Store: store, Log: slog.Default(), Now: a.now}
+	if w.apiErr == nil {
+		d.API, d.Target = w.api, w.target
+	}
+	if w.sshErr == nil {
+		d.Notifier = w.notifier
+	}
+	run.Recover(ctx, d)
 }
 
 // runOnce performs one run with real wiring. The caller holds the run lock.

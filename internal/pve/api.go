@@ -11,6 +11,7 @@ type API interface {
 	Version(ctx context.Context) (string, error)
 	ListBackups(ctx context.Context, node, storage string) ([]model.Backup, error)
 	VolumeNotes(ctx context.Context, node, storage, volid string) (string, error)
+	VolumeProtected(ctx context.Context, node, storage, volid string) (bool, error)
 	SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error
 	StorageStatus(ctx context.Context, node, storage string) (StorageStatus, error)
 	NodeMemory(ctx context.Context, node string) (NodeMemory, error)

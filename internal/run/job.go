@@ -110,8 +110,15 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		res.Verdict, res.Reason = v, oneLine(fmt.Sprintf(format, args...))
 	}
 
-	orig := b.Protected
-	err := d.Store.Update(func(st *state.State) error {
+	// Read the flag now, not from the run's listing, which may be hours
+	// old: undoing protection an admin added since would expose the backup
+	// to pruning (code review I1).
+	orig, err := d.API.VolumeProtected(ctx, d.Cfg.Target.Node, b.Storage, b.VolID)
+	if err != nil {
+		fail(model.Error, "read backup protected flag: %v", err)
+		return
+	}
+	err = d.Store.Update(func(st *state.State) error {
 		st.InFlight[j.vmid] = state.Job{
 			TempVMID: j.vmid, Kind: kind, VolID: b.VolID, Storage: b.Storage,
 			ProtectedOrig: &orig, Stage: state.StageProtected,

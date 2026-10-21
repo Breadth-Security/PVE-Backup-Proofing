@@ -201,8 +201,10 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	// Add the owner tag to the restored tags (the backup's own): replacing
 	// them would remove any registered tag, which needs Sys.Modify on "/".
 	// Clear protection (restored from a protected guest's backup) in the
-	// same call, so the guest is destroyable from here on.
-	set := map[string]string{"tags": sanitize.AddTag(origTags, OwnerTag), "protection": "0"}
+	// same call, so the guest is destroyable from here on, and onboot again
+	// (the restore already overrode it), so a copy that Sanitize never
+	// reaches can still not autostart on its production NICs.
+	set := map[string]string{"tags": sanitize.AddTag(origTags, OwnerTag), "protection": "0", "onboot": "0"}
 	// LXC has no "name"; renaming its hostname would change the guest itself.
 	if kind == model.KindQEMU {
 		set["name"] = fmt.Sprintf("pbp-%d-%s", b.Key.VMID, b.Time.UTC().Format("200601021504"))

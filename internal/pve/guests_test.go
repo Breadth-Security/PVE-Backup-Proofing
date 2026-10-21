@@ -57,7 +57,10 @@ func TestRestoreQEMU(t *testing.T) {
 	if err != nil || upid != "UPID:pve1:1:qmrestore" {
 		t.Fatalf("upid=%q err=%v", upid, err)
 	}
-	want := url.Values{"archive": {"PBS:backup/vm/100/2026-07-26T06:00:03Z"}, "vmid": {"9100"}, "storage": {"scratch"}, "unique": {"1"}}
+	// onboot=0 overrides the backup's own onboot at restore time, so the
+	// copy, still on its production NICs until it is sanitized, can never
+	// autostart (code review C1; accepted by PVE 9.2 for both kinds).
+	want := url.Values{"archive": {"PBS:backup/vm/100/2026-07-26T06:00:03Z"}, "vmid": {"9100"}, "storage": {"scratch"}, "unique": {"1"}, "onboot": {"0"}}
 	if got.method != "POST" || got.path != "/api2/json/nodes/pve1/qemu" || !reflect.DeepEqual(got.form, want) {
 		t.Errorf("request = %+v", got)
 	}
@@ -68,7 +71,7 @@ func TestRestoreLXC(t *testing.T) {
 	if _, err := c.Restore(context.Background(), "pve1", model.KindLXC, 9101, "PBS:backup/ct/101/x", "scratch"); err != nil {
 		t.Fatal(err)
 	}
-	want := url.Values{"ostemplate": {"PBS:backup/ct/101/x"}, "vmid": {"9101"}, "storage": {"scratch"}, "restore": {"1"}, "unique": {"1"}}
+	want := url.Values{"ostemplate": {"PBS:backup/ct/101/x"}, "vmid": {"9101"}, "storage": {"scratch"}, "restore": {"1"}, "unique": {"1"}, "onboot": {"0"}}
 	if got.method != "POST" || got.path != "/api2/json/nodes/pve1/lxc" || !reflect.DeepEqual(got.form, want) {
 		t.Errorf("request = %+v", got)
 	}
