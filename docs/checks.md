@@ -21,7 +21,7 @@ For Windows VMs, automatic-start services that are not running count as failures
 
 ## Profiles and guest checks
 
-PBP reads the units enabled inside each restored guest, which reflects the original host. For every enabled unit that matches a **profile**, the profile's checks run. A failing check is `FAILED`. Check kinds are `services` (must be active), `ports` (a TCP port is listening; any listed port suffices) and `commands` (must exit 0). Every command PBP runs inside a guest is bounded by `checks.command_timeout` (default 60s): a check whose command times out fails (`check timed out: <check>`). The one exception is the initial wait for boot to settle (`systemctl is-system-running --wait`). It may use most of `restore.probe_timeout`, because on the isolated proof network DHCP and wait-online services can keep a healthy guest starting for a minute or two. If the guest is still `starting` when that time runs out, the result is `ERROR` (`guest still starting after …`), not `FAILED`. All checks of one guest are bounded by `restore.probe_timeout` (default 5m): if that runs out, the guest is `ERROR` (`probe timed out`), not `FAILED`.
+PBP reads the units enabled inside each restored guest, which reflects the original host. For every enabled unit that matches a **profile**, the profile's checks run. A failing check is `FAILED`. Check kinds are `services` (must be active), `ports` (a TCP port is listening; any listed port suffices) and `commands` (must exit 0). Every command PBP runs inside a guest is bounded by `checks.command_timeout` (default 60s): a check whose command times out fails (`check timed out: <check>`). The one exception is the initial wait for boot to settle (`systemctl is-system-running --wait`). It may use most of `restore.probe_timeout`, because on the isolated proof network DHCP and wait-online services can keep a healthy guest starting for a minute or two. If the guest is still `starting` when that time runs out, the result is `ERROR` (`guest still starting after …`), not `FAILED`. All checks of one guest are bounded by `restore.probe_timeout` (default 5m): if that runs out, the guest is `ERROR` (`probe timed out`), not `FAILED`. The boot wait keeps back a quarter of that time (at most 30s) for the checks, so for a guest that settles late, or one with many checks (each one over the QEMU guest agent takes a few seconds), raise `probe_timeout`.
 
 Built-in profiles: postgresql (`pg_isready`), mariadb and mysql (ping), nginx, apache2 and httpd (80 or 443 listening), docker (`docker info`), redis (`redis-cli ping`), sshd/ssh (22 listening), and cron.
 
@@ -37,13 +37,17 @@ checks:
   guests:
     - match: { vmid: 105 }
       services: [postgresql]
+    - match: { tag: haos }
+      allow_readonly_root: true   # root is read-only by design (Home Assistant OS, Fedora CoreOS)
 ```
+
+A guest's root filesystem mounted read-only makes it `FAILED` (a damaged filesystem is often remounted read-only), unless a matching `checks.guests` entry sets `allow_readonly_root: true` for a system whose root is read-only by design.
 
 ## Containers without nesting
 
 In an unprivileged container without `features: nesting=1`, systemd 252 and later cannot set up the mount namespaces that sandboxed units use (`PrivateTmp=`, `ProtectSystem=` and similar). Those units fail with `226/NAMESPACE` ("Failed to set up mount namespacing … Permission denied"), and so do systemd's own mounts such as `tmp.mount` and `dev-mqueue.mount`. Proxmox warns about it when such a container starts: "Systemd 252 detected. You may need to enable nesting."
 
-The production container has the same failures, so they say nothing about the backup. PBP therefore ends such a container `BOOTED`, not `FAILED`, naming the units: `container without nesting: 4 units cannot start sandboxed (systemd-logind.service, …); enable nesting=1`. It counts a unit this way only when its failure is the namespace denial: a service that exited `226/NAMESPACE`, one of systemd's API mounts, or a socket whose service failed so. Any other failed unit still makes the guest `FAILED`.
+The production container has the same failures, so they say nothing about the backup. PBP therefore ends such a container `BOOTED`, not `FAILED`, naming the units: `container without nesting: 4 units cannot start sandboxed (systemd-logind.service, …); enable nesting=1`. It counts a unit this way only when its failure is the namespace denial: a service that exited `226/NAMESPACE`, one of systemd's API mounts, or a socket whose service (from its `Triggers=`) failed so. Any other failed unit still makes the guest `FAILED`. Checks that failed too are named in the reason (`…; checks also failed: …`). A privileged container can set up its namespaces, so this rule applies only to unprivileged ones.
 
 To fix it, enable nesting on the production container (Options > Features > Nesting, or `pct set <vmid> --features nesting=1`) and restart it; the next backup is then proven normally.
 
@@ -51,7 +55,7 @@ To fix it, enable nesting on the production container (Options > Features > Nest
 
 A restore can legitimately lack things the original guest used: disks marked `backup=0`, container mount points excluded from backup, bind mounts and passthrough devices that PBP removes for safety, and network storage (NFS, CIFS, iSCSI) that the isolated bridge cannot reach.
 
-When a failed unit can be traced to one of these (for example a `.mount` unit for an excluded disk, or a service that requires such a mount), PBP does **not** count it toward `FAILED`. It writes it to the log explicitly, for example `postgresql.service depends on /srv/pgdata (disk scsi1, backup=0): not backed up, skipped`, and lists it in the run summary and notification under **not covered by backup**. That is a feature: it tells you when a backup is missing something a service needs, which no boot test of the backup alone can show. Tracing is conservative; if PBP cannot connect a failure to a missing piece, it is a real failure.
+When a failed unit can be traced to one of these (for example a `.mount` unit for an excluded disk, or a service that requires such a mount), PBP does **not** count it toward `FAILED`. It writes it to the log explicitly, for example `postgresql.service depends on /srv/pgdata (disk scsi1, backup=0): not backed up, skipped`, and lists it in the run summary and notification under **not covered by backup**. That is a feature: it tells you when a backup is missing something a service needs, which no boot test of the backup alone can show. Tracing is conservative; if PBP cannot connect a failure to a missing piece, it is a real failure. The profile of a not-covered unit (such as the postgresql profile's `pg_isready`) is not run either, since it would fail for the same reason; your per-guest checks under `checks.guests` still run.
 
 ## OpenRC guests
 

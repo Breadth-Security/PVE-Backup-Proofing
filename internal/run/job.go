@@ -253,7 +253,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	out := probe.Run(pctx, d.Target.Executor(kind, j.vmid), probe.Input{
 		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
-		NoNesting: kind == model.KindLXC && !sanitize.Nesting(j.orig),
+		NoNesting: noNesting(kind, j.orig),
 	})
 	res.Verdict, res.Reason = out.Verdict, out.Reason
 	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits
@@ -470,3 +470,11 @@ var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 // oneLine turns each run of line breaks in s into one space: a reason is
 // always one line.
 func oneLine(s string) string { return lineBreaks.ReplaceAllString(s, " ") }
+
+// noNesting reports whether the probe should treat namespace failures as
+// the container's configuration: an unprivileged container without
+// nesting=1. A privileged container can set up its namespaces, so its
+// failed units are real (code review 5.11).
+func noNesting(kind model.GuestKind, orig map[string]string) bool {
+	return kind == model.KindLXC && orig["unprivileged"] == "1" && !sanitize.Nesting(orig)
+}

@@ -16,7 +16,7 @@ import (
 // showResult is the command the probe runs to tell a nesting failure from
 // another: exit status 226 is systemd's NAMESPACE failure.
 func showResult(unit string) string {
-	return "systemctl show -p Result -p ExecMainStatus -- " + unit
+	return "systemctl show -p Result -p ExecMainStatus -p Triggers -- " + unit
 }
 
 // nestingGuest is a container whose failed units are those seen on pve1 in
@@ -100,4 +100,32 @@ func TestNestingSandboxFailuresStillFailWithNesting(t *testing.T) {
 // containsWord reports whether unit appears as a whole word in a reason.
 func containsWord(reason, unit string) bool {
 	return slices.Contains(strings.FieldsFunc(reason, func(r rune) bool { return r == ' ' || r == ',' || r == ':' }), unit)
+}
+
+// A check that failed too is named in the BOOTED reason, not hidden behind
+// the nesting one (code review 5.11).
+func TestNoNestingNamesFailedChecks(t *testing.T) {
+	ex := nestingGuest(nil)
+	ex[ssC] = out("")
+	ex["cat /proc/net/tcp /proc/net/tcp6"] = out("  sl  local_address rem_address   st\n")
+	o := runNesting(ex, true)
+	if o.Verdict != model.Booted || !strings.HasSuffix(o.Reason, "; checks also failed: nginx:ports:80,443") {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// A socket whose service has another name is judged by that service, read
+// from the socket's Triggers (code review 5.13).
+func TestNoNestingSocketTriggers(t *testing.T) {
+	ex := nestingGuest(map[string]string{
+		"dbus-broker.service": "Result=exit-code\nExecMainStatus=226\n",
+		"dbus.socket":         "Result=service-start-limit-hit\nTriggers=dbus-broker.service\n",
+	})
+	o := runNesting(ex, true)
+	if o.Verdict != model.Booted || !slices.Contains(o.FailedUnits, "dbus.socket") || strings.Contains(o.Reason, "failed:") {
+		t.Fatalf("got %v %q (failed units %v)", o.Verdict, o.Reason, o.FailedUnits)
+	}
+	if !strings.Contains(o.Reason, "dbus.socket") {
+		t.Errorf("dbus.socket not counted as a nesting failure: %q", o.Reason)
+	}
 }

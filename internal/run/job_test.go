@@ -771,10 +771,21 @@ func TestProbeGetsOSType(t *testing.T) {
 	f := newFixture(t)
 	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
 	f.tgt.Boot[tmpVMID] = target.BootInfo{OS: probe.Linux, OSType: "alpine"}
-	f.tgt.Exec[tmpVMID] = probetest.Scripted{"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n")}
+	f.tgt.Exec[tmpVMID] = settledOpenRC{probetest.Scripted{"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n")}}
 	if res := f.run(context.Background()); res.Verdict != model.Proven {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
+}
+
+// settledOpenRC answers the OpenRC settle script (sh -c "… rc-status -r …")
+// as settled; without it the script exits 127 and the probe tries systemd.
+type settledOpenRC struct{ probetest.Scripted }
+
+func (s settledOpenRC) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if len(argv) == 3 && argv[0] == "sh" && strings.Contains(argv[2], "rc-status -r") {
+		return out(""), nil
+	}
+	return s.Scripted.Exec(ctx, argv)
 }
 
 // hangSys blocks "systemctl is-system-running --wait" until its context ends.
@@ -921,6 +932,23 @@ func TestOneLine(t *testing.T) {
 	} {
 		if got := oneLine(in); got != want {
 			t.Errorf("oneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNoNestingOnlyUnprivileged(t *testing.T) {
+	for _, tc := range []struct {
+		kind model.GuestKind
+		cfg  map[string]string
+		want bool
+	}{
+		{model.KindLXC, map[string]string{"unprivileged": "1"}, true},
+		{model.KindLXC, map[string]string{"unprivileged": "1", "features": "nesting=1"}, false},
+		{model.KindLXC, map[string]string{}, false}, // privileged
+		{model.KindQEMU, map[string]string{"unprivileged": "1"}, false},
+	} {
+		if got := noNesting(tc.kind, tc.cfg); got != tc.want {
+			t.Errorf("%s %v: %v, want %v", tc.kind, tc.cfg, got, tc.want)
 		}
 	}
 }

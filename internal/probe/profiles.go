@@ -55,6 +55,10 @@ type checker struct {
 	portsErr error // the listing timed out: port checks fail
 	// openrc checks services with rc-service instead of systemctl.
 	openrc bool
+	// notCovered are units traced to something not in the backup: their
+	// profiles are not run, since their failure says nothing about the
+	// backup (code review 5.9).
+	notCovered map[string]bool
 }
 
 func (c *checker) record(name string, ok bool, detail string) {
@@ -106,8 +110,9 @@ func (c *checker) listening(ctx context.Context) (map[int]bool, error) {
 	// exits non-zero when tcp6 is absent but still prints tcp.
 	r, err = c.ex.Exec(ctx, []string{"cat", "/proc/net/tcp", "/proc/net/tcp6"})
 	if errors.Is(err, errCommandTimeout) {
-		c.portsOK, c.portsErr = true, err
-		return nil, err
+		// As for the mounts fallback: ERROR, not a failed port check.
+		c.portsOK, c.portsErr = true, errNoPortSource
+		return nil, errNoPortSource
 	}
 	if err != nil {
 		return nil, err
@@ -249,7 +254,7 @@ func (c *checker) runProfiles(ctx context.Context, in Input, enabled []string) e
 	for _, p := range in.Checks.EffectiveProfiles() {
 		var matched []string
 		for _, u := range enabled {
-			if globMatch(p.Unit, u) {
+			if globMatch(p.Unit, u) && !c.notCovered[u] {
 				matched = append(matched, u)
 			}
 		}

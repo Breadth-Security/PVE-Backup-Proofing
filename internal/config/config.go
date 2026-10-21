@@ -96,8 +96,12 @@ type GuestMatch struct {
 }
 
 type GuestChecks struct {
-	Match    GuestMatch `yaml:"match"`
-	CheckSet `yaml:",inline"`
+	Match GuestMatch `yaml:"match"`
+	// AllowReadOnlyRoot: the guest's root is read-only by design (Home
+	// Assistant OS, Fedora CoreOS), so a read-only root is not a failure
+	// (code review 5.10).
+	AllowReadOnlyRoot bool `yaml:"allow_readonly_root"`
+	CheckSet          `yaml:",inline"`
 }
 
 type Notify struct {
