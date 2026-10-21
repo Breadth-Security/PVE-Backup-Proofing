@@ -26,6 +26,10 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
+// reasonPBSRefused explains a protect that PBS refused: the PVE storage
+// connects to PBS as a user that may not change the backup.
+const reasonPBSRefused = "PBS refused: the storage's PBS user needs Datastore.Backup as the backup's owner, or Datastore.Modify (docs/dedicated-node.md)"
+
 // Cleanup timeouts. Each cleanup step runs on its own fresh context so that a
 // shutdown (cancelled run context) still destroys the guest, restores the
 // backup's protected flag and writes the verdict, and so one slow step cannot
@@ -118,6 +122,14 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	if !orig {
 		j.protectSet = true
 		if err := j.setProtected(ctx, true); err != nil {
+			if pve.PermissionDenied(err) {
+				// PBS refused: nothing changed, so nothing to undo and
+				// nothing for the janitor (issue #30).
+				j.protectSet = false
+				j.log.Info("PBS refused to protect the backup: " + oneLine(err.Error()))
+				fail(model.Error, "protect backup: %s", reasonPBSRefused)
+				return
+			}
 			fail(model.Error, "protect backup: %v", err)
 			return
 		}

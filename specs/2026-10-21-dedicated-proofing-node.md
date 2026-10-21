@@ -45,7 +45,7 @@ The test setup: **pve2**, a standalone PVE 9.2.18 host on the same CPU model as 
 
 | # | Result |
 |---|--------|
-| 1 | **With the owner's credentials (`pbs@pbs`): works.** `protected` was set and cleared, and the notes were written (VM108, CT120, VM102). The separate read-only user case is not tested: no such PBS user exists yet. |
+| 1 | **With the owner's credentials (`pbs@pbs`, `DatastorePowerUser`): works.** `protected` was set and cleared, and the notes were written (VM108, CT120, VM102). **With a separate read-only token** (`pbp-ro@pbs!pve2`, `DatastoreReader` only), in a second storage `PBS-qemu-ro` on pve2: listing and restore access work (444 backups listed), but PBS refuses `protected` and notes with `permission check failed - missing Datastore.Modify\|Datastore.Backup on /datastore/pbs_cic-nas`. The proof ends `ERROR` before anything is restored. **Bug found and fixed on this branch:** PBP then tried to undo the refused protect and left an in-flight job that the janitor would retry, and fail, on every run. Now a refusal (`pve.PermissionDenied`) leaves nothing to undo, and the reason says which rights the storage's PBS user lacks. |
 | 2 | **Yes.** pve1's view of the same backups shows pve2's verdict lines, with `protected=0` afterwards. Both nodes share the notes, so another PBP instance treats a backup proven on pve2 as "already proven". |
 | 3 | Not testable with the current backups: they all use `vmbr0`, which pve2 also has (as an OVS bridge). |
 | 4 | **`cpu: host` works** (VM108 PROVEN). **A named model works** (VM102 `x86-64-v2-AES` booted; it FAILED on the same sssd units as on pve1, which is consistent). Both hosts have the same CPU model, so a CPU mismatch is not tested. |
