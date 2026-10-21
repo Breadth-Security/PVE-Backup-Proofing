@@ -212,12 +212,12 @@ func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, origTags s
 	return err
 }
 
-func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
+func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (target.Sanitized, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Sanitize %s %d", kind, vmid)
 	if err := f.guard(vmid); err != nil {
-		return nil, err
+		return target.Sanitized{}, err
 	}
 	g, ok := f.Live[vmid]
 	if ok {
@@ -225,14 +225,14 @@ func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]
 		f.Live[vmid] = g
 	}
 	if err := f.SanitizeErr[vmid]; err != nil {
-		return nil, err
+		return target.Sanitized{}, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("targetfake: sanitize %d: no restored guest", vmid)
+		return target.Sanitized{}, fmt.Errorf("targetfake: sanitize %d: no restored guest", vmid)
 	}
 	g.Sanitized = true
 	f.Live[vmid] = g
-	return slices.Clone(f.Missing[vmid]), nil
+	return target.Sanitized{Removed: slices.Clone(f.Missing[vmid])}, nil
 }
 
 func (f *Fake) Start(ctx context.Context, kind model.GuestKind, vmid int) error {

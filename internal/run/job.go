@@ -139,7 +139,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 
-	removed, err := d.Target.Sanitize(ctx, kind, j.vmid)
+	sanitized, err := d.Target.Sanitize(ctx, kind, j.vmid)
+	removed := sanitized.Removed
 	if errors.Is(err, target.ErrUnsafe) {
 		fail(model.Error, "unsafe config: %s", strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "))
 		return

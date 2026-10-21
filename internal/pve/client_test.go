@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -383,5 +384,20 @@ func TestWaitTaskRetryHonoursContext(t *testing.T) {
 	defer cancel()
 	if err := c.WaitTask(ctx, "pve1", "UPID:x:"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestTaskFailure(t *testing.T) {
+	err := fmt.Errorf("restore x to 990000: %w", &TaskError{
+		UPID:       "UPID:pve1:0001",
+		ExitStatus: "unable to restore CT 990000 - unable to parse\nvolume",
+		Log:        []string{"a", "b"},
+	})
+	exit, log, ok := TaskFailure(err)
+	if !ok || exit != "unable to restore CT 990000 - unable to parse volume" || !slices.Equal(log, []string{"a", "b"}) {
+		t.Errorf("TaskFailure = %q, %q, %v", exit, log, ok)
+	}
+	if _, _, ok := TaskFailure(errors.New("x")); ok {
+		t.Error("plain error reported as a task failure")
 	}
 }

@@ -72,11 +72,23 @@ type BootInfo struct {
 	OS probe.OSFamily
 	// OSType is a container's PVE ostype ("" for a VM).
 	OSType string
+	// OSName is the guest's OS name: the agent's "name" for a VM, the
+	// container's ostype for a CT; "" when unknown.
+	OSName string
 	// AgentMissing: a VM whose guest agent is not configured or never answered.
 	AgentMissing bool
 	// ExecBlocked: the agent answers but refuses to run commands.
 	ExecBlocked bool
 	Duration    time.Duration
+}
+
+// Sanitized is what Sanitize did to a restored guest's config.
+type Sanitized struct {
+	// Removed is what the proof can no longer cover.
+	Removed []model.MissingPiece
+	// Changes lists each edited config key, sorted by key, one line each:
+	// "net0: old \u2192 new", or "usb0 removed (old)".
+	Changes []string
 }
 
 // Target is where backups are restored and proofed (design section 5.1).
@@ -109,7 +121,7 @@ type Target interface {
 	Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error
 	// Sanitize makes the restored guest safe to start and verifies it. It
 	// returns the pieces it removed, which the proof cannot cover.
-	Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error)
+	Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (Sanitized, error)
 	// Start starts a sanitized guest; it refuses one that is not.
 	Start(ctx context.Context, kind model.GuestKind, vmid int) error
 	// WaitBooted waits until the guest runs and can be looked into. An

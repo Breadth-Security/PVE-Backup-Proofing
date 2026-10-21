@@ -124,7 +124,7 @@ func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origT
 	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
+func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (target.Sanitized, error) {
 	t.rec.add(ctx, "Sanitize")
 	return t.Fake.Sanitize(ctx, kind, vmid)
 }

@@ -213,25 +213,51 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	return nil
 }
 
-func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) ([]model.MissingPiece, error) {
+func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (Sanitized, error) {
 	if err := n.guard(vmid); err != nil {
-		return nil, err
+		return Sanitized{}, err
 	}
 	cfg, err := n.api.GuestConfig(ctx, n.node, kind, vmid)
 	if err != nil {
-		return nil, fmt.Errorf("read config %d: %w", vmid, err)
+		return Sanitized{}, fmt.Errorf("read config %d: %w", vmid, err)
 	}
 	plan := sanitize.Sanitize(kind, cfg, n.bridge)
 	if len(plan.Unsafe) > 0 {
-		return nil, fmt.Errorf("%w: %s", ErrUnsafe, strings.Join(plan.Unsafe, ", "))
+		return Sanitized{}, fmt.Errorf("%w: %s", ErrUnsafe, strings.Join(plan.Unsafe, ", "))
 	}
 	if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, plan.Set, plan.Delete); err != nil {
-		return nil, fmt.Errorf("sanitize config %d: %w", vmid, err)
+		return Sanitized{}, fmt.Errorf("sanitize config %d: %w", vmid, err)
 	}
 	if err := n.verifySanitized(ctx, kind, vmid); err != nil {
-		return nil, err
+		return Sanitized{}, err
 	}
-	return plan.Removed, nil
+	return Sanitized{Removed: plan.Removed, Changes: sanitizeChanges(cfg, plan)}, nil
+}
+
+// sanitizeChanges describes the edits plan makes to cfg, sorted by key. A
+// key set to the value it already has is not a change.
+func sanitizeChanges(cfg map[string]string, plan sanitize.Plan) []string {
+	type change struct{ key, line string }
+	var cs []change
+	for k, v := range plan.Set {
+		old, ok := cfg[k]
+		if ok && old == v {
+			continue
+		}
+		if !ok {
+			old = "(unset)"
+		}
+		cs = append(cs, change{k, fmt.Sprintf("%s: %s \u2192 %s", k, old, v)})
+	}
+	for _, k := range plan.Delete {
+		cs = append(cs, change{k, fmt.Sprintf("%s removed (%s)", k, cfg[k])})
+	}
+	slices.SortFunc(cs, func(a, b change) int { return strings.Compare(a.key, b.key) })
+	lines := make([]string, len(cs))
+	for i, c := range cs {
+		lines[i] = c.line
+	}
+	return lines
 }
 
 var reNet = regexp.MustCompile(`^net\d+$`)

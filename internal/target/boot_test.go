@@ -22,6 +22,7 @@ import (
 type agentAPI struct {
 	*pvefake.Fake
 	osID      string
+	osName    string
 	osErr     error
 	pingFails int // pings that fail before one succeeds; -1 = never answers
 	execErr   error
@@ -44,7 +45,7 @@ func (a *agentAPI) AgentPing(ctx context.Context, node string, vmid int) error {
 }
 
 func (a *agentAPI) AgentOSInfo(ctx context.Context, node string, vmid int) (pve.OSInfo, error) {
-	return pve.OSInfo{ID: a.osID}, a.osErr
+	return pve.OSInfo{ID: a.osID, Name: a.osName}, a.osErr
 }
 
 func (a *agentAPI) AgentExec(ctx context.Context, node string, vmid int, argv []string) (int, error) {
@@ -546,4 +547,23 @@ func (ctxSSH) Run(ctx context.Context, cmd string, stdin []byte) (sshx.Result, e
 		return sshx.Result{}, err
 	}
 	return sshx.Result{}, nil
+}
+
+func TestWaitBootedOSName(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	runningVM(f, 990000, "1")
+	api := &agentAPI{Fake: f, osID: "rocky", osName: "Rocky Linux"}
+	got, err := newTarget(t, api, f, nil).WaitBooted(ctx, model.KindQEMU, 990000, time.Second)
+	if err != nil || got.OSName != "Rocky Linux" {
+		t.Errorf("VM: got %+v, %v", got, err)
+	}
+
+	f = healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
+	f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
+	got, err = newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+	if err != nil || got.OSName != "debian" {
+		t.Errorf("CT: got %+v, %v", got, err)
+	}
 }
