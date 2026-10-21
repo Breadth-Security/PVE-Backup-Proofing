@@ -401,3 +401,20 @@ func TestTaskFailure(t *testing.T) {
 		t.Error("plain error reported as a task failure")
 	}
 }
+
+// A refusal for lack of rights changed nothing; any other failure may have.
+// The messages are the ones PVE returned on pve2 for a read-only PBS user.
+func TestPermissionDenied(t *testing.T) {
+	for err, want := range map[error]bool{
+		&APIError{Status: 403, Message: "Permission check failed"}:                                                                                               true,
+		&APIError{Status: 500, Message: "403 Forbidden: 403 Forbidden\n"}:                                                                                        true,
+		fmt.Errorf("protect: %w", &APIError{Status: 500, Message: "Error: permission check failed - missing Datastore.Modify|Datastore.Backup on /datastore/x"}): true,
+		&APIError{Status: 500, Message: "got timeout"}:                                                                                                           false,
+		&APIError{Status: 595, Message: "Connection refused"}:                                                                                                    false,
+		errors.New("403 Forbidden"):                                                                                                                              false,
+	} {
+		if got := PermissionDenied(err); got != want {
+			t.Errorf("%v: got %v, want %v", err, got, want)
+		}
+	}
+}

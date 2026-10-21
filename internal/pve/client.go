@@ -57,6 +57,20 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("pve api %s: %d: %s", e.Path, e.Status, e.Message)
 }
 
+// PermissionDenied reports whether err is PVE refusing a request for lack of
+// rights, including PBS refusing a change through a PBS storage (PVE wraps
+// that as a 500 carrying "403 Forbidden" or "permission check failed"). A
+// refused request changed nothing.
+func PermissionDenied(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.Status == http.StatusForbidden ||
+		strings.Contains(ae.Message, "403 Forbidden") ||
+		strings.Contains(ae.Message, "permission check failed")
+}
+
 // TaskError is returned by WaitTask when a task finishes with a non-OK status.
 type TaskError struct {
 	UPID, ExitStatus string

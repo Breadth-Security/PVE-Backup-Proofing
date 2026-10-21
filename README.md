@@ -72,6 +72,7 @@ Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 
 | [Manual setup](docs/manual-setup.md) | What `pbp setup` and `pbp node setup` do, as commands you can run by hand |
 | [Operating](docs/operating.md) | Everyday commands, a run on demand, exit codes, the health check, notifications, backup notes |
 | [Checks inside the guest](docs/checks.md) | The ignore list, service profiles and per-guest checks, "not covered by backup" |
+| [Proofing on a dedicated node](docs/dedicated-node.md) | Restoring and booting the proof copies on a separate Proxmox host instead of a production node, and the PBS credentials it needs |
 | [Security model](docs/security.md) | What PBP may touch, the isolated bridge, the restricted node helper, the API token's privileges, where to run PBP |
 | [Troubleshooting](docs/troubleshooting.md) | What setup and `pbp check` errors mean and how to fix them |
 | [Upgrading](docs/upgrading.md) | Upgrading the daemon and the node helper together |

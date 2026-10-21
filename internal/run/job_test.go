@@ -79,8 +79,10 @@ type recAPI struct {
 	*pvefake.Fake
 	rec                                   *recorder
 	failNotes, failProtect, failUnprotect bool
-	panicNotes                            bool
-	storages                              []string
+	// protectErr, when set, is returned by every SetProtected call.
+	protectErr error
+	panicNotes bool
+	storages   []string
 }
 
 func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
@@ -96,6 +98,9 @@ func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string
 		}
 	case protected != nil:
 		a.rec.add(ctx, fmt.Sprintf("SetProtected=%t", *protected))
+		if a.protectErr != nil {
+			return a.protectErr
+		}
 		if a.failUnprotect && !*protected {
 			return errors.New("unprotect refused")
 		}
@@ -516,6 +521,33 @@ func TestProtectFailure(t *testing.T) {
 	}
 	if _, ok := f.inFlight(); ok {
 		t.Error("InFlight entry not removed")
+	}
+}
+
+// A PBS storage whose user may not change the backup (a read-only proofing
+// node, issue #30) refuses protect. Nothing changed on PBS, so PBP neither
+// tries to undo it nor leaves a job for the janitor, and the reason says
+// which PBS rights are missing. The errors are the ones PVE returned on pve2.
+func TestProtectRefusedByPBS(t *testing.T) {
+	for name, err := range map[string]error{
+		"403":        &pve.APIError{Status: 500, Path: "/nodes/pve2/storage/s/content/v", Message: "403 Forbidden: 403 Forbidden\n"},
+		"permission": &pve.APIError{Status: 500, Path: "/nodes/pve2/storage/s/content/v", Message: "proxmox-backup-client failed: Error: permission check failed - missing Datastore.Modify|Datastore.Backup on /datastore/x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.api.protectErr = err
+			res := f.run(context.Background())
+			const want = "protect backup: PBS refused: the storage's PBS user needs Datastore.Backup as the backup's owner, or Datastore.Modify (docs/dedicated-node.md)"
+			if res.Verdict != model.Error || res.Reason != want {
+				t.Errorf("result %s %q\nwant ERROR %q", res.Verdict, res.Reason, want)
+			}
+			if got := f.rec.entries(); slices.Contains(got, "SetProtected=false @protected") {
+				t.Errorf("tried to undo a refused protect: %q", got)
+			}
+			if _, ok := f.inFlight(); ok {
+				t.Error("InFlight entry left for the janitor")
+			}
+		})
 	}
 }
 

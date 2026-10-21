@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A slow guest agent no longer ends a proof** ([#41](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/41)). When the QEMU guest agent was slow to answer a status poll (`qga command 'guest-exec-status' failed - got timeout`, seen on a Windows VM shortly after boot), the proof ended `ERROR · probe transport error`. PBP now polls again, within the command's own time limit (`checks.command_timeout`); other agent errors still end the command at once.
+- The guest log no longer shows a spurious `verdict now` line, or a verdict line split over several lines, when the reason contains line breaks ([#42](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/42)).
+- **Proofing on a dedicated node** ([#30](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/30)): a new guide, [docs/dedicated-node.md](docs/dedicated-node.md), for restoring and booting the proof copies on a separate Proxmox host, tested with a standalone PVE 9.2 node and PBS 4.2. When PBS refuses to protect a backup because the node's PBS storage lacks the rights (for example a read-only token), the proof now ends `ERROR · protect backup: PBS refused: …`, naming the rights needed, and PBP no longer tries to undo the refused change or leaves a job for the janitor that would fail on every run.
 - **Exclude guests from proofing** ([#32](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/32)). `selection.exclude.guests` takes VMIDs (`104`), labels for one kind (`VM104`, `CT109`) and ranges (`900-999`); `selection.exclude.tags` excludes guests whose live or backed-up config carries a tag. An excluded guest is `SKIPPED · excluded by config (<rule>)` before anything is reserved or restored, its backup is not touched, and the skip does not raise the run's severity. `pbp run --guest N` refuses an excluded guest. See [Excluding guests](docs/operating.md#excluding-guests).
 
 ## v0.4.0
