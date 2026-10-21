@@ -525,10 +525,17 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 	return lease{vmid: vmid, space: b.Size, ram: needRAM, orig: orig}, nil
 }
 
+// release returns a finished job's space and RAM. Its VMID is freed only
+// if the job left no InFlight record: one whose teardown failed (say, the
+// unprotect) is the janitor's, and reusing the VMID in this run would
+// overwrite that record (code review I2).
 func (p *pool) release(l lease) {
+	_, pending := p.d.Store.Snapshot().InFlight[l.vmid]
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.inUse, l.vmid)
+	if !pending {
+		delete(p.inUse, l.vmid)
+	}
 	p.spaceRes -= l.space
 	p.ramRes -= l.ram
 }
