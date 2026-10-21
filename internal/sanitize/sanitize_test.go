@@ -109,6 +109,29 @@ func TestSanitizeLXCNet(t *testing.T) {
 	}
 }
 
+// Nothing answers DHCP or IPv6 autoconfiguration on the isolated bridge, and
+// a container's ifupdown2 waits for them without end (issue #29): its
+// addressing becomes manual. Static addresses are kept, and so is a VM's NIC,
+// whose addressing lives inside the guest.
+func TestSanitizeLXCNetDynamicAddressing(t *testing.T) {
+	for in, want := range map[string]string{
+		"name=eth0,bridge=vmbr0,hwaddr=AA,ip=dhcp,ip6=auto,tag=2,type=veth": "name=eth0,bridge=vmbr-pbp,hwaddr=AA,ip=manual,ip6=manual,type=veth",
+		"name=eth0,bridge=vmbr0,ip=dhcp,type=veth":                          "name=eth0,bridge=vmbr-pbp,ip=manual,type=veth",
+		"name=eth0,bridge=vmbr0,ip6=dhcp":                                   "name=eth0,bridge=vmbr-pbp,ip6=manual",
+		"name=eth0,bridge=vmbr0,ip=10.0.0.5/24,gw=10.0.0.1,ip6=auto":        "name=eth0,bridge=vmbr-pbp,ip=10.0.0.5/24,gw=10.0.0.1,ip6=manual",
+		"name=eth0,bridge=vmbr0,ip=10.0.0.5/24,ip6=fd00::5/64,gw6=fd00::1":  "name=eth0,bridge=vmbr-pbp,ip=10.0.0.5/24,ip6=fd00::5/64,gw6=fd00::1",
+		"name=eth0,bridge=vmbr0,ip=manual,ip6=manual":                       "name=eth0,bridge=vmbr-pbp,ip=manual,ip6=manual",
+	} {
+		if got := Sanitize(model.KindLXC, map[string]string{"net0": in}, br).Set["net0"]; got != want {
+			t.Errorf("%s:\n got %s\nwant %s", in, got, want)
+		}
+	}
+	vm := "virtio=AA,bridge=vmbr0,ip=dhcp"
+	if got := Sanitize(model.KindQEMU, map[string]string{"net0": vm}, br).Set["net0"]; got != "virtio=AA,bridge=vmbr-pbp,ip=dhcp" {
+		t.Errorf("VM net0 = %s, want addressing untouched", got)
+	}
+}
+
 func TestSanitizeLXCMounts(t *testing.T) {
 	p := Sanitize(model.KindLXC, map[string]string{
 		"mp0":  "/mnt/media,mp=/media",
@@ -162,7 +185,7 @@ func TestSanitizeNetBridgeProperty(t *testing.T) {
 
 func TestSanitizeNetWithoutBridgeAppends(t *testing.T) {
 	p := Sanitize(model.KindLXC, map[string]string{"net0": "name=eth0,ip=dhcp"}, br)
-	if p.Set["net0"] != "name=eth0,ip=dhcp,bridge=vmbr-pbp" {
+	if p.Set["net0"] != "name=eth0,ip=manual,bridge=vmbr-pbp" {
 		t.Errorf("net0 = %q", p.Set["net0"])
 	}
 }

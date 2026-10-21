@@ -45,6 +45,7 @@ When a guest in a run failed or errored, look first at that guest's own log file
 | `pbp-node: refused: out-of-range`, `untagged` or `not-container` | The helper refused a guest outside its `vmid_range`, without the `pbp` tag, or not an LXC container. That is by design and protects your guests; if the range itself is wrong, fix `config.yaml` and rerun setup. |
 | `pbp-node: refused: bad-request` / `no request` | Something other than PBP used the key, or the sudo rule lost its `env_keep` of `SSH_ORIGINAL_COMMAND`. Run the `pbp node setup` line again. |
 | `pbp-node: timeout` on long probe commands | `request_timeout` in `/etc/pbp/node.yaml` is shorter than the command needs; keep it at or above `restore.probe_timeout`. |
+| `guest still starting after 4m30s (waiting on: <units>)` | The guest booted, but systemd still had jobs queued when the probe ran out of time (`restore.probe_timeout`). The units named are what boot waits on; the guest's log file has the full job list. A unit that waits on the network can wait for ever on the isolated bridge; if it is only slow, raise `restore.probe_timeout`. |
 | `a run is already in progress` (exit 3) | Another run or check holds the run lock, usually the daemon's scheduled run. Wait for it to finish. |
 
 ## A run on demand
