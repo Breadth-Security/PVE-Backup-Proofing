@@ -1205,3 +1205,44 @@ func TestRootRefusalInContainer(t *testing.T) {
 		}
 	}
 }
+
+// The start file records the daemon's TZ when set, and health reads the
+// schedule in it (code review 6.6).
+func TestStartedZone(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "daemon.started")
+	t.Setenv("TZ", "America/New_York")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readStarted(p); err != nil || !got.Equal(fixedNow.Truncate(time.Second)) {
+		t.Errorf("readStarted = %v, %v", got, err)
+	}
+	if z := startedZone(p); z == nil || z.String() != "America/New_York" {
+		t.Errorf("zone = %v", z)
+	}
+	t.Setenv("TZ", "")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if z := startedZone(p); z != nil {
+		t.Errorf("zone without TZ = %v, want nil", z)
+	}
+}
+
+// A state store that cannot be opened stops the run, and the node is told,
+// so the night is not silent where nobody watches pbp health (code review
+// 6.10).
+func TestRunNotifiesWhenStateCannotOpen(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(statePath(), 0o700); err != nil { // a directory where state.json should be
+		t.Fatal(err)
+	}
+	if got := e.run("run"); got != exitFail {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	e.notif.mu.Lock()
+	defer e.notif.mu.Unlock()
+	if len(e.notif.sent) != 1 || !strings.Contains(e.notif.sent[0].RunError, "run not started: state store") || e.notif.sent[0].Severity() != "error" {
+		t.Errorf("sent = %+v", e.notif.sent)
+	}
+}

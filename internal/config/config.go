@@ -192,8 +192,12 @@ func (c Config) validate() error {
 	bad := func(key, format string, a ...any) {
 		errs = append(errs, fmt.Errorf("%s: %s", key, fmt.Sprintf(format, a...)))
 	}
-	if _, err := cron.ParseStandard(c.Schedule); err != nil {
+	if sched, err := cron.ParseStandard(c.Schedule); err != nil {
 		bad("schedule", "invalid cron expression %q: %v", c.Schedule, err)
+	} else if sched.Next(time.Now()).IsZero() {
+		// Such as "0 0 30 2 *": it parses, but the daemon would exit and
+		// be restarted forever while health says ok (code review 6.9).
+		bad("schedule", "%q never fires (no matching time in the next five years)", c.Schedule)
 	}
 	if c.Workers < 1 {
 		bad("workers", "must be >= 1, got %d", c.Workers)

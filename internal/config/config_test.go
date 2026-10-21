@@ -98,6 +98,7 @@ func TestValidateErrors(t *testing.T) {
 		{"workers", "schedule:", "workers: 0\nschedule:", "workers"},
 		{"type", "target:\n", "target:\n  type: provisioned-host\n", "target.type"},
 		{"cron", `"0 2 * * *"`, `"nope"`, "schedule"},
+		{"cron never fires", `"0 2 * * *"`, `"0 0 30 2 *"`, "schedule"},
 		{"notify", "sources:", "notify: {when: sometimes}\nsources:", "notify.when"},
 		{"tls", `api: {tls_fingerprint: "AB"}`, "api: {}", "target.api.tls_fingerprint"},
 		{"known hosts", "known_hosts_file: /kh", "known_hosts_file: ''", "target.ssh.known_hosts_file"},
