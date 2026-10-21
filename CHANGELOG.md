@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+- **Security:** built with Go 1.26.10, which fixes [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809) (`crypto/x509` trusted compromised intermediate certificates). PBP verifies the Proxmox API's TLS certificate, so the daemon is affected. Upgrade the PBP host and the node helper together, as for any release ([Upgrading](docs/upgrading.md)).
+
 ## v0.3.0
 
 **Guided setup.** Two commands now do what the README's "Setup" section used to describe step by step. See [docs/setup.md](docs/setup.md).

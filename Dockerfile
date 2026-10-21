@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Pinned to the `toolchain` in go.mod (the test workflow checks they match).
-FROM golang:1.26.9 AS build
+FROM golang:1.26.10 AS build
 # The version stamped into the binary: --build-arg VERSION=... when given,
 # otherwise the top-level VERSION file, so a plain `docker build` or
 # `docker compose build` stamps a release number the node helper accepts
