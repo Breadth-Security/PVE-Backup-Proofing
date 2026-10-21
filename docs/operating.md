@@ -114,7 +114,7 @@ Each field takes `*` (every value), a number, a list (`1,15`), a range (`1-5`) o
 
 [crontab.guru](https://crontab.guru) explains any five-field expression in plain words and is handy for trying one out. PBP's cron does not take a seconds field (six fields are refused) or the `L`, `W` and `#` extensions some cron implementations offer. `pbp setup`, `pbp check` and the daemon all refuse an invalid schedule and say why.
 
-A run takes as long as the proofs it has to do, and the next one starts only when that one has finished: a scheduled run that finds the previous one still going is skipped. `restore.max_run_duration` caps how long one run may take.
+A run takes as long as the proofs it has to do, and the next one starts only when that one has finished: a scheduled run that finds the previous one still going is skipped. `restore.max_run_duration` stops a run from starting new proofs once it has run that long: the guests still waiting are `SKIPPED · run deadline`. It does not cut short a proof in progress, which still finishes its restore, boot and checks (and a large restore is not bounded by any timeout), so a run can end well after the limit. `pbp health` reports a run as overrunning only after `max_run_duration` plus `restore.boot_timeout`, `restore.probe_timeout` and 10 minutes.
 
 ### The time zone
 
