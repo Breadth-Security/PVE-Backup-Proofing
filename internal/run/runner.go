@@ -137,6 +137,10 @@ func strayTaggedErrors(ctx context.Context, d Deps, log *slog.Logger) []string {
 			who += " (" + g.Name + ")"
 		}
 		msg := fmt.Sprintf("%s is tagged pbp but outside the PBP range %d–%d; not touched", who, lo, hi)
+		if g.Key.VMID >= lo && g.Key.VMID <= hi {
+			msg = fmt.Sprintf("%s is tagged pbp and in the PBP range but on node %s, not %s; not touched (remove it by hand if it is a leftover)",
+				who, g.Node, d.Cfg.Target.Node)
+		}
 		log.Warn(msg, "guest", g.Key.String(), "node", g.Node)
 		out = append(out, msg)
 	}
@@ -488,7 +492,14 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
 		// Unlike the node-wide gates below, this failure is the backup's
 		// own, so its notes record it (annotate skips a SKIPPED result).
-		// p.mu is not held yet.
+		// p.mu is not held yet. But when tags exclude guests and the guest
+		// is gone, the unreadable config's own tags might have excluded
+		// it, and an excluded guest's notes are left alone (code review
+		// 1.8): report the ERROR without writing them.
+		if _, live := p.liveTags[b.Key]; len(d.Cfg.Selection.Exclude.Tags) > 0 && !live {
+			glog.Info("notes left alone: the guest is gone and its unreadable backup config might exclude it by tag")
+			return l, res
+		}
 		annotate(d, glog, b, *res)
 		return l, res
 	}

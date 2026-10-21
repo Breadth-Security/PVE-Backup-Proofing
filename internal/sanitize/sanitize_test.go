@@ -372,3 +372,24 @@ func TestSanitizeNetEmpty(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A VM drive that is a host device (raw disk passthrough) is not in the
+// backup, and PVE's restore keeps its line verbatim: left alone, the copy
+// would boot with the production disk attached. It is removed as
+// passthrough; a CD-ROM drive and normal volumes stay (code review 1.9).
+func TestSanitizeQEMURawDiskRemoved(t *testing.T) {
+	p := Sanitize(model.KindQEMU, map[string]string{
+		"scsi0":   "local-lvm:vm-990000-disk-0,size=32G",
+		"scsi1":   "/dev/disk/by-id/ata-WDC_PROD,backup=0",
+		"virtio2": "/dev/sdb",
+		"ide2":    "/dev/cdrom,media=cdrom",
+	}, br)
+	if want := []string{"scsi1", "virtio2"}; !reflect.DeepEqual(p.Delete, want) {
+		t.Errorf("Delete = %v, want %v", p.Delete, want)
+	}
+	for _, r := range p.Removed {
+		if r.Kind != "passthrough" || (r.Key != "scsi1" && r.Key != "virtio2") || r.Path == "" {
+			t.Errorf("bad piece %+v", r)
+		}
+	}
+}

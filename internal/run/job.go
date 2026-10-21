@@ -134,8 +134,21 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		if err := j.setProtected(ctx, true); err != nil {
 			if pve.PermissionDenied(err) {
 				// PBS refused: nothing changed, so nothing to undo and
-				// nothing for the janitor (issue #30).
+				// nothing for the janitor (issue #30). Say so in the
+				// record at once: were PBP to stop before teardown
+				// drops it, the janitor would try to unprotect, PBS
+				// would refuse again, and every later run would stop
+				// at preflight (code review 1.6a).
 				j.protectSet = false
+				if uerr := d.Store.Update(func(st *state.State) error {
+					if job, ok := st.InFlight[j.vmid]; ok {
+						job.ProtectedOrig = nil
+						st.InFlight[j.vmid] = job
+					}
+					return nil
+				}); uerr != nil {
+					j.log.Warn("record that protect was refused: " + oneLine(uerr.Error()))
+				}
 				j.log.Info("PBS refused to protect the backup: " + oneLine(err.Error()))
 				fail(model.Error, "protect backup: %s", reasonPBSRefused)
 				return

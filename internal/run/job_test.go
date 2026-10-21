@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -84,6 +85,8 @@ type recAPI struct {
 	protectErr error
 	panicNotes bool
 	storages   []string
+	// onNotes runs at each notes write, before it.
+	onNotes func()
 }
 
 func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string, notes *string, protected *bool) error {
@@ -91,6 +94,9 @@ func (a *recAPI) SetVolumeAttrs(ctx context.Context, node, storage, volid string
 	switch {
 	case notes != nil:
 		a.rec.add(ctx, "SetNotes")
+		if a.onNotes != nil {
+			a.onNotes()
+		}
 		if a.panicNotes {
 			panic("notes boom")
 		}
@@ -585,6 +591,54 @@ func TestProtectRefusedByPBS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Were PBP to stop between a refused protect and the end of teardown, the
+// in-flight record must not ask the janitor to unprotect: PBS would refuse
+// that too, every night, and block all proofing (code review 1.6a). The
+// record is inspected when the job logs the refusal, which is after it
+// records it and before teardown drops the record.
+func TestProtectRefusedLeavesNothingToUndo(t *testing.T) {
+	f := newFixture(t)
+	f.api.protectErr = &pve.APIError{Status: 500, Path: "/nodes/pve2/storage/s/content/v", Message: "403 Forbidden: 403 Forbidden\n"}
+	seen := false
+	f.d.Log = slog.New(onMessage{slog.NewTextHandler(io.Discard, nil), "PBS refused to protect", func() {
+		j, ok := f.inFlight()
+		if !ok {
+			t.Error("no in-flight record at the refusal")
+			return
+		}
+		seen = true
+		if j.ProtectedOrig != nil && !*j.ProtectedOrig {
+			t.Error("record still says PBP protected the backup: the janitor would try to unprotect it")
+		}
+	}})
+	f.run(context.Background())
+	if !seen {
+		t.Error("the refusal was not logged")
+	}
+}
+
+// onMessage calls fn when a record's message contains text.
+type onMessage struct {
+	slog.Handler
+	text string
+	fn   func()
+}
+
+func (h onMessage) Handle(ctx context.Context, r slog.Record) error {
+	if strings.Contains(r.Message, h.text) {
+		h.fn()
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h onMessage) WithAttrs(as []slog.Attr) slog.Handler {
+	return onMessage{h.Handler.WithAttrs(as), h.text, h.fn}
+}
+
+func (h onMessage) WithGroup(n string) slog.Handler {
+	return onMessage{h.Handler.WithGroup(n), h.text, h.fn}
 }
 
 func TestStartFailure(t *testing.T) {

@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
 )
@@ -178,5 +181,28 @@ func TestCheckNodeLowRequestTimeoutWarns(t *testing.T) {
 	n, _ = nodeTarget(t, h)
 	if err := n.CheckNode(context.Background()); err != nil || buf.Len() != 0 {
 		t.Errorf("err = %v, log = %q", err, buf.String())
+	}
+}
+
+// The refusal probe never names a VMID a guest uses: if the helper failed
+// to refuse, `true` would run in that guest (code review 1.5).
+func TestCheckNodeProbesAnUnusedVMID(t *testing.T) {
+	f := pvefake.New()
+	f.GuestList = []pve.GuestRef{guest(model.KindLXC, hi+1, "running"), guest(model.KindQEMU, hi+2, "stopped")}
+	ssh := goodNode().fake()
+	cfg := testConfig()
+	n := NewExistingNode(cfg, f, sshx.Helper{R: ssh})
+	n.SetDaemonVersion("0.2.0")
+	if err := n.CheckNode(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range ssh.Requests() {
+		if r.Op == "exec" && r.VMID != hi+3 {
+			t.Errorf("probed %d, want %d (the first unused above the range)", r.VMID, hi+3)
+		}
+	}
+	f.Fail["Guests"] = errors.New("boom")
+	if err := n.CheckNode(context.Background()); err == nil || !strings.Contains(err.Error(), "unused VMID") {
+		t.Errorf("Guests failing: %v", err)
 	}
 }

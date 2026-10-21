@@ -728,6 +728,39 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	}
 }
 
+// With exclusion by tag configured, a gone guest whose backed-up config
+// cannot be read might be excluded by that config's own tags: PBP cannot
+// tell, so it reports ERROR but leaves the notes alone, as docs/operating.md
+// promises for excluded guests (code review 1.8). A live guest is decided
+// by its live tags, so its notes still record the failure.
+func TestRunOriginalConfigFailureWithTagExclusion(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Selection.Exclude.Tags = []string{"no-proof"}
+	gone := f.add("pbs", model.KindQEMU, 101, 1024, "")
+	live := f.add("pbs", model.KindQEMU, 102, 1024, "")
+	delete(f.api.BackupConfigs, gone.VolID)
+	delete(f.api.BackupConfigs, live.VolID)
+	f.api.GuestList = []pve.GuestRef{{Key: live.Key, Node: "pve1", Status: "running"}}
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	for _, id := range []int{101, 102} {
+		if r := byVMID(t, s)[id]; r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read backup config: ") {
+			t.Errorf("%d: got %s %q", id, r.Verdict, r.Reason)
+		}
+	}
+	notes := map[string]string{}
+	for _, b := range f.api.Backups["pbs"] {
+		notes[b.VolID] = b.Notes
+	}
+	if notes[gone.VolID] != "" {
+		t.Errorf("gone guest's notes written: %q", notes[gone.VolID])
+	}
+	if !strings.HasPrefix(notes[live.VolID], "PBP ERROR ") {
+		t.Errorf("live guest's notes = %q, want the ERROR line", notes[live.VolID])
+	}
+}
+
 // A template (template: 1 in the backed-up config) cannot boot: it is skipped
 // before the capacity gates, and its backup is neither restored nor written.
 func TestRunSkipsTemplates(t *testing.T) {
