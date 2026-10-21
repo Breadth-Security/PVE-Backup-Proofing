@@ -15,20 +15,29 @@ import (
 // running, one per line: name, exit code, service-specific exit code, and
 // the ID and message (on one line) of the newest Service Control Manager
 // event since boot that names the service (a failure or unexpected stop),
-// separated by tabs (issue #44).
+// separated by tabs (issue #44), and whether it is delayed-start (code
+// review I10). Delayed-start services are listed too; windowsServices
+// counts them only when they failed.
 const WindowsServicesScript = `$b=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; ` +
 	`$ev=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager';StartTime=$b} -ErrorAction SilentlyContinue | ` +
 	`Where-Object { $_.Id -in 7000,7009,7011,7022,7023,7024,7031,7034 }); ` +
-	`Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' -and $_.DelayedAutoStart -ne $true } | ` +
+	`Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' } | ` +
 	`ForEach-Object { $s=$_; $e=$ev | Where-Object { $_.Message -and $_.Message.Contains($s.DisplayName) } | Select-Object -First 1; ` +
 	`$id=''; $m=''; if ($e) { $id=$e.Id; $m=($e.Message -replace '\s+',' ').Trim() }; ` +
-	`@($s.Name, $s.ExitCode, $s.ServiceSpecificExitCode, $id, $m) -join [char]9 }`
+	`@($s.Name, $s.ExitCode, $s.ServiceSpecificExitCode, $id, $m, $s.DelayedAutoStart) -join [char]9 }`
 
 // stoppedService is one line of WindowsServicesScript's output. A line with
 // only a name (no tabs) carries no stop details.
 type stoppedService struct {
 	name, exitCode, specificCode, eventID, event string
-	details                                      bool
+	details, delayed                             bool
+}
+
+// failed reports whether a stopped service actually failed: a Service
+// Control Manager failure event, or an error exit code (not 0, and not 1077,
+// "not started since boot").
+func (s stoppedService) failed() bool {
+	return s.eventID != "" || (s.exitCode != "" && s.exitCode != "0" && s.exitCode != "1077")
 }
 
 // stoppedServices parses the script's output: trimmed, non-blank lines,
@@ -51,6 +60,7 @@ func stoppedServices(out string) []stoppedService {
 				*dst = f[i+1]
 			}
 		}
+		s.delayed = len(f) > 5 && strings.EqualFold(f[5], "true")
 		res = append(res, s)
 	}
 	return res
@@ -103,11 +113,12 @@ func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
 	_, settle := ctx.Deadline()
 	var last *Outcome
 	for {
-		out := windowsServices(ctx, ex, in)
+		out, retry := windowsServices(ctx, ex, in)
 		if last != nil && out.Verdict == model.Error && ctx.Err() != nil {
 			return *last // the deadline cut a re-poll short
 		}
-		if out.Verdict != model.Failed || len(out.FailedUnits) == 0 || !settle {
+		stopped := out.Verdict == model.Failed && len(out.FailedUnits) > 0
+		if (!stopped && !retry) || !settle {
 			return out
 		}
 		last = &out
@@ -117,27 +128,34 @@ func runWindows(ctx context.Context, ex Executor, in Input) Outcome {
 	}
 }
 
-// windowsServices runs one service query and judges it.
-func windowsServices(ctx context.Context, ex Executor, in Input) Outcome {
+// windowsServices runs one service query and judges it. retry is true when
+// the query itself failed (it timed out, or PowerShell exited non-zero, as
+// it can while the guest is busy after boot): the settle loop asks again,
+// and if it still fails at the end the guest is ERROR, since PBP could not
+// judge it (code review I11).
+func windowsServices(ctx context.Context, ex Executor, in Input) (Outcome, bool) {
 	res, err := ex.Exec(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", WindowsServicesScript})
 	switch {
 	case errors.Is(err, ErrExecBlocked):
-		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}
+		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}, false
 	case errors.Is(err, errProbeEnded):
-		return Outcome{Verdict: model.Error, Reason: endedReason(err)}
+		return Outcome{Verdict: model.Error, Reason: endedReason(err)}, false
 	case errors.Is(err, errCommandTimeout):
-		return Outcome{Verdict: model.Failed, Reason: "check timed out: windows services"}
+		return Outcome{Verdict: model.Error, Reason: "windows services check timed out"}, true
 	case err != nil:
-		return Outcome{Verdict: model.Error, Reason: transportReason(err)}
+		return Outcome{Verdict: model.Error, Reason: transportReason(err)}, false
 	case res.ExitCode == 127:
-		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}
+		return Outcome{Verdict: model.Booted, Reason: ErrExecBlocked.Error()}, false
 	}
 	if res.ExitCode != 0 {
-		return Outcome{Verdict: model.Failed, Reason: fmt.Sprintf("probe error: powershell exited %d", res.ExitCode)}
+		return Outcome{Verdict: model.Error, Reason: fmt.Sprintf("probe error: powershell exited %d", res.ExitCode)}, true
 	}
 	var out Outcome
 	var why []string
 	for _, s := range stoppedServices(res.Stdout) {
+		if s.delayed && !s.failed() {
+			continue // not started yet, or stopped cleanly after its work
+		}
 		if windowsIgnored(in.Checks.WindowsIgnoreServices, s.name) {
 			out.IgnoredUnits = append(out.IgnoredUnits, s.name)
 			continue
@@ -151,14 +169,14 @@ func windowsServices(ctx context.Context, ex Executor, in Input) Outcome {
 		out.Verdict = model.Failed
 		out.Reason = "stopped auto services: " + strings.Join(out.FailedUnits, ", ")
 		out.BootLog = strings.Join(why, "\n")
-		return out
+		return out, false
 	}
 	out.Verdict = model.Proven
 	out.Reason = "windows services ok"
 	if k := len(out.IgnoredUnits); k > 0 {
 		out.Reason += fmt.Sprintf(", %d ignored", k)
 	}
-	return out
+	return out, false
 }
 
 // sleep waits d or until ctx ends; it reports whether ctx is still live.

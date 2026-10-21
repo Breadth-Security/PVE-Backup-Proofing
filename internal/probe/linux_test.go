@@ -251,7 +251,7 @@ func TestOpenRCByContainerOSType(t *testing.T) {
 		var calls []string
 		ex := recordingExec{probetest.Scripted{
 			"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n"),
-			sysState:              out("running\n"), // must not be consulted
+			sysState: out("running\n"), // must not be consulted
 		}, &calls}
 		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: ostype})
 		if o.Verdict != model.Proven {
