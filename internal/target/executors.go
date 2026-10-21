@@ -8,6 +8,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
 )
 
@@ -78,6 +79,15 @@ func (e vmExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, erro
 	}
 	for {
 		st, err := n.api.AgentExecStatus(ctx, n.node, e.vmid, pid)
+		if agentTimeout(err) {
+			// The agent was slow to answer this poll (a Windows guest
+			// shortly after boot, issue #41); the command still runs. Poll
+			// again, within the command's own time.
+			if !sleep(ctx, n.execPoll) {
+				return probe.ExecResult{}, ctx.Err()
+			}
+			continue
+		}
 		if err != nil {
 			return probe.ExecResult{}, agentErr(err)
 		}
@@ -88,6 +98,14 @@ func (e vmExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, erro
 			return probe.ExecResult{}, ctx.Err()
 		}
 	}
+}
+
+// agentTimeout reports whether err is PVE's qga call timing out ("got
+// timeout"): the agent did not answer in time, which says nothing about
+// the command it is running.
+func agentTimeout(err error) bool {
+	var ae *pve.APIError
+	return errors.As(err, &ae) && strings.Contains(ae.Message, "got timeout")
 }
 
 // agentErr marks agent policy refusals as probe.ErrExecBlocked.
