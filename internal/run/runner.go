@@ -39,6 +39,7 @@ const (
 	reasonNoMemory      = "insufficient node memory"
 	reasonNoVMID        = "no free VMID"
 	reasonTemplate      = "template (not bootable)"
+	reasonStopping      = "PBP stopping"
 )
 
 // Options select what a run does. Trigger is "schedule" or "manual";
@@ -51,6 +52,10 @@ type Options struct {
 	OnlyVMID int
 	RunID    string
 	LogDir   string
+	// Stop, when it closes, ends admission: guests not yet started are
+	// SKIPPED, while proofs in flight go on under the run's context. The
+	// daemon closes it on shutdown (code review I3); nil never closes.
+	Stop <-chan struct{}
 }
 
 // NewRunID names a run started at t: its UTC start time to the millisecond,
@@ -193,7 +198,7 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 		log.Error("read guest tags for selection.exclude.tags", "err", err)
 		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error())
 	}
-	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live}
+	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
 	return results, append(errs, p.errs...)
 }
@@ -285,6 +290,18 @@ type pool struct {
 	// liveTags are the live guests' tags, read only when exclusion by
 	// tag is configured.
 	liveTags map[model.GuestKey][]string
+	// stop closes when no further proofs may start (Options.Stop).
+	stop <-chan struct{}
+}
+
+// stopping reports whether admission has ended (Options.Stop closed).
+func (p *pool) stopping() bool {
+	select {
+	case <-p.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 // lease is what an admitted job holds until it ends, and the backup's
@@ -323,10 +340,20 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 			results[i] = p.skip(glog, b, reasonCancelled)
 			p.logResult(results[i])
 			continue
+		case <-p.stop:
+			results[i] = p.skip(glog, b, reasonStopping)
+			p.logResult(results[i])
+			continue
 		}
 		if ctx.Err() != nil {
 			<-slots
 			results[i] = p.skip(glog, b, reasonCancelled)
+			p.logResult(results[i])
+			continue
+		}
+		if p.stopping() {
+			<-slots
+			results[i] = p.skip(glog, b, reasonStopping)
 			p.logResult(results[i])
 			continue
 		}

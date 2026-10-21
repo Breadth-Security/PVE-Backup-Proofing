@@ -310,8 +310,8 @@ func (a *app) daemon(ctx context.Context, cfg config.Config) int {
 	if err := writeStarted(startedPath(), a.now()); err != nil {
 		slog.Error("record daemon start", "err", err)
 	}
-	err := daemon.Serve(ctx, cfg, func(ctx context.Context, trigger string) {
-		a.runOnce(ctx, cfg, run.Options{Trigger: trigger})
+	err := daemon.Serve(ctx, cfg, func(ctx context.Context, stop <-chan struct{}, trigger string) {
+		a.runOnce(ctx, cfg, run.Options{Trigger: trigger, Stop: stop})
 	})
 	if err != nil {
 		slog.Error("daemon", "err", err)

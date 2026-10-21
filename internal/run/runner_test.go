@@ -1371,3 +1371,28 @@ func TestUnfinishedRecordStopsRun(t *testing.T) {
 		t.Error("the unfinished record for 990000 was lost")
 	}
 }
+
+// Once the daemon is stopping, no further proofs start: the remaining
+// guests are SKIPPED "PBP stopping", nothing is restored, and their backups'
+// notes are left alone (code review I3).
+func TestRunStopsAdmittingWhenStopping(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "own note")
+	f.add("pbs", model.KindQEMU, 102, 1024, "")
+	stop := make(chan struct{})
+	close(stop)
+
+	s := f.run(context.Background(), Options{Trigger: "schedule", Stop: stop})
+
+	for vmid, r := range byVMID(t, s) {
+		if r.Verdict != model.Skipped || r.Reason != "PBP stopping" {
+			t.Errorf("guest %d: got %s %q, want SKIPPED \"PBP stopping\"", vmid, r.Verdict, r.Reason)
+		}
+	}
+	if rs := f.tgt.restores(); len(rs) != 0 {
+		t.Errorf("restores = %q, want none", rs)
+	}
+	if n := f.api.Backups["pbs"][0].Notes; n != "own note" {
+		t.Errorf("notes = %q", n)
+	}
+}

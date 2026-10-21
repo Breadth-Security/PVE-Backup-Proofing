@@ -77,7 +77,7 @@ func TestServeSkipsWhileRunActive(t *testing.T) {
 	var active, maxActive, calls atomic.Int32
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	runFn := func(ctx context.Context, trigger string) {
+	runFn := func(ctx context.Context, _ <-chan struct{}, trigger string) {
 		if trigger != "schedule" {
 			t.Errorf("trigger = %q", trigger)
 		}
@@ -120,7 +120,7 @@ func TestServeSkipsWhenLockHeldElsewhere(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 
-	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, func(context.Context, string) { calls.Add(1) }); err != nil {
+	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, func(context.Context, <-chan struct{}, string) { calls.Add(1) }); err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 0 {
@@ -137,7 +137,7 @@ func TestServeHoldsLockDuringRun(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	var lockErr error
-	runFn := func(context.Context, string) {
+	runFn := func(context.Context, <-chan struct{}, string) {
 		defer stop()
 		release, err := AcquireLock(LockPath())
 		if err == nil {
@@ -169,7 +169,7 @@ func TestServeShutdownGrace(t *testing.T) {
 	var runCancelledAfter time.Duration
 	var stopAt time.Time
 	var mu sync.Mutex
-	runFn := func(ctx context.Context, _ string) {
+	runFn := func(ctx context.Context, _ <-chan struct{}, _ string) {
 		close(started)
 		<-ctx.Done()
 		mu.Lock()
@@ -208,5 +208,44 @@ func TestServeBadSchedule(t *testing.T) {
 	t.Setenv("PBP_STATE_DIR", t.TempDir())
 	if err := Serve(context.Background(), config.Config{Schedule: "nope"}, nil); err == nil {
 		t.Error("want error")
+	}
+}
+
+// On shutdown the run is told to stop admitting at once (stop closes), while
+// its own context stays live for the grace period, so in-flight proofs can
+// finish or tear down (code review I3).
+func TestServeSignalsStopBeforeCancelling(t *testing.T) {
+	t.Setenv("PBP_STATE_DIR", t.TempDir())
+	captureLog(t)
+	old := shutdownGrace
+	shutdownGrace = 2 * time.Second
+	defer func() { shutdownGrace = old }()
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	result := make(chan string, 1)
+	runFn := func(runCtx context.Context, stop <-chan struct{}, _ string) {
+		close(started)
+		select {
+		case <-stop:
+		case <-time.After(5 * time.Second):
+			result <- "stop never closed"
+			return
+		}
+		if runCtx.Err() != nil {
+			result <- "run context cancelled together with stop"
+			return
+		}
+		<-runCtx.Done() // cancelled only when the grace runs out
+		result <- "ok"
+	}
+	go func() {
+		<-started
+		cancel()
+	}()
+	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, runFn); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; got != "ok" {
+		t.Error(got)
 	}
 }
