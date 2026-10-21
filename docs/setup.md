@@ -190,7 +190,7 @@ sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check
 ### Docker notes
 
 - `docker compose up` uses the image built from your checkout, stamped with the version in the top-level `VERSION` file (`docker compose exec pbp pbp version` shows it). The helper on the node must share its major.minor, which is why `pbp setup` installs the `.deb` of the same release there.
-- The image runs as the non-root uid/gid **65532** (distroless `nonroot`), which is why setup gives that uid the files it writes. Run logs are readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root, for example `sudo less logs/run-*.log`.
+- The image runs as the non-root uid/gid **65532** (distroless `nonroot`), which is why setup gives that uid the files it writes. Run logs are readable only by uid 65532 (directory `0750`, files `0600`), so on the host read them as root, for example `sudo less logs/*/run.log`.
 - The schedule's time zone is the `TZ` in `.env`, which `docker-compose.yml` reads (`TZ: ${TZ:-Europe/London}`). Valid names, how to change it, and what daylight saving does to the schedule: [The time zone](operating.md#the-time-zone).
 - The container's `stop_grace_period` is 11 minutes because on shutdown the daemon waits up to 10 minutes for an in-flight guest to be torn down. Do not shorten it.
 

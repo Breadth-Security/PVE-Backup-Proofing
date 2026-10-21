@@ -7,6 +7,8 @@ docker compose exec pbp pbp check                       # Docker
 sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check   # .deb
 ```
 
+When a guest in a run failed or errored, look first at that guest's own log file in the run's folder (`VM102.log` or `CT101.log` under `logging.dir`; see [Logs](operating.md#logs)): it has a line for every step and, for a failed PVE task, the tail of the task log.
+
 **The first fix to try for anything on the node side** is to run the `pbp node setup` line again (rerun `pbp setup` on the PBP host to print it). It shows, as a plan, everything on the node that differs from what PBP needs, and fixes it after asking; it changes nothing that is already right.
 
 ## During setup

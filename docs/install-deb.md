@@ -57,7 +57,7 @@ In `config.yaml` set `token_secret_file` and `key_file` to `/etc/pbp/secrets/...
 |---|---|
 | config, secrets, `known_hosts` | `/etc/pbp/` |
 | state (in-flight proofs, the run lock) | `/var/lib/pbp/state` (owned by `pbp`) |
-| per-run logs | `/var/log/pbp` (readable by root and `pbp`) |
+| per-run logs (one folder per run) | `/var/log/pbp` (readable by root and `pbp`) |
 | service log | `journalctl -u pbp` |
 
 ## Upgrade

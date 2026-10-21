@@ -58,7 +58,7 @@ Last night's run log on pve1 (`run-20261021T060000.100Z-schedule.log`) showed th
    ```
    Subject: PBP pve1: 9 failed, 9 error, 4 booted, 4 skipped · 13 proven
 
-   PBP run on pve1, Tue 2026-10-21 02:00 EDT (scheduled), 1h33m
+   PBP run on pve1, Wed 2026-10-21 02:00 EDT (scheduled), 1h33m
    Logs: /var/log/pbp/2026-10-21_02-00-00_schedule/
 
    FAILED: the backup has a problem

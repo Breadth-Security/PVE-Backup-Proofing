@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -38,52 +36,9 @@ func failedSummary() model.RunSummary {
 
 func TestNewLoggerStdoutOnly(t *testing.T) {
 	var out bytes.Buffer
-	NewLogger(&out, nil).Info("hello")
+	NewLogger(&out).Info("hello")
 	if !strings.Contains(out.String(), "hello") {
 		t.Fatal(out.String())
-	}
-}
-
-func TestPruneRunLogs(t *testing.T) {
-	dir := t.TempDir()
-	base := time.Now().Add(-time.Hour)
-	for i := 0; i < 33; i++ {
-		p := filepath.Join(dir, fmt.Sprintf("run-%02d.log", i))
-		if err := os.WriteFile(p, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "other.txt"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := PruneRunLogs(dir, 30); err != nil {
-		t.Fatal(err)
-	}
-	ents, _ := os.ReadDir(dir)
-	if len(ents) != 31 {
-		t.Fatalf("got %d entries", len(ents))
-	}
-	for i := 0; i < 3; i++ {
-		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("run-%02d.log", i))); err == nil {
-			t.Errorf("run-%02d should be pruned", i)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "other.txt")); err != nil {
-		t.Error("other.txt removed")
-	}
-}
-
-func TestOpenRunLog(t *testing.T) {
-	f, err := OpenRunLog(t.TempDir(), "abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	if filepath.Base(f.Name()) != "run-abc.log" {
-		t.Fatal(f.Name())
 	}
 }
 

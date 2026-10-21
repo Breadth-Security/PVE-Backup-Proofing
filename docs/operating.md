@@ -11,7 +11,7 @@ docker compose exec pbp pbp run                   # one run now, all guests
 docker compose exec pbp pbp run --guest 105       # one run now, only guest 105's newest backup
 docker compose exec pbp pbp health                # what the Docker healthcheck runs
 docker compose exec pbp pbp version               # build version and Go runtime
-docker compose logs -f pbp                        # logs; per-run files are in ./logs
+docker compose logs -f pbp                        # logs; each run's folder is in ./logs (see Logs)
 ```
 
 On a `.deb` host (see [Install from the .deb](install-deb.md)):
@@ -23,12 +23,46 @@ sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp run               # one run now,
 sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp run --guest 105   # one run now, only guest 105's newest backup
 sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp health            # the same health check as the Docker image's
 pbp version                                                       # build version and Go runtime
-journalctl -u pbp -f                                              # logs; per-run files are in /var/log/pbp
+journalctl -u pbp -f                                              # logs; each run's folder is in /var/log/pbp (see Logs)
 ```
 
-Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. Run as root, they would leave root-owned state files the daemon cannot write. The per-run files in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/run-*.log`).
+Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. Run as root, they would leave root-owned state files the daemon cannot write. The run folders in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/*/run.log`).
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`. A backup of a template is always skipped ("template (not bootable)").
+
+## Logs
+
+Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` host, `./logs` with Docker), named with the time the run started and what started it (`schedule` or `manual`):
+
+```
+/var/log/pbp/
+  2026-10-21_02-00-00_schedule/
+    run.log
+    VM102.log
+    CT101.log
+```
+
+`run.log` is the run as a whole: preflight, discovery, one line per guest result and a closing summary. Each guest PBP works on also gets its own file, `VM<vmid>.log` or `CT<vmid>.log`, with one line per step: restore, start, checks, teardown. **When a guest failed, start with its own file.** When a PVE task fails (restore, start), the file holds the tail of the task's log; the reason in `run.log` and the notification is just the task's error line.
+
+```
+2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.4.0 · node pve1
+02:00:02 VM102 started (VM102.log)
+02:01:31 VM102 FAILED · failed: sssd-nss.socket, sssd-pam.socket
+03:33:54 run finished in 1h33m · 13 proven, 9 failed, 4 booted, 9 skipped, 9 error · severity error
+```
+
+```
+02:00:36 restore done in 33s
+02:00:37 started; waiting for the guest (up to 5m)
+02:01:21 running after 44s (Rocky Linux)
+02:01:26 verdict FAILED · failed: sssd-nss.socket, sssd-pam.socket
+```
+
+Only warnings and errors carry a level; a problem PBP itself has (not the guest) is also written to `run.log`, with the guest's label in front. Times are in the time zone of the host (or container; see [Schedule and time zone](#schedule-and-time-zone)). A file's first line carries the date and zone, other lines just the time. The service log (`journalctl -u pbp`, `docker compose logs`) stays short: the run starting, one line per guest result and the summary.
+
+`logging.retain_runs` (default 30) is the number of run folders kept; older ones are removed after each run. Single `run-*.log` files from earlier versions count toward the same limit until they age out. Anything else in `logging.dir` is left alone. If `logging.dir` cannot be written (for example a Docker bind mount with the wrong owner), the run still runs and notifies, logging to the service log only, and the notification has no `Logs:` line.
+
+The notification names the run's folder (`Logs: /var/log/pbp/2026-10-21_02-00-00_schedule/`). With Docker that is the path inside the container, which `docker-compose.yml` maps to `./logs` on the host.
 
 ## Schedule and time zone
 
