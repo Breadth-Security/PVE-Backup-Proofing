@@ -50,6 +50,7 @@ sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp check   # .deb
 | Message | Cause and fix |
 |---------|---------------|
 | `no backup found for guest N` (`pbp run --guest N`) | None of the PBS storages in `sources.storages` holds a backup of guest N, or its VMID is inside PBP's own range (those are never proofed). |
+| The guest is `SKIPPED` as `template (not bootable)` | The backup is of a VM or container template (`template: 1` in its stored config). A template cannot be started, so PBP never proofs it; this is by design and does not make the run a `warning`. To prove a template's contents, proof a guest cloned from it. |
 | The guest is `SKIPPED` as `already proven` | Its newest backup already carries a `PBP PROVEN` line. Set `restore.reproof: true` in `config.yaml` to proof it again, or wait for a newer backup. |
 
 ## The service (`.deb` hosts)

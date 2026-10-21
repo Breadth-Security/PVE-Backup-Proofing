@@ -95,6 +95,27 @@ func TestSeverityAlreadyProven(t *testing.T) {
 	}
 }
 
+// A template is skipped by design, every run: like an already proven
+// snapshot, it must not raise the severity.
+func TestSeverityTemplate(t *testing.T) {
+	tmpl := GuestResult{Verdict: Skipped, Reason: "template (not bootable)", Template: true}
+	other := GuestResult{Verdict: Skipped, Reason: "no free VMID"}
+	cases := []struct {
+		rs   []GuestResult
+		want string
+	}{
+		{[]GuestResult{tmpl}, "info"},
+		{[]GuestResult{{Verdict: Proven}, tmpl}, "info"},
+		{[]GuestResult{tmpl, other}, "warning"},
+		{[]GuestResult{tmpl, {Verdict: Error}}, "warning"},
+	}
+	for i, c := range cases {
+		if got := (RunSummary{Results: c.rs}).Severity(); got != c.want {
+			t.Errorf("case %d: got %s want %s", i, got, c.want)
+		}
+	}
+}
+
 func TestCounts(t *testing.T) {
 	s := RunSummary{Results: []GuestResult{{Verdict: Proven}, {Verdict: Proven}, {Verdict: Failed}}}
 	c := s.Counts()

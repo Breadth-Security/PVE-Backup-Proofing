@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Backups of VM and container templates (`template: 1` in the config stored in the backup) are skipped as `template (not bootable)` before anything is reserved or restored, instead of being proofed and failing to start. The backup's notes and `protected` flag are not touched, and the skip does not raise the run's severity. ([#27](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/27))
+
 ## v0.3.1
 
 - **Security:** built with Go 1.26.10, which fixes [GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809) (`crypto/x509` trusted compromised intermediate certificates). PBP verifies the Proxmox API's TLS certificate, so the daemon is affected. Upgrade the PBP host and the node helper together, as for any release ([Upgrading](docs/upgrading.md)).

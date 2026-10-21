@@ -37,6 +37,7 @@ const (
 	reasonCancelled     = "run cancelled"
 	reasonNoMemory      = "insufficient node memory"
 	reasonNoVMID        = "no free VMID"
+	reasonTemplate      = "template (not bootable)"
 )
 
 // Options select what a run does. Trigger is "schedule" or "manual";
@@ -370,6 +371,13 @@ func (p *pool) admit(ctx context.Context, b model.Backup) (lease, *model.GuestRe
 		return l, res
 	}
 	orig := sanitize.ParseConfigText(raw)
+	// A template cannot be started, so it cannot be proven. The backed-up
+	// config decides, not the live guest, which may be gone or converted.
+	if orig["template"] == "1" {
+		l, res := fail(model.Skipped, reasonTemplate)
+		res.Template = true
+		return l, res
+	}
 	needRAM := guestMemoryMiB(b.Key.Kind, orig) * (1 << 20) * 110 / 100
 
 	p.mu.Lock()

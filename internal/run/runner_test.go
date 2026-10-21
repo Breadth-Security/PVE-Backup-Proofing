@@ -689,6 +689,43 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	}
 }
 
+// A template (template: 1 in the backed-up config) cannot boot: it is skipped
+// before the capacity gates, and its backup is neither restored nor written.
+func TestRunSkipsTemplates(t *testing.T) {
+	for _, kind := range []model.GuestKind{model.KindQEMU, model.KindLXC} {
+		t.Run(string(kind), func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			tmpl := f.add("pbs", kind, 101, 1024, "golden")
+			f.api.BackupConfigs[tmpl.VolID] += "template: 1\n"
+			f.add("pbs", kind, 102, 1024, "")
+
+			s := f.run(context.Background(), Options{Trigger: "manual"})
+
+			got := byVMID(t, s)
+			if r := got[101]; r.Verdict != model.Skipped || r.Reason != "template (not bootable)" || !r.Template {
+				t.Errorf("template: got %s %q template=%t", r.Verdict, r.Reason, r.Template)
+			}
+			if sev := s.Severity(); sev != "info" {
+				t.Errorf("severity = %s, want info", sev)
+			}
+			if r := got[102]; r.Verdict != model.Proven {
+				t.Errorf("guest 102: got %s %q", r.Verdict, r.Reason)
+			}
+			if rs := f.tgt.restores(); len(rs) != 1 {
+				t.Errorf("restores = %q, want only guest 102", rs)
+			}
+			for _, c := range f.api.CallLog() {
+				if strings.HasPrefix(c, "SetVolumeAttrs") && strings.Contains(c, "guest="+tmpl.Key.String()) {
+					t.Errorf("template backup written: %s", c)
+				}
+			}
+			if b := f.api.Backups["pbs"][0]; b.Notes != "golden" || b.Protected {
+				t.Errorf("template backup notes %q protected %t", b.Notes, b.Protected)
+			}
+		})
+	}
+}
+
 // Node-wide capacity errors (storage status, node memory, VMID allocation)
 // say nothing about the backup: they stay out of its notes.
 func TestRunNodeCapacityErrorsStayOutOfNotes(t *testing.T) {
