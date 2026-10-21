@@ -12,6 +12,12 @@ production PVE (cluster)  ──backups──▶  PBS datastore  ◀──same d
 
 PBP points only at the proofing node: `target.node`, `target.api.url`, `target.ssh.host`, the isolated bridge, the restore storage and the VMID range are all on that node. `sources.storages` names the proofing node's storage IDs for the shared PBS datastore. Production nodes run nothing of PBP: no helper, no token, no bridge.
 
+## How PBP reaches PBS
+
+PBP never connects to PBS. It calls the proofing node's PVE API with its `pbp@pve` token, and the node talks to PBS with the credentials in its own storage definition (`username` in `storage.cfg`, the secret in `/etc/pve/priv`). Where PBP runs (Docker, another host, the node itself) does not change the PBS side.
+
+Today, on pve1, PBP proofs through the same storage (`PBS-qemu`, user `pbs@pbs`) that the backup jobs write through. That user owns the backup groups, so setting `protected` and writing notes are allowed. On a dedicated node, the admin chooses the credentials when adding the datastore; question 1 below is about that choice.
+
 ## What the code already settles
 
 - **Discovery** lists backups through the proofing node's own storage view (`/nodes/<node>/storage/<id>/content`), so it needs nothing from production.
