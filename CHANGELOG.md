@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`pbp check`, `pbp run` and `pbp daemon` refuse to run as root when the state directory belongs to the service user** ([#63](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/63)). Run as root (for example `sudo pbp check` on a `.deb` host), they rewrote `state.json`, the run lock and run log folders as root, and the service, running as `pbp`, could no longer read its own state: its next run stopped with `permission denied`. They now refuse before writing anything and say to run them as that user (`sudo -u pbp …`). A root-only install, whose state directory belongs to root, is not affected; `pbp health` and `pbp version` only read and work as root. If an earlier version left root-owned files behind, see [Troubleshooting](docs/troubleshooting.md).
+- **`pbp check`, `pbp run` and `pbp daemon` refuse to run as root when the state or log directory belongs to the service user** ([#63](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/63)). Run as root (for example `sudo pbp check` on a `.deb` host), they rewrote `state.json`, the run lock and run log folders as root, and the service, running as `pbp`, could no longer read its own state: its next run stopped with `permission denied`. They now refuse before writing anything and give the command to run instead (`sudo -u pbp pbp … --config …`). A root-only install, whose directories belong to root, is not affected; `pbp health` and `pbp version` only read and work as root. If an earlier version left root-owned files behind, see [Troubleshooting](docs/troubleshooting.md).
 
 ## v0.5.0
 

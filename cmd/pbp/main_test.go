@@ -1088,13 +1088,13 @@ func TestRootRefusedWhenStateBelongsToServiceUser(t *testing.T) {
 		cmd   string
 		want  int
 	}{
-		{"run as root, state pbp's", 1001, 0, "run", exitFail},
-		{"check as root, state pbp's", 1001, 0, "check", exitFail},
-		{"daemon as root, state pbp's", 1001, 0, "daemon", exitConfig},
+		{"run as root state pbp", 1001, 0, "run", exitFail},
+		{"check as root state pbp", 1001, 0, "check", exitFail},
+		{"daemon as root state pbp", 1001, 0, "daemon", exitConfig},
 		{"health as root is read-only", 1001, 0, "health", -1},
 		{"run as pbp", 1001, 1001, "run", -1},
-		{"run as root, root-only install", 0, 0, "run", -1},
-		{"run as root, no state yet", -1, 0, "run", -1},
+		{"run as root root-only install", 0, 0, "run", -1},
+		{"run as root no state yet", -1, 0, "run", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
@@ -1107,7 +1107,7 @@ func TestRootRefusedWhenStateBelongsToServiceUser(t *testing.T) {
 			e.a.euid = func() int { return tc.euid }
 			e.a.ownerOf = func(p string) (int, string, error) {
 				if p != dir {
-					t.Errorf("owner asked of %s, want %s", p, dir)
+					return 0, "root", nil // the log directory: root's
 				}
 				if tc.owner < 0 {
 					return 0, "", fs.ErrNotExist
@@ -1132,12 +1132,50 @@ func TestRootRefusedWhenStateBelongsToServiceUser(t *testing.T) {
 				t.Fatalf("exit %d, want %d; stderr %q", got, tc.want, e.errOut.String())
 			}
 			msg := e.errOut.String()
-			if !strings.Contains(msg, "as root") || !strings.Contains(msg, "sudo -u pbp pbp "+tc.cmd) {
+			if !strings.Contains(msg, "as root") || !strings.Contains(msg, "sudo -u pbp PBP_STATE_DIR="+dir+" pbp "+tc.cmd+" --config "+e.cfgPath) {
 				t.Errorf("message %q does not say how to run it", msg)
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 				t.Errorf("wrote %v in the state directory before refusing", entries)
 			}
 		})
+	}
+}
+
+// The run-log directory counts too, the suggested command keeps the
+// user's own arguments, and the real owner lookup reads the directory's
+// uid (issue #63).
+func TestRootRefusalDetails(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.logDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	e.a.euid = func() int { return 0 }
+	e.a.ownerOf = func(p string) (int, string, error) {
+		if p == e.logDir {
+			return 1001, "", nil // no name: shown as #uid
+		}
+		return 0, "", fs.ErrNotExist
+	}
+	if got := e.run("run", "--guest", "105"); got != exitFail {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	msg := e.errOut.String()
+	for _, want := range []string{e.logDir + " belongs to #1001", "sudo -u #1001 PBP_STATE_DIR=" + daemon.StateDir() + " pbp run --guest 105 --config " + e.cfgPath, "give the state and log directories to root"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
+	}
+	e.a.ownerOf = func(string) (int, string, error) { return 0, "", errors.New("boom") }
+	if got := e.run("check"); got != exitFail || !strings.Contains(e.errOut.String(), "cannot check who owns") {
+		t.Errorf("stat error: exit %d, %q", got, e.errOut.String())
+	}
+
+	uid, _, err := ownerOf(t.TempDir())
+	if err != nil || uid != os.Getuid() {
+		t.Errorf("ownerOf: uid %d err %v, want %d", uid, err, os.Getuid())
+	}
+	if _, _, err := ownerOf(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ownerOf missing: %v", err)
 	}
 }

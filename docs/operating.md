@@ -26,7 +26,7 @@ pbp version                                                       # build versio
 journalctl -u pbp -f                                              # logs; each run's folder is in /var/log/pbp (see Logs)
 ```
 
-Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. As root, `pbp check`, `pbp run` and `pbp daemon` refuse and say so (`refusing to run as root: the state directory /var/lib/pbp/state belongs to pbp …`), because files root writes there would lock the service out of its own state; `pbp health` and `pbp version` only read, and work either way. The run folders in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/*/run.log`).
+Run these as `pbp`, the user the service runs as: it can read `/etc/pbp`, and the state directory `/var/lib/pbp/state` is its own. As root, `pbp check`, `pbp run` and `pbp daemon` refuse and say so (`refusing to run as root: /var/lib/pbp/state belongs to pbp …`, with the command to run instead), because files root writes there or in `/var/log/pbp` would lock the service out of them; `pbp health` and `pbp version` only read, and work either way. The run folders in `/var/log/pbp` are readable by root and `pbp` (for example `sudo less /var/log/pbp/*/run.log`).
 
 `run --guest` proofs one guest's newest backup across the configured storages, VM or container alike, and sends the usual notification and backup note. Like a scheduled run, it skips a backup that already carries a `PBP PROVEN` line ("already proven") unless `restore.reproof: true` is set in `config.yaml`. A backup of a template is always skipped ("template (not bootable)").
 
