@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
+
+**Upgrade both sides.** The daemon and the node helper must share major.minor, so a 0.3 helper does not work with a 0.4 daemon: follow [Upgrading](docs/upgrading.md). Running the `pbp node setup` line also installs this version's notification templates, which changed; until then preflight reports `notification templates on the node: … differs from this version's`.
 
 - **Unprivileged containers without nesting are no longer `FAILED`** ([#34](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/34)). Without `features: nesting=1`, systemd cannot start sandboxed units (`226/NAMESPACE`) or its own API mounts, in the production container as in the copy, so the backup was blamed for the container's configuration. Such a container now ends `BOOTED`, naming the units and recommending `nesting=1`; any other failed unit still makes it `FAILED`.
 - **Containers with raw `lxc.*` lines end `ERROR` before restoring** ([#34](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/34)). PVE drops those lines when PBP's token restores, so the copy ran under a different configuration than the guest (seen with `lxc.apparmor.profile: unconfined`) and could fail for no fault of the backup. PBP now reads them from the backed-up config and reports `raw lxc config (…) needs root@pam to restore`, as the docs already said.
