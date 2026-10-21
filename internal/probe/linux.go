@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,33 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 		r.out.BootLog = res.Stdout
 	}
 	return r.out
+}
+
+// crashLoopRestarts is how many restarts make a service in auto-restart a
+// crash loop rather than a slow start.
+const crashLoopRestarts = 3
+
+// crashLooping lists services that keep crashing under Restart=: they sit in
+// the auto-restart sub-state and never become "failed" (code review I7). One
+// counts with crashLoopRestarts restarts or more, or when NRestarts is
+// unknown (systemd < 235). Best effort: if the list cannot be read, none.
+func (r *linuxRun) crashLooping(ctx context.Context) []string {
+	res, err := r.exec(ctx, "systemctl", "list-units", "--type=service", "--state=auto-restart", "--plain", "--no-legend", "--no-pager")
+	if err != nil || res.ExitCode != 0 {
+		return nil
+	}
+	var out []string
+	for _, u := range firstFields(res.Stdout) {
+		n, err := r.exec(ctx, "systemctl", "show", "-p", "NRestarts", "--value", "--", u)
+		if err != nil {
+			continue
+		}
+		v := strings.TrimSpace(n.Stdout)
+		if k, perr := strconv.Atoi(v); v == "" || n.ExitCode != 0 || (perr == nil && k >= crashLoopRestarts) {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // rootOptions returns the mount options of the root filesystem: from
@@ -228,7 +256,13 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-units exited %d", res.ExitCode))
 	}
-	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+	failed := firstFields(res.Stdout)
+	for _, u := range r.crashLooping(ctx) {
+		if !slices.Contains(failed, u) {
+			failed = append(failed, u)
+		}
+	}
+	if o, bad := r.triage(ctx, failed); bad {
 		return o
 	}
 

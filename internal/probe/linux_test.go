@@ -728,3 +728,28 @@ func TestListeningPortsWithoutSS(t *testing.T) {
 		t.Errorf("neither ss nor /proc/net/tcp: got %v %q, want ERROR", o.Verdict, o.Reason)
 	}
 }
+
+const autoRestartC = "systemctl list-units --type=service --state=auto-restart --plain --no-legend --no-pager"
+
+func nRestarts(unit string) string { return "systemctl show -p NRestarts --value -- " + unit }
+
+// A service that keeps crashing under Restart=always never reaches
+// "failed": it sits in auto-restart. With 3 restarts or more (or no
+// NRestarts, systemd < 235) it counts as a failed unit, subject to the
+// ignore list; one that restarted once or twice is not judged yet (code
+// review I7).
+func TestCrashLoopingServiceFails(t *testing.T) {
+	ex := healthy()
+	ex[autoRestartC] = out("redis-server.service loaded activating auto-restart Advanced key-value store\nflaky.service loaded activating auto-restart Flaky\nold.service loaded activating auto-restart Old\n")
+	ex[nRestarts("redis-server.service")] = out("17\n")
+	ex[nRestarts("flaky.service")] = out("1\n")
+	ex[nRestarts("old.service")] = out("\n")
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Failed || o.Reason != "failed: redis-server.service, old.service" {
+		t.Fatalf("got %v %q, want FAILED naming redis-server and old", o.Verdict, o.Reason)
+	}
+	o = run(ex, config.Checks{IgnoreUnits: []string{"redis-server.service", "old.service"}})
+	if o.Verdict != model.Proven {
+		t.Errorf("ignored: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+}
