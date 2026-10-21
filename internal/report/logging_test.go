@@ -139,8 +139,13 @@ func TestRunLogGuestFiles(t *testing.T) {
 		t.Fatal(got)
 	}
 	runLines := strings.Join(readLines(t, filepath.Join(rl.Dir(), "run.log")), "\n")
-	if !strings.Contains(runLines, "VM109 destroy failed") || strings.Contains(runLines, " a\n") || strings.HasSuffix(runLines, " b") {
+	if !strings.Contains(runLines, "VM109 destroy failed") {
 		t.Fatal(runLines)
+	}
+	for _, ln := range strings.Split(runLines, "\n") {
+		if strings.HasSuffix(ln, " a") || strings.HasSuffix(ln, " b") {
+			t.Fatalf("guest record leaked into run.log: %q", ln)
+		}
 	}
 	if !strings.Contains(stdout.String(), "VM109 destroy failed") || strings.Contains(stdout.String(), "msg=a") {
 		t.Fatal(stdout.String())
