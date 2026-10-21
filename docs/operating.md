@@ -53,12 +53,12 @@ Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` h
 
 ```
 02:00:36 restore done in 33s
-02:00:37 started; waiting for the guest (up to 5m)
+02:00:37 started; waiting for the guest (up to 5m0s)
 02:01:21 running after 44s (Rocky Linux)
 02:01:26 verdict FAILED · failed: sssd-nss.socket, sssd-pam.socket
 ```
 
-Only warnings and errors carry a level; a problem PBP itself has (not the guest) is also written to `run.log`, with the guest's label in front. Times are in the time zone of the host (or container; see [Schedule and time zone](#schedule-and-time-zone)). A file's first line carries the date and zone, other lines just the time. The service log (`journalctl -u pbp`, `docker compose logs`) stays short: the run starting, one line per guest result and the summary.
+Only warnings and errors carry a level; a problem PBP itself has (not the guest) is also written to `run.log`, with the guest's label in front. Times are in the time zone of the host (or container; see [Schedule and time zone](#schedule-and-time-zone)). A file's first line carries the date and zone, other lines just the time. The service log (`journalctl -u pbp`, `docker compose logs`) stays short: the run starting, the preflight and discovery lines, one line per guest result and the summary.
 
 `logging.retain_runs` (default 30) is the number of run folders kept; older ones are removed after each run. Single `run-*.log` files from earlier versions count toward the same limit until they age out. Anything else in `logging.dir` is left alone. If `logging.dir` cannot be written (for example a Docker bind mount with the wrong owner), the run still runs and notifies, logging to the service log only, and the notification has no `Logs:` line.
 

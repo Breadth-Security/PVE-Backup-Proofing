@@ -82,10 +82,14 @@ func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int, orig map[st
 			res.Verdict, res.Reason = model.Error, "cancelled"
 		}
 		j.log.Info(fmt.Sprintf("verdict %s · %s", res.Verdict, res.Reason))
+		logged := string(res.Verdict) + " · " + res.Reason
 		j.teardown(&res)
 		res.Reason = oneLine(res.Reason)
 		if err := j.safely("notes", func() error { annotate(j.d, j.log, j.b, res); return nil }); err != nil {
 			res.Verdict, res.Reason = model.Error, oneLine("internal error: "+err.Error())
+		}
+		if now := string(res.Verdict) + " · " + res.Reason; now != logged {
+			j.log.Info(fmt.Sprintf("verdict now %s", now))
 		}
 	}()
 	j.prove(ctx, &res)
@@ -227,8 +231,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 func (j *job) stepFailed(step string, took time.Duration, err error) string {
 	exit, tail, ok := pve.TaskFailure(err)
 	detail := oneLine(err.Error())
-	if ok {
-		detail = exit
+	if ok && strings.TrimSpace(exit) != "" {
+		detail = strings.TrimSpace(exit)
 	}
 	j.log.Info(fmt.Sprintf("%s failed after %s: %s", step, report.Dur(took), detail))
 	if ok && len(tail) > 0 {
@@ -319,7 +323,7 @@ func (j *job) teardown(res *model.GuestResult) {
 			return j.d.Target.Destroy(ctx, kind, j.vmid, rec)
 		})
 		if err != nil {
-			j.log.Error("destroy temporary guest failed; left for the janitor", "err", err)
+			j.log.Error("destroy temporary guest failed; left for the janitor", "vmid", j.vmid, "err", err)
 			if res.Verdict == model.Proven {
 				res.Verdict, res.Reason = model.Error, "cleanup failed: destroy (booted ok)"
 			} else {
@@ -329,7 +333,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		} else {
 			done = append(done, fmt.Sprintf("destroyed %d", j.vmid))
 			if err := j.safely("record destroyed", func() error { return j.setStage(state.StageDestroyed) }); err != nil {
-				j.log.Error("record destroyed stage", "err", err)
+				j.log.Error("record destroyed stage", "vmid", j.vmid, "err", err)
 			}
 		}
 	}
@@ -340,7 +344,7 @@ func (j *job) teardown(res *model.GuestResult) {
 			return j.setProtected(ctx, false)
 		})
 		if err != nil {
-			j.log.Error("restore backup protected flag failed; left for the janitor", "err", err)
+			j.log.Error("restore backup protected flag failed; left for the janitor", "vmid", j.vmid, "err", err)
 			res.Reason += "; cleanup failed: unprotect"
 			clean = false
 		} else {
@@ -357,7 +361,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		})
 	})
 	if err != nil {
-		j.log.Error("remove finished job from state", "err", err)
+		j.log.Error("remove finished job from state", "vmid", j.vmid, "err", err)
 	}
 }
 

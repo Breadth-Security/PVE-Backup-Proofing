@@ -401,7 +401,8 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 			r := p.skip(glog, b, reason)
 			return lease{}, &r
 		}
-		glog.Error("guest not proofed", "reason", reason)
+		// Info, so it is not forwarded: the result line reports it.
+		glog.Info("guest not proofed: " + reason)
 		return lease{}, &model.GuestResult{Backup: b, Verdict: v, Reason: reason}
 	}
 
@@ -435,7 +436,9 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		return fail(model.Error, fmt.Sprintf("cannot read storage %s: %v", store, err))
 	}
 	margin := st.Total * int64(d.Cfg.Restore.SpaceMarginPercent) / 100
-	if b.Size > st.Avail-p.spaceRes-margin {
+	if freeSpace := st.Avail - p.spaceRes - margin; b.Size > freeSpace {
+		glog.Info(fmt.Sprintf("capacity: need %s, %s free on %s (after %s reserved, %s margin)",
+			report.Bytes(b.Size), report.Bytes(max(freeSpace, 0)), store, report.Bytes(p.spaceRes), report.Bytes(margin)))
 		return fail(model.Skipped, "insufficient space on "+store)
 	}
 
@@ -443,11 +446,16 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 	if err != nil {
 		return fail(model.Error, "cannot read node memory: "+err.Error())
 	}
-	if needRAM > mem.Available-p.ramRes {
+	freeRAM := mem.Available - p.ramRes
+	ramFigures := fmt.Sprintf("need %s RAM, %s free (after %s reserved)",
+		report.Bytes(needRAM), report.Bytes(max(freeRAM, 0)), report.Bytes(p.ramRes))
+	if needRAM > freeRAM {
+		glog.Info("capacity: " + ramFigures)
 		return fail(model.Skipped, reasonNoMemory)
 	}
-	glog.Info(fmt.Sprintf("capacity ok: %s of %s free on %s; RAM %s of %s free",
-		report.Bytes(b.Size), report.Bytes(st.Avail), store, report.Bytes(needRAM), report.Bytes(mem.Available)))
+	glog.Info(fmt.Sprintf("capacity ok: need %s, %s free on %s (after %s reserved, %s margin); %s",
+		report.Bytes(b.Size), report.Bytes(max(st.Avail-p.spaceRes-margin, 0)), store,
+		report.Bytes(p.spaceRes), report.Bytes(margin), ramFigures))
 
 	vmid, err := d.Target.AllocateVMID(ctx, p.inUse)
 	if errors.Is(err, target.ErrNoFreeVMID) {

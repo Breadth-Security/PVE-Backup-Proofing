@@ -27,7 +27,7 @@ const LevelDetail = slog.LevelDebug
 
 // runDirRe matches the folder names NewRunLog creates; only these folders (and
 // legacy run-*.log files) are pruning candidates.
-var runDirRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[a-z]+(-\d+)?$`)
+var runDirRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(schedule|manual)(-\d+)?$`)
 
 // RunLog is one run's log folder: run.log plus one <Label>.log per guest.
 type RunLog struct {
@@ -45,6 +45,9 @@ type RunLog struct {
 // own location) and trigger, with -2, -3, ... appended if the name is taken, and
 // opens run.log in it. now supplies the time of every log line.
 func NewRunLog(root string, started time.Time, trigger string, now func() time.Time) (*RunLog, error) {
+	if trigger != "schedule" && trigger != "manual" {
+		return nil, fmt.Errorf("report: unknown run trigger %q", trigger)
+	}
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("report: create log dir: %w", err)
 	}

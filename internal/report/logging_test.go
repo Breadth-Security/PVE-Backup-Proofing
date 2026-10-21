@@ -212,6 +212,7 @@ func TestPruneRuns(t *testing.T) {
 	mk("notes.txt", false)
 	mk("lost+found", true)
 	mk("2026-10-21_backup", true)
+	mk("2026-10-21_02-00-00_daily", true)
 	if err := PruneRuns(root, 3, keep); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,7 @@ func TestPruneRuns(t *testing.T) {
 	for _, e := range ents {
 		got = append(got, e.Name())
 	}
-	want := []string{"2026-10-01_02-00-00_schedule", "2026-10-02_02-00-00_manual", "2026-10-03_02-00-00_schedule", "2026-10-04_02-00-00_schedule-2", "2026-10-21_backup", "lost+found", "notes.txt"}
+	want := []string{"2026-10-01_02-00-00_schedule", "2026-10-02_02-00-00_manual", "2026-10-03_02-00-00_schedule", "2026-10-04_02-00-00_schedule-2", "2026-10-21_02-00-00_daily", "2026-10-21_backup", "lost+found", "notes.txt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -233,7 +234,7 @@ func TestPruneRuns(t *testing.T) {
 	for _, e := range ents {
 		got = append(got, e.Name())
 	}
-	want = []string{"2026-10-01_02-00-00_schedule", "2026-10-04_02-00-00_schedule-2", "2026-10-21_backup", "lost+found", "notes.txt"}
+	want = []string{"2026-10-01_02-00-00_schedule", "2026-10-04_02-00-00_schedule-2", "2026-10-21_02-00-00_daily", "2026-10-21_backup", "lost+found", "notes.txt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -270,5 +271,16 @@ func TestFormat(t *testing.T) {
 		if got := Age(in); got != want {
 			t.Errorf("Age(%v)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestNewRunLogRejectsUnknownTrigger(t *testing.T) {
+	root := t.TempDir()
+	started := time.Date(2026, 10, 21, 2, 0, 0, 0, time.UTC)
+	if _, err := NewRunLog(root, started, "daily", tickClock(started)); err == nil {
+		t.Fatal("want an error for trigger daily")
+	}
+	if ents, _ := os.ReadDir(root); len(ents) != 0 {
+		t.Errorf("created %v", ents)
 	}
 }

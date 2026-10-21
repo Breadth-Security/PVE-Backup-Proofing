@@ -1106,3 +1106,74 @@ func TestRunSummaryLogDir(t *testing.T) {
 		t.Errorf("LogDir = %q", s.LogDir)
 	}
 }
+
+// A capacity skip keeps its short reason; the figures go in the guest's file.
+func TestCapacitySkipLogsFigures(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.api.Memory = pve.NodeMemory{Total: 8 * gib, Available: 600 << 20}
+	f.add("pbs", model.KindQEMU, 102, 0, "")
+	dir, _ := f.withRunLog(t)
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	wantResult(t, byVMID(t, s)[102], model.Skipped, "insufficient node memory")
+	wantInOrder(t, "VM102.log", readLog(t, dir, "VM102.log"),
+		"capacity: need 2.2 GiB RAM, 600 MiB free (after 0 B reserved)",
+		"skipped: insufficient node memory")
+}
+
+// A destroy failure after the verdict line is logged again as "verdict now".
+func TestVerdictNowLoggedAfterTeardown(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.DestroyErr = map[int]error{990000: errors.New("destroy timed out")}
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	wantInOrder(t, "VM101.log", readLog(t, dir, "VM101.log"),
+		"verdict PROVEN · ", "verdict now ERROR · cleanup failed: destroy (booted ok)")
+}
+
+// A task error without an exit status still names its cause, on one line.
+func TestRestoreTaskNoExitStatus(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.RestoreErr = map[int]error{990000: &pve.TaskError{UPID: "UPID:x", ExitStatus: "  "}}
+	f.withRunLog(t)
+
+	r := byVMID(t, f.run(context.Background(), Options{Trigger: "manual"}))[101]
+
+	if r.Reason == "restore failed: " || !strings.Contains(r.Reason, "UPID:x") || strings.Contains(r.Reason, "\n") {
+		t.Errorf("reason = %q", r.Reason)
+	}
+}
+
+// An admission ERROR reaches the service log once, as the result line.
+func TestAdmissionErrorNotForwardedTwice(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	delete(f.api.BackupConfigs, f.api.Backups["pbs"][0].VolID)
+	dir, _ := f.withRunLog(t)
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	wantResult(t, byVMID(t, s)[101], model.Error, byVMID(t, s)[101].Reason)
+	if n := strings.Count(readLog(t, dir, "run.log"), "VM101 guest not proofed"); n != 0 {
+		t.Errorf("forwarded %d times", n)
+	}
+}
+
+// Teardown errors forwarded to run.log carry the temporary VMID.
+func TestTeardownErrorHasVMID(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.DestroyErr = map[int]error{990000: errors.New("destroy timed out")}
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	if r := readLog(t, dir, "run.log"); !strings.Contains(r, "left for the janitor") || !strings.Contains(r, "vmid=990000") {
+		t.Errorf("run.log:\n%s", r)
+	}
+}
