@@ -488,6 +488,29 @@ func TestBootNotSettledNamesPendingJobs(t *testing.T) {
 	}
 }
 
+// systemd older than 240 (RHEL/CentOS 7, Ubuntu 18.04) has no `--wait`
+// for is-system-running: it exits 1 with "unrecognized option". PBP then
+// polls the state instead of failing the guest on an empty state (code
+// review I12).
+func TestOldSystemdWithoutWait(t *testing.T) {
+	refused := probe.ExecResult{ExitCode: 1, Stderr: "systemctl: unrecognized option '--wait'\n"}
+	ex := healthy()
+	ex[sysState] = refused
+	ex[sysStateNow] = out("running\n")
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, SettleTimeout: time.Second})
+	if o.Verdict != model.Proven {
+		t.Fatalf("old systemd, running: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+
+	ex = healthy()
+	ex[sysState] = refused
+	ex[sysStateNow] = out("starting\n")
+	o = probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, SettleTimeout: 100 * time.Millisecond})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("old systemd, never settles: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
 // A guest that is still starting is ERROR even when no probe deadline was
 // set: the settle wait has its own default bound.
 func TestBootSettleWithoutProbeDeadline(t *testing.T) {

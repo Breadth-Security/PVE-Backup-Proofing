@@ -35,6 +35,37 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	return r.out
 }
 
+// waitUnsupported reports whether `systemctl is-system-running --wait` was
+// refused as an unknown option (systemd older than 240).
+func waitUnsupported(res ExecResult) bool {
+	if res.ExitCode == 0 || strings.TrimSpace(res.Stdout) != "" {
+		return false
+	}
+	e := strings.ToLower(res.Stderr)
+	return strings.Contains(e, "unrecognized option") || strings.Contains(e, "unknown option")
+}
+
+// pollSettle polls `systemctl is-system-running` until the state is past
+// starting/initializing, or until deadline, when it returns errSettleTimeout
+// like guard.settle does. It replaces --wait on old systemd.
+func (r *linuxRun) pollSettle(ctx context.Context, deadline time.Time) (ExecResult, error) {
+	every := min(5*time.Second, max(time.Until(deadline)/20, 10*time.Millisecond))
+	for {
+		res, err := r.exec(ctx, "systemctl", "is-system-running")
+		if err != nil {
+			return res, err
+		}
+		switch strings.TrimSpace(res.Stdout) {
+		case "starting", "initializing":
+		default:
+			return res, nil
+		}
+		if !time.Now().Before(deadline) || !sleep(ctx, every) {
+			return res, errSettleTimeout
+		}
+	}
+}
+
 // pendingJobs returns " (waiting on: <units>)" naming the units of the jobs
 // systemd still has queued, and keeps the job list as the boot log. Like the
 // journal in fail, it is read without recording errors; with no answer it
@@ -117,7 +148,12 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	// per-command timeout: on the isolated bridge, DHCP and wait-online units
 	// can keep a healthy guest "starting" for a minute or two.
 	start := time.Now()
-	res, err := r.ex.settle(ctx, settleBudget(ctx, in.SettleTimeout), []string{"systemctl", "is-system-running", "--wait"})
+	budget := settleBudget(ctx, in.SettleTimeout)
+	res, err := r.ex.settle(ctx, budget, []string{"systemctl", "is-system-running", "--wait"})
+	if err == nil && waitUnsupported(res) {
+		// systemd < 240 has no --wait (code review I12): poll instead.
+		res, err = r.pollSettle(ctx, start.Add(budget))
+	}
 	if errors.Is(err, errSettleTimeout) {
 		// Not settled in time: judge the state it is in now.
 		waited := time.Since(start).Round(time.Second)
