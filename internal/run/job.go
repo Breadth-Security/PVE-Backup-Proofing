@@ -85,6 +85,9 @@ func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int, orig map[st
 		} else if ctx.Err() != nil {
 			res.Verdict, res.Reason = model.Error, "cancelled"
 		}
+		// One line before it is logged, so that "verdict now" below means
+		// teardown or the notes changed something (issue #42).
+		res.Reason = oneLine(res.Reason)
 		j.log.Info(fmt.Sprintf("verdict %s · %s", res.Verdict, res.Reason))
 		logged := string(res.Verdict) + " · " + res.Reason
 		j.teardown(&res)

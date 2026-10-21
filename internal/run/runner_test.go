@@ -1208,6 +1208,36 @@ func TestVerdictNowLoggedAfterTeardown(t *testing.T) {
 		"verdict PROVEN · ", "verdict now ERROR · cleanup failed: destroy (booted ok)")
 }
 
+// multilineErrExec fails every command with an error spanning two lines,
+// as PVE's agent errors can (issue #42, VM115 on pve2).
+type multilineErrExec struct{}
+
+func (multilineErrExec) Exec(context.Context, []string) (probe.ExecResult, error) {
+	return probe.ExecResult{}, errors.New("agent exec: 500: got timeout:\nVM 990000 qga command failed")
+}
+
+// A probe reason with a line break is logged as one verdict line, and a
+// teardown that changes nothing logs no "verdict now" (issue #42).
+func TestVerdictLineSingleWithMultilineReason(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.Exec[990000] = multilineErrExec{}
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	g := readLog(t, dir, "VM101.log")
+	if strings.Contains(g, "verdict now") {
+		t.Errorf("spurious verdict now:\n%s", g)
+	}
+	if n := strings.Count(g, " verdict ERROR · "); n != 1 {
+		t.Errorf("%d verdict lines, want 1:\n%s", n, g)
+	}
+	if !strings.Contains(g, "got timeout: VM 990000 qga command failed") {
+		t.Errorf("verdict reason not on one line:\n%s", g)
+	}
+}
+
 // A task error without an exit status still names its cause, on one line.
 func TestRestoreTaskNoExitStatus(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
