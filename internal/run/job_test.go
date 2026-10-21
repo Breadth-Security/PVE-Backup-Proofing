@@ -44,6 +44,7 @@ func healthy() probetest.Scripted {
 		failedC:                   out(""),
 		"systemctl list-unit-files --state=enabled --no-legend --plain": out(""),
 		"ss -ltnH": out(""),
+		"systemctl list-units --type=service --state=auto-restart,auto-restart-queued --plain --no-legend --no-pager": out(""),
 	}
 }
 
@@ -716,7 +717,7 @@ func TestProbeGetsOSType(t *testing.T) {
 	f := newFixture(t)
 	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
 	f.tgt.Boot[tmpVMID] = target.BootInfo{OS: probe.Linux, OSType: "alpine"}
-	f.tgt.Exec[tmpVMID] = probetest.Scripted{"rc-status --crashed": out("")}
+	f.tgt.Exec[tmpVMID] = probetest.Scripted{"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n")}
 	if res := f.run(context.Background()); res.Verdict != model.Proven {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}

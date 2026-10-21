@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,147 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 		r.out.BootLog = res.Stdout
 	}
 	return r.out
+}
+
+// errProbeExit: a probe command the guest has exited non-zero. As for the
+// other base commands, that is a FAILED "probe error".
+var errProbeExit = errors.New("probe error")
+
+// crashLoopRestarts is how many restarts make a service in auto-restart a
+// crash loop even when its last run ended cleanly.
+const crashLoopRestarts = 3
+
+// crashLooping lists services that keep crashing under Restart=: they sit in
+// the auto-restart sub-state and never become "failed" (code review I7). One
+// counts once it restarted after a run that failed (Result not "success"),
+// after crashLoopRestarts clean restarts, or when NRestarts is unknown
+// (systemd < 235). An error reading the list or a unit is returned: a
+// guest whose crash loops PBP could not check is not passed.
+func (r *linuxRun) crashLooping(ctx context.Context) ([]string, error) {
+	res, err := r.exec(ctx, "systemctl", "list-units", "--type=service", "--state=auto-restart,auto-restart-queued",
+		"--plain", "--no-legend", "--no-pager")
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("%w: systemctl list-units exited %d", errProbeExit, res.ExitCode)
+	}
+	var out []string
+	for _, u := range firstFields(res.Stdout) {
+		n, err := r.exec(ctx, "systemctl", "show", "-p", "Result", "-p", "NRestarts", "--", u)
+		if err != nil {
+			return nil, err
+		}
+		props := map[string]string{}
+		for _, line := range strings.Split(n.Stdout, "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+				props[k] = v
+			}
+		}
+		k, perr := strconv.Atoi(props["NRestarts"])
+		switch {
+		case n.ExitCode != 0 || perr != nil:
+			out = append(out, u)
+		case k >= crashLoopRestarts, k >= 1 && props["Result"] != "" && props["Result"] != "success":
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+// openRCFailed lists the services `rc-status --format ini` reports as
+// failed: crashed or failed in any section, or stopped in a runlevel section (a
+// service of the runlevel that failed to start, which --crashed misses;
+// seen on Alpine 3.24). The "Dynamic" sections (dependencies, hotplugged,
+// manual) are not the runlevel's own (code review I9).
+func openRCFailed(ini string) []string {
+	var failed []string
+	runlevel := false
+	for _, line := range strings.Split(ini, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			runlevel = !strings.HasPrefix(line, "[Dynamic")
+			continue
+		}
+		name, state, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name, state = strings.TrimSpace(name), strings.TrimSpace(state)
+		// "scheduled" (waiting on another service) and "inactive" are not
+		// failures.
+		bad := state == "crashed" || state == "failed" || (runlevel && state == "stopped")
+		if bad && !slices.Contains(failed, name) {
+			failed = append(failed, name)
+		}
+	}
+	return failed
+}
+
+// rootOptions returns the mount options of the root filesystem: from
+// findmnt, or, when findmnt is missing or fails, from /proc/self/mounts (the
+// last "/" entry, which an overmount puts last). nil means neither could be
+// read (code review I8).
+func (r *linuxRun) rootOptions(ctx context.Context) ([]string, error) {
+	res, err := r.exec(ctx, "findmnt", "-n", "-o", "OPTIONS", "/")
+	if err != nil {
+		return nil, err
+	}
+	if s := strings.TrimSpace(res.Stdout); res.ExitCode == 0 && s != "" {
+		return strings.Split(s, ","), nil
+	}
+	res, err = r.exec(ctx, "cat", "/proc/self/mounts")
+	if err != nil || res.ExitCode != 0 {
+		return nil, err
+	}
+	var opts []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if f := strings.Fields(line); len(f) >= 4 && f[1] == "/" {
+			opts = strings.Split(f[3], ",")
+		}
+	}
+	return opts, nil
+}
+
+// waitUnsupported reports whether `systemctl is-system-running --wait` was
+// refused as an unknown option (systemd older than 240).
+func waitUnsupported(res ExecResult) bool {
+	if res.ExitCode == 0 || strings.TrimSpace(res.Stdout) != "" {
+		return false
+	}
+	e := strings.ToLower(res.Stderr)
+	return strings.Contains(e, "unrecognized option") || strings.Contains(e, "unknown option")
+}
+
+// stillStarting reports whether is-system-running answered that boot is
+// not finished.
+func stillStarting(res ExecResult) bool {
+	switch strings.TrimSpace(res.Stdout) {
+	case "starting", "initializing":
+		return true
+	}
+	return false
+}
+
+// pollSettle polls `systemctl is-system-running` until the state is past
+// starting/initializing, or until deadline, when it returns errSettleTimeout
+// like guard.settle does. It replaces --wait on old systemd.
+func (r *linuxRun) pollSettle(ctx context.Context, deadline time.Time) (ExecResult, error) {
+	every := min(5*time.Second, max(time.Until(deadline)/20, 10*time.Millisecond))
+	for {
+		res, err := r.exec(ctx, "systemctl", "is-system-running")
+		switch {
+		case errors.Is(err, errCommandTimeout):
+			// A guest busy booting can be slow to answer: still starting.
+		case err != nil:
+			return res, err
+		case !stillStarting(res):
+			return res, nil
+		}
+		if !time.Now().Before(deadline) || !sleep(ctx, every) {
+			return res, errSettleTimeout
+		}
+	}
 }
 
 // pendingJobs returns " (waiting on: <units>)" naming the units of the jobs
@@ -82,6 +224,10 @@ func (r *linuxRun) execErr(ctx context.Context, name string, err error) Outcome 
 		return r.errorOut(endedReason(err))
 	case errors.Is(err, errCommandTimeout):
 		return r.fail(ctx, "check timed out: "+name)
+	case errors.Is(err, errProbeExit):
+		return r.fail(ctx, err.Error())
+	case errors.Is(err, errNoPortSource):
+		return r.errorOut(err.Error())
 	}
 	return r.errorOut(transportReason(err))
 }
@@ -117,11 +263,21 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	// per-command timeout: on the isolated bridge, DHCP and wait-online units
 	// can keep a healthy guest "starting" for a minute or two.
 	start := time.Now()
-	res, err := r.ex.settle(ctx, settleBudget(ctx, in.SettleTimeout), []string{"systemctl", "is-system-running", "--wait"})
+	budget := settleBudget(ctx, in.SettleTimeout)
+	res, err := r.ex.settle(ctx, budget, []string{"systemctl", "is-system-running", "--wait"})
+	if err == nil && (waitUnsupported(res) || stillStarting(res)) {
+		// systemd < 240 has no --wait (code review I12): 232-239 accept and
+		// ignore it, older ones refuse it. Poll instead.
+		res, err = r.pollSettle(ctx, start.Add(budget))
+	}
 	if errors.Is(err, errSettleTimeout) {
 		// Not settled in time: judge the state it is in now.
 		waited := time.Since(start).Round(time.Second)
 		res, err = r.exec(ctx, "systemctl", "is-system-running")
+		if errors.Is(err, errCommandTimeout) {
+			// Too busy booting to answer.
+			return r.errorOut("guest still starting after " + waited.String() + r.pendingJobs(ctx))
+		}
 		if err == nil && res.ExitCode != 127 {
 			switch strings.TrimSpace(res.Stdout) {
 			case "starting", "initializing":
@@ -148,16 +304,16 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 		return r.fail(ctx, "system state: "+state)
 	}
 
-	res, err = r.exec(ctx, "findmnt", "-n", "-o", "OPTIONS", "/")
+	opts, err := r.rootOptions(ctx)
 	if err != nil {
 		return r.execErr(ctx, "root filesystem", err)
 	}
-	if res.ExitCode == 0 {
-		for _, o := range strings.Split(strings.TrimSpace(res.Stdout), ",") {
-			if o == "ro" {
-				return r.fail(ctx, "root filesystem read-only")
-			}
-		}
+	if opts == nil {
+		// Never pass a guest whose root PBP could not check (code review I8).
+		return r.errorOut("cannot read the root filesystem's mount options")
+	}
+	if slices.Contains(opts, "ro") {
+		return r.fail(ctx, "root filesystem read-only")
 	}
 
 	res, err = r.exec(ctx, "systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager")
@@ -167,7 +323,17 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-units exited %d", res.ExitCode))
 	}
-	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+	failed := firstFields(res.Stdout)
+	looping, err := r.crashLooping(ctx)
+	if err != nil {
+		return r.execErr(ctx, "crash-looping services", err)
+	}
+	for _, u := range looping {
+		if !slices.Contains(failed, u) {
+			failed = append(failed, u)
+		}
+	}
+	if o, bad := r.triage(ctx, failed); bad {
 		return o
 	}
 
@@ -243,19 +409,50 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 		return r.execErr(ctx, "openrc boot", err)
 	}
 
-	res, err := r.exec(ctx, "rc-status", "--crashed")
+	res, err := r.exec(ctx, "rc-status", "--format", "ini")
 	if err != nil {
 		return r.execErr(ctx, "openrc services", err)
 	}
-	if res.ExitCode == 127 {
-		return r.booted("init answering, service state unknown")
+	var failed []string
+	if res.ExitCode == 0 && strings.Contains(res.Stdout, "[") {
+		failed = openRCFailed(res.Stdout)
+	} else {
+		// An OpenRC without --format ini: crashed services only.
+		res, err = r.exec(ctx, "rc-status", "--crashed")
+		if err != nil {
+			return r.execErr(ctx, "openrc services", err)
+		}
+		if res.ExitCode == 127 {
+			return r.booted("init answering, service state unknown")
+		}
+		// Exit 0 or 1 are both normal; stdout lists the crashed services.
+		if res.ExitCode != 0 && res.ExitCode != 1 {
+			return r.errorOut(fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+		}
+		failed = firstFields(res.Stdout)
 	}
-	// Exit 0 or 1 are both normal; stdout lists the crashed services.
-	if res.ExitCode != 0 && res.ExitCode != 1 {
-		return r.errorOut(fmt.Sprintf("probe error: rc-status exited %d", res.ExitCode))
+
+	opts, err := r.rootOptions(ctx)
+	if err != nil {
+		return r.execErr(ctx, "root filesystem", err)
 	}
-	if o, bad := r.triage(ctx, firstFields(res.Stdout)); bad {
+	if opts == nil {
+		return r.errorOut("cannot read the root filesystem's mount options")
+	}
+	if slices.Contains(opts, "ro") {
+		return r.fail(ctx, "root filesystem read-only")
+	}
+
+	if o, bad := r.triage(ctx, failed); bad {
 		return o
+	}
+	// Per-guest checks (ports, commands, services via rc-service). The
+	// built-in profiles match systemd unit names, so they do not apply.
+	c := &checker{ex: r.ex, openrc: true}
+	err = c.runProfiles(ctx, r.in, nil)
+	r.out.Checks = c.results
+	if err != nil {
+		return r.execErr(ctx, "guest checks", err)
 	}
 	return r.finish(ctx)
 }

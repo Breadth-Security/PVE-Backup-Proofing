@@ -453,9 +453,20 @@ var errorMarkers = []string{"decrypt", "encryption key", "permission", "no space
 	"already exists", "can't lock", "is locked", "error trying to connect", "no route to host", "unreachable",
 	"reset by peer", "broken pipe", "not online"}
 
-// ClassifyRestoreError maps a restore failure to a verdict: ERROR when the
-// node or PBP is at fault (key, permissions, space, timeouts, connectivity),
-// FAILED when the backup itself is bad. nil yields "".
+// damageMarkers name damage to the backup itself: only these make a restore
+// failure FAILED (code review I6). A chunk missing from the datastore shows
+// as a failed read of its .chunks/ path (PBS answers HTTP 400).
+var damageMarkers = []string{"corrupt", "bad chunk", "chunk digest", "wrong digest", "digest mismatch",
+	"checksum", "failed to decode", "decode error", "unable to parse", "invalid magic", "bad magic",
+	"missing chunk", "/.chunks/", "unable to load chunk"}
+
+// ClassifyRestoreError maps a restore failure to a verdict. FAILED, which
+// blames the backup, only for known damage to it (corrupt or missing
+// chunks, checksum or digest mismatches, undecodable data); anything else
+// (the node, PBS, permissions, space, memory, timeouts, connectivity, or an
+// error PBP does not recognise) is ERROR. A node-fault marker wins over a
+// damage marker (a corrupt-looking message about a missing key is the
+// key's fault). nil yields "".
 func ClassifyRestoreError(err error) model.Verdict {
 	if err == nil {
 		return ""
@@ -480,5 +491,10 @@ func ClassifyRestoreError(err error) model.Verdict {
 	if reHTTPCode.MatchString(text) {
 		return model.Error
 	}
-	return model.Failed
+	for _, m := range damageMarkers {
+		if strings.Contains(text, m) {
+			return model.Failed
+		}
+	}
+	return model.Error
 }

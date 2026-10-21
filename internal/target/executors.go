@@ -74,6 +74,10 @@ type vmExec struct {
 func (e vmExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
 	n := e.n
 	pid, err := n.api.AgentExec(ctx, n.node, e.vmid, argv)
+	if missingBinary(err) {
+		// What `pct exec` reports as exit 127 for a container.
+		return probe.ExecResult{ExitCode: 127, Stderr: err.Error()}, nil
+	}
 	if err != nil {
 		return probe.ExecResult{}, agentErr(err)
 	}
@@ -98,6 +102,18 @@ func (e vmExec) Exec(ctx context.Context, argv []string) (probe.ExecResult, erro
 			return probe.ExecResult{}, ctx.Err()
 		}
 	}
+}
+
+// missingBinary reports whether err is the guest agent failing to start a
+// command because it does not exist ("Failed to execute child process …
+// (No such file or directory)", qemu-ga via PVE 9.2), which the probe
+// treats like exit 127 (code review I13).
+func missingBinary(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Failed to execute child process") && strings.Contains(msg, "No such file or directory")
 }
 
 // agentTimeout reports whether err is PVE's qga call timing out ("got

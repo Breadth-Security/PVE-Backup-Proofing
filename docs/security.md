@@ -65,6 +65,7 @@ The node still trusts PBP's API token (below), so protect the PBP host and its s
 
 - **Privileged containers**: restoring one needs `Sys.Modify` on `/`.
 - **Containers with raw `lxc.*` lines** (for example `lxc.apparmor.profile: unconfined`): PVE restores them only for `root@pam` and silently drops them for PBP's token, so the copy would not be the guest it stands for. PBP reads the backed-up config and ends `ERROR` (`raw lxc config (…) needs root@pam to restore`) before restoring anything.
+- **Containers with bind mounts** (an `mpN` that is a host path): PVE lets only `root@pam` restore a bind mount, so the restore is refused.
 - **Containers with `devN` passthrough or a hookscript**, and **VMs with non-mapped (raw) PCI or USB passthrough**: changing those keys is reserved to `root@pam`. VMs with *mapped* devices need `Mapping.Use` on the mapping as well.
 
 Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token change node-wide settings; weigh that before doing it. Proofing privileged containers also weakens what a stolen PBP SSH key can do: the helper runs `pct exec` in PBP's tagged containers, and in a privileged container that command runs as real root (uid 0 on the node), held back only by the container's namespaces and AppArmor profile instead of an unprivileged uid mapping. If that matters more to you than proofing those backups, leave them out: a privileged container that PBP cannot restore simply ends `ERROR` each run.

@@ -88,10 +88,9 @@ The values above are from the author's test node: 110 `dnstest` (unprivileged CT
 - **TestProofAlpineCrashed**: a throwaway Alpine container whose default
   runlevel holds `pbp-it-crash` (an `openrc-run` script with
   `command=/bin/sleep`, `command_args=1`, `command_background=no`, so OpenRC
-  marks it crashed a second after start; `rc-status --crashed` then lists it
-  and exits 0). Expects `FAILED` naming the service. **Fails as of
-  2026-10-19**: the OpenRC probe does not wait for the default runlevel, so it
-  runs before the service starts and reports `PROVEN`.
+  marks it crashed a second after start; `rc-status --format ini` then shows
+  it `crashed`). Expects `FAILED` naming the service. The probe waits for the
+  default runlevel to finish starting before it checks.
 - **TestProofProtectedGuest**: a throwaway Debian container with
   `protection: 1` (and `nesting=1`, as the GUI sets it; without it
   systemd-logind fails in an unprivileged Debian 12 container). PBP must

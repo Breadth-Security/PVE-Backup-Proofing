@@ -101,14 +101,15 @@ func TestWindowsTransportError(t *testing.T) {
 func TestWindowsCommandTimesOut(t *testing.T) {
 	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
 	o := probe.Run(context.Background(), hanging(probetest.Scripted{}, winCmd), probe.Input{OS: probe.Windows, Checks: ck})
-	if o.Verdict != model.Failed || o.Reason != "check timed out: windows services" {
+	// PBP could not judge the services: ERROR, not FAILED (code review I11).
+	if o.Verdict != model.Error || o.Reason != "windows services check timed out" {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
 
 func TestWindowsNonZeroExit(t *testing.T) {
 	o := runWin(probetest.Scripted{winCmd: {ExitCode: 1}}, config.Checks{})
-	if o.Verdict != model.Failed || o.Reason != "probe error: powershell exited 1" {
+	if o.Verdict != model.Error || o.Reason != "probe error: powershell exited 1" {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }
@@ -226,5 +227,86 @@ func TestWindowsProbeEnded(t *testing.T) {
 	go func() { <-ex.started; cancel() }()
 	if o := probe.Run(ctx, ex, in); o.Verdict != model.Error || o.Reason != "probe cancelled" {
 		t.Errorf("cancel: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// resultsExec answers the service query with each result in turn, repeating
+// the last.
+type resultsExec struct {
+	res   []probe.ExecResult
+	polls *int
+}
+
+func (r resultsExec) Exec(context.Context, []string) (probe.ExecResult, error) {
+	i := min(*r.polls, len(r.res)-1)
+	*r.polls++
+	return r.res[i], nil
+}
+
+// A failed service query (PowerShell exiting non-zero, as it can while the
+// guest is still busy after boot) is retried like a stopped service, not
+// FAILED at once (code review I11).
+func TestWindowsQueryErrorRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	polls := 0
+	o := probe.Run(ctx, resultsExec{[]probe.ExecResult{{ExitCode: 1}, {ExitCode: 1}, out("")}, &polls},
+		probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
+	if o.Verdict != model.Proven || polls != 3 {
+		t.Fatalf("got %v %q after %d polls, want PROVEN after 3", o.Verdict, o.Reason, polls)
+	}
+}
+
+// Delayed-start automatic services are checked too, but only count when
+// they failed (an error exit code other than 1077, or a Service Control
+// Manager failure event): one that has not started yet, or that stopped
+// cleanly after its work, is fine (code review I10). The sixth column says
+// whether the service is delayed.
+func TestWindowsDelayedStartServices(t *testing.T) {
+	ex := probetest.Scripted{winCmd: out("" +
+		"DelayedBroken\t1067\t0\t7034\tThe DelayedBroken service terminated unexpectedly.\tTrue\r\n" +
+		"DelayedErrExit\t1\t0\t\t\tTrue\r\n" +
+		"DelayedNotYet\t1077\t0\t\t\tTrue\r\n" +
+		"clr_optimization_v4.0.30319_64\t0\t0\t\t\tTrue\r\n" +
+		"Spooler\t1077\t0\t\t\tFalse\r\n")}
+	o := runWin(ex, config.Checks{})
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: DelayedBroken, DelayedErrExit, Spooler" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// A delayed-start service that has not started yet is waited for: one that
+// fails when Windows starts it about two minutes after boot is FAILED, not
+// missed (code review I10).
+func TestWindowsDelayedStartWaited(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	polls := 0
+	o := probe.Run(ctx, seqExec{outs: []string{
+		"DelayedLate\t1077\t0\t\t\tTrue\r\n",
+		"DelayedLate\t1067\t0\t7034\tThe DelayedLate service terminated unexpectedly.\tTrue\r\n",
+	}, polls: &polls, stopAfter: 3, stop: cancel}, probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
+	if o.Verdict != model.Failed || o.Reason != "stopped auto services: DelayedLate" {
+		t.Fatalf("got %v %q after %d polls, want FAILED", o.Verdict, o.Reason, polls)
+	}
+
+	// One that is ignored is not waited for, and one still not started
+	// when the probe ends is passed.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel1()
+	polls = 0
+	o = probe.Run(ctx1, seqExec{outs: []string{"DelayedLate\t1077\t0\t\t\tTrue\r\n"}, polls: &polls},
+		probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond,
+			Checks: config.Checks{WindowsIgnoreServices: []string{"delayedlate"}}})
+	if o.Verdict != model.Proven || polls != 1 {
+		t.Fatalf("ignored: got %v %q after %d polls, want PROVEN after 1", o.Verdict, o.Reason, polls)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel2()
+	polls = 0
+	o = probe.Run(ctx2, seqExec{outs: []string{"DelayedLate\t1077\t0\t\t\tTrue\r\n"}, polls: &polls, stopAfter: 3, stop: cancel2},
+		probe.Input{OS: probe.Windows, WindowsSettlePoll: time.Millisecond})
+	if o.Verdict != model.Proven || polls != 3 {
+		t.Fatalf("never started: got %v %q after %d polls, want PROVEN after 3", o.Verdict, o.Reason, polls)
 	}
 }

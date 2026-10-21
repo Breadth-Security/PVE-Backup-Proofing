@@ -1080,6 +1080,23 @@ func TestClassifyRestoreError(t *testing.T) {
 		{errors.New("read: connection Reset by peer"), model.Error},
 		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"write: Broken pipe"}}, model.Error},
 		{errors.New("storage 'pbs-main' is not online"), model.Error},
+		// Only known backup damage is FAILED; anything else is the node's
+		// or PBP's (ERROR), never blamed on the backup (code review I6).
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"Insufficient free space in volume group"}}, model.Error},
+		{errors.New("Cannot allocate memory"), model.Error},
+		{errors.New("pve api /nodes/pve1/qemu: 502: Bad Gateway"), model.Error},
+		{errors.New("pve api /nodes/pve1/qemu: 503: Service Unavailable"), model.Error},
+		{errors.New("pve api /nodes/pve1/qemu: 400: Parameter verification failed"), model.Error},
+		{errors.New("unexpected EOF"), model.Error},
+		{&pve.TaskError{UPID: "u", ExitStatus: "mount point type bind is only allowed for root@pam"}, model.Error},
+		{&pve.TaskError{UPID: "u", ExitStatus: "unable to restore"}, model.Error},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"Detected chunk with wrong digest."}}, model.Failed},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{`restore failed: reading file "/mnt/datastore/main/.chunks/3f2a/3f2a9c" failed: No such file or directory (os error 2)`}}, model.Failed},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{"unable to load chunk '3f2a9c' - fetch failed"}}, model.Failed},
+		{&pve.TaskError{UPID: "u", ExitStatus: "error", Log: []string{`reading file "/mnt/datastore/main/.chunks/3f2a/3f2a9c" failed: Permission denied (os error 13)`}}, model.Error},
+		{errors.New("checksum mismatch in index file"), model.Failed},
+		{errors.New("failed to decode blob"), model.Failed},
+		{errors.New("unable to parse archive header: invalid magic"), model.Failed},
 	}
 	for _, tc := range tests {
 		if got := ClassifyRestoreError(tc.err); got != tc.want {

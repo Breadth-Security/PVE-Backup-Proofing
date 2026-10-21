@@ -28,11 +28,12 @@ func out(s string) probe.ExecResult { return probe.ExecResult{Stdout: s} }
 
 func healthy() probetest.Scripted {
 	return probetest.Scripted{
-		sysState: out("running\n"),
-		findmnt:  out("rw,relatime\n"),
-		failedC:  out(""),
-		enabledC: out("nginx.service enabled enabled\n"),
-		ssC:      out("LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\nLISTEN 0 4096 [::]:22 [::]:*\n"),
+		sysState:     out("running\n"),
+		findmnt:      out("rw,relatime\n"),
+		failedC:      out(""),
+		enabledC:     out("nginx.service enabled enabled\n"),
+		ssC:          out("LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\nLISTEN 0 4096 [::]:22 [::]:*\n"),
+		autoRestartC: out(""),
 	}
 }
 
@@ -74,7 +75,9 @@ func TestFailedUnit(t *testing.T) {
 }
 
 func TestSystemStatesFail(t *testing.T) {
-	for _, s := range []string{"emergency", "maintenance", "starting", "stopping", "offline"} {
+	// "starting" from --wait means an old systemd ignored --wait; it is
+	// polled (TestSystemdIgnoresWait).
+	for _, s := range []string{"emergency", "maintenance", "stopping", "offline"} {
 		ex := healthy()
 		ex[sysState] = out(s + "\n")
 		o := run(ex, config.Checks{})
@@ -139,7 +142,7 @@ func TestEmptyProfileRequiresActive(t *testing.T) {
 }
 
 func TestOpenRC(t *testing.T) {
-	ex := probetest.Scripted{"rc-status --crashed": out(" nginx    [ crashed ]\n")}
+	ex := probetest.Scripted{"rc-status --crashed": out(" nginx    [ crashed ]\n"), "findmnt -n -o OPTIONS /": out("rw\n")}
 	o := run(ex, config.Checks{})
 	if o.Verdict != model.Failed || o.Reason != "failed: nginx" {
 		t.Fatalf("got %+v", o)
@@ -153,7 +156,7 @@ func TestOpenRC(t *testing.T) {
 // rc-status --crashed exits 0 or 1 in normal operation; its stdout lists the
 // crashed services. Any other exit is a probe problem, not the backup's.
 func TestOpenRCExitCodes(t *testing.T) {
-	ex := probetest.Scripted{"rc-status --crashed": probe.ExecResult{ExitCode: 1}}
+	ex := probetest.Scripted{"rc-status --crashed": probe.ExecResult{ExitCode: 1}, "findmnt -n -o OPTIONS /": out("rw\n")}
 	if o := run(ex, config.Checks{}); o.Verdict != model.Proven {
 		t.Fatalf("exit 1, no output: %+v", o)
 	}
@@ -207,7 +210,7 @@ func (s settlingOpenRC) Exec(ctx context.Context, argv []string) (probe.ExecResu
 // rc-status --crashed was empty for ~15s, then listed the crashed service.
 func TestOpenRCWaitsForBoot(t *testing.T) {
 	var calls []string
-	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out("pbp-it-crash\n")}, delay: 50 * time.Millisecond, calls: &calls}
+	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out("pbp-it-crash\n"), "findmnt -n -o OPTIONS /": out("rw\n")}, delay: 50 * time.Millisecond, calls: &calls}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	o := probe.Run(ctx, ex, probe.Input{OS: probe.Linux, OSType: "alpine", Checks: config.Checks{CommandTimeout: 10 * time.Millisecond}})
@@ -224,7 +227,7 @@ func TestOpenRCWaitsForBoot(t *testing.T) {
 // OpenRC that never finishes booting before the probe deadline is ERROR
 // ("guest still starting"), never PROVEN.
 func TestOpenRCNeverSettles(t *testing.T) {
-	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out("")}, hang: true}
+	ex := settlingOpenRC{Scripted: probetest.Scripted{"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n")}, hang: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	o := probe.Run(ctx, ex, probe.Input{OS: probe.Linux, OSType: "alpine"})
@@ -250,8 +253,8 @@ func TestOpenRCByContainerOSType(t *testing.T) {
 	for _, ostype := range []string{"alpine", "gentoo"} {
 		var calls []string
 		ex := recordingExec{probetest.Scripted{
-			"rc-status --crashed": out(""),
-			sysState:              out("running\n"), // must not be consulted
+			"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n"),
+			sysState: out("running\n"), // must not be consulted
 		}, &calls}
 		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: ostype})
 		if o.Verdict != model.Proven {
@@ -269,7 +272,7 @@ func TestOpenRCByContainerOSType(t *testing.T) {
 // OpenRC path (that fallback is for VMs, whose init PBP cannot know).
 func TestContainerWithoutSystemctl(t *testing.T) {
 	var calls []string
-	ex := recordingExec{probetest.Scripted{"rc-status --crashed": out("")}, &calls}
+	ex := recordingExec{probetest.Scripted{"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n")}, &calls}
 	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: "debian"})
 	if o.Verdict != model.Booted || o.Reason != "init answering, service state unknown" {
 		t.Fatalf("got %+v", o)
@@ -280,7 +283,7 @@ func TestContainerWithoutSystemctl(t *testing.T) {
 }
 
 func TestUnexpectedSystemState(t *testing.T) {
-	for _, s := range []string{"initializing", "unknown", ""} {
+	for _, s := range []string{"unknown", ""} {
 		ex := healthy()
 		ex[sysState] = out(s + "\n")
 		o := run(ex, config.Checks{})
@@ -488,6 +491,72 @@ func TestBootNotSettledNamesPendingJobs(t *testing.T) {
 	}
 }
 
+// systemd older than 240 (RHEL/CentOS 7, Ubuntu 18.04) has no `--wait`
+// for is-system-running: it exits 1 with "unrecognized option". PBP then
+// polls the state instead of failing the guest on an empty state (code
+// review I12).
+func TestOldSystemdWithoutWait(t *testing.T) {
+	refused := probe.ExecResult{ExitCode: 1, Stderr: "systemctl: unrecognized option '--wait'\n"}
+	ex := healthy()
+	ex[sysState] = refused
+	ex[sysStateNow] = out("running\n")
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, SettleTimeout: time.Second})
+	if o.Verdict != model.Proven {
+		t.Fatalf("old systemd, running: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+
+	ex = healthy()
+	ex[sysState] = refused
+	ex[sysStateNow] = out("starting\n")
+	o = probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, SettleTimeout: 100 * time.Millisecond})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("old systemd, never settles: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// stateSeq answers one command with each result in turn, repeating the
+// last; other commands come from the script.
+type stateSeq struct {
+	probetest.Scripted
+	cmd   string
+	res   []probe.ExecResult
+	calls *int
+}
+
+func (s stateSeq) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if strings.Join(argv, " ") != s.cmd {
+		return s.Scripted.Exec(ctx, argv)
+	}
+	i := min(*s.calls, len(s.res)-1)
+	*s.calls++
+	return s.res[i], nil
+}
+
+// systemd 232-239 accept --wait but ignore it, answering "starting" at once:
+// that is polled like an old systemd that refuses --wait, not FAILED.
+func TestSystemdIgnoresWait(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = probe.ExecResult{ExitCode: 1, Stdout: "starting\n"}
+	calls := 0
+	seq := stateSeq{ex, sysStateNow, []probe.ExecResult{{ExitCode: 1, Stdout: "starting\n"}, out("running\n")}, &calls}
+	o := probe.Run(context.Background(), seq, probe.Input{OS: probe.Linux, SettleTimeout: 5 * time.Second})
+	if o.Verdict != model.Proven || calls != 2 {
+		t.Fatalf("got %v %q after %d polls, want PROVEN after 2", o.Verdict, o.Reason, calls)
+	}
+}
+
+// A poll that times out while the guest is busy booting counts as still
+// starting, not as a failed check.
+func TestOldSystemdPollTimesOut(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = probe.ExecResult{ExitCode: 1, Stderr: "systemctl: unrecognized option '--wait'\n"}
+	o := probe.Run(context.Background(), hanging(ex, sysStateNow),
+		probe.Input{OS: probe.Linux, SettleTimeout: 100 * time.Millisecond, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("got %v %q, want ERROR guest still starting", o.Verdict, o.Reason)
+	}
+}
+
 // A guest that is still starting is ERROR even when no probe deadline was
 // set: the settle wait has its own default bound.
 func TestBootSettleWithoutProbeDeadline(t *testing.T) {
@@ -513,10 +582,11 @@ func TestBootSettleCancelled(t *testing.T) {
 func TestBaseCommandTimesOut(t *testing.T) {
 	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
 	for cmd, name := range map[string]string{
-		findmnt:  "root filesystem",
-		failedC:  "failed units",
-		enabledC: "enabled units",
-		ssC:      "nginx:ports:80,443",
+		findmnt:      "root filesystem",
+		failedC:      "failed units",
+		enabledC:     "enabled units",
+		ssC:          "nginx:ports:80,443",
+		autoRestartC: "crash-looping services",
 	} {
 		o := probe.Run(context.Background(), hanging(healthy(), cmd), probe.Input{OS: probe.Linux, Checks: ck})
 		if o.Verdict != model.Failed || o.Reason != "check timed out: "+name {
@@ -650,5 +720,179 @@ func TestBootLogOnlyFromSuccessfulJournalctl(t *testing.T) {
 		if o := run(ex, config.Checks{}); o.Verdict != model.Failed || o.BootLog != tc.want {
 			t.Errorf("%s: got %v bootlog %q", name, o.Verdict, o.BootLog)
 		}
+	}
+}
+
+const (
+	procMounts = "cat /proc/self/mounts"
+	procTCP    = "cat /proc/net/tcp /proc/net/tcp6"
+)
+
+// Without findmnt (or when it fails), the root's options come from
+// /proc/self/mounts, so a read-only root is never silently missed (code
+// review I8). The last "/" line counts (an overmount).
+func TestRootReadOnlyWithoutFindmnt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mounts  string
+		verdict model.Verdict
+	}{
+		"ro":        {"sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 ro,relatime 0 0\n", model.Failed},
+		"rw":        {"/dev/sda1 / ext4 rw,relatime 0 0\nproc /proc proc rw 0 0\n", model.Proven},
+		"overmount": {"/dev/sda1 / ext4 ro 0 0\noverlay / overlay rw,lowerdir=x 0 0\n", model.Proven},
+	} {
+		ex := healthy()
+		delete(ex, findmnt) // missing: exit 127
+		ex[procMounts] = out(tc.mounts)
+		if o := run(ex, config.Checks{}); o.Verdict != tc.verdict {
+			t.Errorf("%s: got %v %q, want %v", name, o.Verdict, o.Reason, tc.verdict)
+		}
+	}
+	ex := healthy()
+	delete(ex, findmnt)
+	if o := run(ex, config.Checks{}); o.Verdict != model.Error {
+		t.Errorf("neither findmnt nor /proc/self/mounts: got %v %q, want ERROR", o.Verdict, o.Reason)
+	}
+}
+
+// Without ss, listening ports come from /proc/net/tcp and tcp6 (state 0A),
+// so a guest without ss is not FAILED on its port checks (code review I8).
+func TestListeningPortsWithoutSS(t *testing.T) {
+	tcp := "  sl  local_address rem_address   st tx_queue rx_queue\n" +
+		"   0: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0 0 1 1 0\n" +
+		"   1: 0100007F:1F90 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0 0 2 1 0\n" +
+		"  sl  local_address                         remote_address                        st\n" +
+		"   0: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0 0 3 1 0\n"
+	ex := healthy()
+	delete(ex, ssC)
+	ex[procTCP] = out(tcp)
+	o := run(ex, config.Checks{})
+	if o.Verdict != model.Proven {
+		t.Fatalf("got %v %q, want PROVEN (443 and 22 listen; 8080 only connected)", o.Verdict, o.Reason)
+	}
+	ex = healthy()
+	delete(ex, ssC)
+	if o := run(ex, config.Checks{}); o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "cannot list listening ports") {
+		t.Errorf("neither ss nor /proc/net/tcp: got %v %q, want ERROR", o.Verdict, o.Reason)
+	}
+}
+
+const autoRestartC = "systemctl list-units --type=service --state=auto-restart,auto-restart-queued --plain --no-legend --no-pager"
+
+func showRestarts(unit string) string { return "systemctl show -p Result -p NRestarts -- " + unit }
+
+// A service that keeps crashing under Restart=always never reaches
+// "failed": it sits in auto-restart. It counts as a failed unit, subject to
+// the ignore list, once it restarted after a failed run, after 3 clean
+// restarts, or when NRestarts is unknown (systemd < 235); one that restarted
+// once or twice after clean exits is not judged yet (code review I7).
+func TestCrashLoopingServiceFails(t *testing.T) {
+	ex := healthy()
+	ex[autoRestartC] = out("redis-server.service loaded activating auto-restart Advanced key-value store\n" +
+		"slow.service loaded activating auto-restart Slow\nclean.service loaded activating auto-restart Clean\n" +
+		"oneshot.service loaded activating auto-restart Oneshot\nold.service loaded activating auto-restart Old\n")
+	ex[showRestarts("redis-server.service")] = out("Result=exit-code\nNRestarts=17\n")
+	ex[showRestarts("slow.service")] = out("Result=exit-code\nNRestarts=1\n") // RestartSec=10: one crash so far
+	ex[showRestarts("clean.service")] = out("Result=success\nNRestarts=3\n")
+	ex[showRestarts("oneshot.service")] = out("Result=success\nNRestarts=1\n")
+	ex[showRestarts("old.service")] = out("Result=exit-code\n")
+	o := run(ex, config.Checks{})
+	want := "failed: redis-server.service, slow.service, clean.service, old.service"
+	if o.Verdict != model.Failed || o.Reason != want {
+		t.Fatalf("got %v %q, want FAILED %q", o.Verdict, o.Reason, want)
+	}
+	o = run(ex, config.Checks{IgnoreUnits: []string{"redis-server.service", "slow.service", "clean.service", "old.service"}})
+	if o.Verdict != model.Proven {
+		t.Errorf("ignored: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+}
+
+// A crash-loop check that cannot run is not skipped: a guest PBP could not
+// check for crash loops is not PROVEN.
+func TestCrashLoopCheckErrors(t *testing.T) {
+	ex := healthy()
+	ex[autoRestartC] = probe.ExecResult{ExitCode: 1}
+	if o := run(ex, config.Checks{}); o.Verdict != model.Failed || o.Reason != "probe error: systemctl list-units exited 1" {
+		t.Errorf("list exits 1: got %v %q", o.Verdict, o.Reason)
+	}
+	ex = healthy()
+	ex[autoRestartC] = out("a.service loaded activating auto-restart A\n")
+	o := probe.Run(context.Background(), hanging(ex, showRestarts("a.service")),
+		probe.Input{OS: probe.Linux, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+	if o.Verdict != model.Failed || o.Reason != "check timed out: crash-looping services" {
+		t.Errorf("show hangs: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+const rcIni = "rc-status --format ini"
+
+// alpine is an OpenRC container that has finished booting.
+func alpine(s probetest.Scripted) probe.Outcome {
+	return alpineChecks(s, config.Checks{})
+}
+
+func alpineChecks(s probetest.Scripted, ck config.Checks) probe.Outcome {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return probe.Run(ctx, settlingOpenRC{Scripted: s}, probe.Input{OS: probe.Linux, OSType: "alpine",
+		Guest: probe.GuestInfo{VMID: 101, Name: "alp"}, Checks: ck})
+}
+
+// The real `rc-status --format ini` output from an Alpine 3.24 container on
+// pve2: pbpbroken failed to start (stopped in its runlevel, not listed by
+// --crashed) and pbpdies crashed (code review I9).
+const alpineIni = "[default]\nnetworking =  started \npbpbroken =  stopped \npbpdies =  crashed \ncrond =  started \n" +
+	"[Dynamic hotplugged]\n[Dynamic needed/wanted]\nlocalmount =  started \n[Dynamic manual]\n"
+
+func TestOpenRCFailedToStart(t *testing.T) {
+	o := alpine(probetest.Scripted{rcIni: out(alpineIni), findmnt: out("rw,relatime\n")})
+	if o.Verdict != model.Failed || o.Reason != "failed: pbpbroken, pbpdies" {
+		t.Fatalf("got %v %q, want FAILED naming pbpbroken and pbpdies", o.Verdict, o.Reason)
+	}
+	// A stopped service outside the runlevel (a dynamic dependency) is not judged.
+	ini := "[default]\nsshd =  started \n[Dynamic needed/wanted]\nhwdrivers =  stopped \n"
+	if o := alpine(probetest.Scripted{rcIni: out(ini), findmnt: out("rw\n")}); o.Verdict != model.Proven {
+		t.Errorf("dynamic stopped: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+	// "failed" is a failure in any section; "scheduled" is not.
+	ini = "[default]\nsshd =  started \nqueued =  scheduled \n[Dynamic needed/wanted]\nnetmount =  failed \n"
+	if o := alpine(probetest.Scripted{rcIni: out(ini), findmnt: out("rw\n")}); o.Verdict != model.Failed || o.Reason != "failed: netmount" {
+		t.Errorf("failed state: got %v %q, want FAILED naming netmount", o.Verdict, o.Reason)
+	}
+}
+
+// An OpenRC too old for --format ini falls back to --crashed.
+func TestOpenRCWithoutIniFormat(t *testing.T) {
+	o := alpine(probetest.Scripted{
+		rcIni:                 {ExitCode: 1, Stderr: "rc-status: unrecognized option '--format'\n"},
+		"rc-status --crashed": out("pbpdies\n"),
+		findmnt:               out("rw\n"),
+	})
+	if o.Verdict != model.Failed || o.Reason != "failed: pbpdies" {
+		t.Fatalf("got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// OpenRC guests get the read-only-root check and the per-guest checks too;
+// a per-guest service is checked with rc-service (code review I9).
+func TestOpenRCRootAndGuestChecks(t *testing.T) {
+	healthyIni := "[default]\nsshd =  started \n"
+	o := alpine(probetest.Scripted{rcIni: out(healthyIni), procMounts: out("/dev/root / ext4 ro 0 0\n")})
+	if o.Verdict != model.Failed || o.Reason != "root filesystem read-only" {
+		t.Errorf("read-only root: got %v %q", o.Verdict, o.Reason)
+	}
+	ck := config.Checks{Guests: []config.GuestChecks{{Match: config.GuestMatch{VMID: 101},
+		CheckSet: config.CheckSet{Services: []string{"sshd", "nginx"}, Commands: []string{"test -f /etc/alpine-release"}}}}}
+	o = alpineChecks(probetest.Scripted{
+		rcIni:                               out(healthyIni),
+		findmnt:                             out("rw\n"),
+		"rc-service sshd status":            out(" * status: started\n"),
+		"rc-service nginx status":           {ExitCode: 3, Stdout: " * status: stopped\n"},
+		"sh -c test -f /etc/alpine-release": out(""),
+	}, ck)
+	if o.Verdict != model.Failed || o.Reason != "check failed: guest:services:nginx" {
+		t.Fatalf("per-guest checks: got %v %q, want nginx failed", o.Verdict, o.Reason)
+	}
+	if len(o.Checks) != 3 {
+		t.Errorf("checks = %+v, want sshd, nginx and the command", o.Checks)
 	}
 }

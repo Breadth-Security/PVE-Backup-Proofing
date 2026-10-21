@@ -256,7 +256,8 @@ func (lateTimeoutRunner) Run(ctx context.Context, cmd string, _ []byte) (sshx.Re
 }
 
 // Both timeout paths must give the probe guard its "command timed out"
-// verdict (a FAILED check), not a transport ERROR.
+// classification (for the Windows service query: "windows services check
+// timed out"), not a transport error.
 func TestProbeGuardClassifiesHelperTimeouts(t *testing.T) {
 	in := probe.Input{OS: probe.Windows, Checks: config.Checks{CommandTimeout: 30 * time.Millisecond}}
 	for name, r := range map[string]sshx.Runner{
@@ -264,7 +265,7 @@ func TestProbeGuardClassifiesHelperTimeouts(t *testing.T) {
 		"helper timeout mark": lateTimeoutRunner{},
 	} {
 		o := probe.Run(context.Background(), probeExec{sshx.Helper{R: r}, 5}, in)
-		if o.Verdict != model.Failed || o.Reason != "check timed out: windows services" {
+		if o.Verdict != model.Error || o.Reason != "windows services check timed out" {
 			t.Errorf("%s: got %v %q", name, o.Verdict, o.Reason)
 		}
 	}
