@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +134,11 @@ type app struct {
 	audit       auditLog
 	euid        func() int
 	templateDir string
+	// ownerOf returns the owner (uid and user name) of a path; a seam for
+	// the root refusal of daemon, run and check.
+	ownerOf func(path string) (uid int, name string, err error)
+	// inContainer reports whether PBP runs in a container (no sudo there).
+	inContainer func() bool
 
 	// pbp node setup and uninstall: whether stdin is a terminal, and every
 	// outside effect of the node setup library.
@@ -152,7 +160,7 @@ type app struct {
 func newApp(stdout, stderr io.Writer) *app {
 	return &app{stdout: stdout, stderr: stderr, now: time.Now, connect: connectReal,
 		stdin: os.Stdin, nodeSys: node.NewSystem(),
-		euid: os.Geteuid, templateDir: node.DefaultTemplateDir,
+		euid: os.Geteuid, templateDir: node.DefaultTemplateDir, ownerOf: ownerOf, inContainer: inContainer,
 		isTerminal:   func() bool { return nodesetup.IsTerminal(int(os.Stdin.Fd())) },
 		nodeSetupEnv: nodesetup.NewEnv(),
 		echoOff:      func() (func(), error) { return nodesetup.EchoOff(int(os.Stdin.Fd())) },
@@ -272,7 +280,6 @@ func (a *app) main(ctx context.Context, args []string) int {
 		fprintf(a.stderr, "pbp run: --guest must be a positive integer VMID\n%s", usage)
 		return exitUsage
 	}
-
 	path := config.ResolvePath(*cfgFlag)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -286,6 +293,17 @@ func (a *app) main(ctx context.Context, args []string) int {
 		}
 		return exitFail
 	}
+	if cmd != "health" {
+		// Loading the config only reads; this runs before the lock or
+		// any write.
+		if err := a.refuseRoot(args, path, cfg.Logging.Dir); err != nil {
+			fprintf(a.stderr, "pbp %s: %v\n", cmd, err)
+			if cmd == "daemon" {
+				return exitConfig
+			}
+			return exitFail
+		}
+	}
 	switch cmd {
 	case "daemon":
 		return a.daemon(ctx, cfg)
@@ -296,6 +314,87 @@ func (a *app) main(ctx context.Context, args []string) int {
 	default:
 		return a.health(cfg)
 	}
+}
+
+// refuseRoot stops daemon, run and check as root when the state directory
+// or the run-log directory belongs to another user (the service's, pbp
+// under the .deb). Everything they write there (state.json, the run lock,
+// run folders) would be root's, and the service could no longer read its
+// own state or prune its runs (issue #63). A root-only install, whose
+// directories are root's or not made yet, is not refused. args are the
+// command's own arguments, repeated in the suggested command with the
+// config path, since sudo drops PBP_CONFIG.
+func (a *app) refuseRoot(args []string, cfgPath, logDir string) error {
+	if a.euid == nil || a.euid() != 0 || a.ownerOf == nil {
+		return nil
+	}
+	for _, dir := range []string{daemon.StateDir(), logDir} {
+		uid, name, err := a.ownerOf(dir)
+		if errors.Is(err, fs.ErrNotExist) || (err == nil && uid == 0) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("as root: cannot check who owns %s: %w", dir, err)
+		}
+		way := "if PBP is meant to run as root, give the state and log directories to root first"
+		if a.inContainer != nil && a.inContainer() {
+			// No sudo in the image: the container's user is set by the
+			// image or a `user:` override in the compose file.
+			who := strconv.Itoa(uid)
+			if name != "" {
+				who = name + " (uid " + who + ")"
+			}
+			return fmt.Errorf("refusing to run as root: %s belongs to %s, and files root writes there would lock the service out of them; "+
+				"run the container as uid %d, the image's own user (remove any `user:` override in docker-compose.yml), or, %s",
+				dir, who, uid, way)
+		}
+		who := name
+		if who == "" {
+			who = "#" + strconv.Itoa(uid)
+		}
+		run := append([]string{"pbp"}, args...)
+		if !slices.ContainsFunc(args, func(a string) bool {
+			return a == "--config" || a == "-config" || strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-config=")
+		}) {
+			run = append(run, "--config", cfgPath)
+		}
+		if d := os.Getenv("PBP_STATE_DIR"); d != "" {
+			run = append([]string{"PBP_STATE_DIR=" + d}, run...)
+		}
+		return fmt.Errorf("refusing to run as root: %s belongs to %s, and files root writes there would lock the service out of them; "+
+			"run it as that user: sudo -u %s %s (or, %s)",
+			dir, who, who, strings.Join(run, " "), way)
+	}
+	return nil
+}
+
+// inContainer reports whether this process runs in a Docker or Podman
+// container, by the marker file each runtime creates.
+func inContainer() bool {
+	for _, p := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ownerOf returns the owner of path, with the user name when it resolves.
+func ownerOf(path string) (int, string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, "", err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, "", fmt.Errorf("no owner for %s", path)
+	}
+	uid := int(st.Uid)
+	name := ""
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		name = u.Username
+	}
+	return uid, name, nil
 }
 
 // guestValid reports whether --guest was left unset or given a positive VMID.

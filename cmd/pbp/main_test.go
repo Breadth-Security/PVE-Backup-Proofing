@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1070,5 +1071,137 @@ func TestDaemonStartRecoversInterruptedRun(t *testing.T) {
 	e.a.recoverAtStart(context.Background(), cfg)
 	if len(e.notif.sent) != 1 {
 		t.Errorf("second start sent %d notifications, want still 1", len(e.notif.sent))
+	}
+}
+
+// As root, the commands that write the state directory (daemon, run, check)
+// refuse when that directory belongs to another user, the service's: a
+// file root rewrote there would be root's, and the service could no longer
+// read its own state (issue #63). They write nothing first. A root-only
+// install (the state directory is root's, or does not exist yet) and the
+// read-only commands are not affected.
+func TestRootRefusedWhenStateBelongsToServiceUser(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owner int // uid of the state directory; -1: it does not exist
+		euid  int
+		cmd   string
+		want  int
+	}{
+		{"run as root state pbp", 1001, 0, "run", exitFail},
+		{"check as root state pbp", 1001, 0, "check", exitFail},
+		{"daemon as root state pbp", 1001, 0, "daemon", exitConfig},
+		{"health as root is read-only", 1001, 0, "health", -1},
+		{"run as pbp", 1001, 1001, "run", -1},
+		{"run as root root-only install", 0, 0, "run", -1},
+		{"run as root no state yet", -1, 0, "run", -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			dir := daemon.StateDir()
+			if tc.owner >= 0 {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.a.euid = func() int { return tc.euid }
+			e.a.ownerOf = func(p string) (int, string, error) {
+				if p != dir {
+					return 0, "root", nil // the log directory: root's
+				}
+				if tc.owner < 0 {
+					return 0, "", fs.ErrNotExist
+				}
+				return tc.owner, map[int]string{0: "root", 1001: "pbp"}[tc.owner], nil
+			}
+			if tc.cmd == "daemon" {
+				// Never reaches the scheduler when refused.
+				if got := e.run(tc.cmd); got != tc.want {
+					t.Fatalf("exit %d, want %d; stderr %q", got, tc.want, e.errOut.String())
+				}
+				return
+			}
+			got := e.run(tc.cmd)
+			if tc.want < 0 {
+				if strings.Contains(e.errOut.String(), "as root") {
+					t.Errorf("refused: %q", e.errOut.String())
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("exit %d, want %d; stderr %q", got, tc.want, e.errOut.String())
+			}
+			msg := e.errOut.String()
+			if !strings.Contains(msg, "as root") || !strings.Contains(msg, "sudo -u pbp PBP_STATE_DIR="+dir+" pbp "+tc.cmd+" --config "+e.cfgPath) {
+				t.Errorf("message %q does not say how to run it", msg)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Errorf("wrote %v in the state directory before refusing", entries)
+			}
+		})
+	}
+}
+
+// The run-log directory counts too, the suggested command keeps the
+// user's own arguments, and the real owner lookup reads the directory's
+// uid (issue #63).
+func TestRootRefusalDetails(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.logDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	e.a.euid = func() int { return 0 }
+	e.a.ownerOf = func(p string) (int, string, error) {
+		if p == e.logDir {
+			return 1001, "", nil // no name: shown as #uid
+		}
+		return 0, "", fs.ErrNotExist
+	}
+	if got := e.run("run", "--guest", "105"); got != exitFail {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	msg := e.errOut.String()
+	for _, want := range []string{e.logDir + " belongs to #1001", "sudo -u #1001 PBP_STATE_DIR=" + daemon.StateDir() + " pbp run --guest 105 --config " + e.cfgPath, "give the state and log directories to root"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
+	}
+	e.a.ownerOf = func(string) (int, string, error) { return 0, "", errors.New("boom") }
+	if got := e.run("check"); got != exitFail || !strings.Contains(e.errOut.String(), "cannot check who owns") {
+		t.Errorf("stat error: exit %d, %q", got, e.errOut.String())
+	}
+
+	uid, _, err := ownerOf(t.TempDir())
+	if err != nil || uid != os.Getuid() {
+		t.Errorf("ownerOf: uid %d err %v, want %d", uid, err, os.Getuid())
+	}
+	if _, _, err := ownerOf(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ownerOf missing: %v", err)
+	}
+}
+
+// In a container there is no sudo: the message says to run the container
+// as the directory's owner (the image's own user) instead (issue #63).
+func TestRootRefusalInContainer(t *testing.T) {
+	e := newEnv(t)
+	e.a.euid = func() int { return 0 }
+	e.a.inContainer = func() bool { return true }
+	e.a.ownerOf = func(p string) (int, string, error) {
+		if p == daemon.StateDir() {
+			return 65532, "nonroot", nil
+		}
+		return 0, "", fs.ErrNotExist
+	}
+	if got := e.run("daemon"); got != exitConfig {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	msg := e.errOut.String()
+	if strings.Contains(msg, "sudo") {
+		t.Errorf("suggests sudo in a container: %q", msg)
+	}
+	for _, want := range []string{"belongs to nonroot (uid 65532)", "run the container as uid 65532", "user:", "give the state and log directories to root"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
 	}
 }
