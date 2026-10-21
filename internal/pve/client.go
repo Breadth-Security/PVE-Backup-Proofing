@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
@@ -26,12 +28,27 @@ const (
 	taskLogTail      = 20
 	defaultPollEvery = 2 * time.Second
 	// maxPollRetries is how many consecutive transient failures polling a
-	// task's status WaitTask retries before giving up.
-	maxPollRetries = 5
+	// task's status WaitTask retries before giving up: with the backoff
+	// below about two minutes, long enough for a pveproxy or pvedaemon
+	// restart (code review 4.5).
+	maxPollRetries = 8
+	// maxErrorMessage bounds the server text kept in an APIError (4.9).
+	maxErrorMessage = 1 << 10
 )
 
-// defaultRetryBackoff waits 1s, 2s, 4s, 8s, 16s before retry n (1-based).
-func defaultRetryBackoff(n int) time.Duration { return time.Second << (n - 1) }
+// defaultRetryBackoff waits 1s, 2s, 4s, 8s, 16s, then 30s, before retry n
+// (1-based).
+func defaultRetryBackoff(n int) time.Duration {
+	if n > 5 {
+		return 30 * time.Second
+	}
+	return time.Second << (n - 1)
+}
+
+// errNoTaskStatus: a task status reply without a status. It counts as a
+// failed poll, so an unexpected reply cannot keep WaitTask polling forever
+// (code review 4.4).
+var errNoTaskStatus = errors.New("task status reply has no status")
 
 // Client talks to one PVE node/cluster endpoint using an API token.
 type Client struct {
@@ -135,7 +152,18 @@ func New(cfg config.API) (*Client, error) {
 	base := strings.TrimRight(cfg.URL, "/")
 	base = strings.TrimSuffix(base, apiSuffix) + apiSuffix
 	return &Client{
-		http:         &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Minute},
+		http: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsCfg,
+				// An unreachable node fails in seconds, not after the
+				// 5-minute request timeout (code review 4.7).
+				DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+			},
+			Timeout: 5 * time.Minute,
+			// PVE does not redirect; never resend the token elsewhere.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		base:         base,
 		auth:         "PVEAPIToken=" + cfg.TokenID + "=" + strings.TrimSpace(string(secret)),
 		pollInterval: defaultPollEvery,
@@ -220,6 +248,13 @@ func errorMessage(resp *http.Response, raw []byte) string {
 	for _, k := range keys {
 		msg += fmt.Sprintf("; %s: %s", k, b.Errors[k])
 	}
+	if len(msg) > maxErrorMessage {
+		cut := maxErrorMessage
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "…"
+	}
 	return msg
 }
 
@@ -247,7 +282,11 @@ func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
 			ExitStatus string `json:"exitstatus"`
 		}
 		wait := c.pollInterval
-		if err := c.do(ctx, http.MethodGet, base+"/status", nil, nil, &st); err != nil {
+		err := c.do(ctx, http.MethodGet, base+"/status", nil, nil, &st)
+		if err == nil && st.Status == "" {
+			err = errNoTaskStatus
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

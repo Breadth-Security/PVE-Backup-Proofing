@@ -49,6 +49,11 @@ const noDeadline = 24 * time.Hour
 // noDeadline when ctx has no deadline, and at least 1ms (the helper then
 // reports a timeout) so an expiring ctx still makes a valid request. The
 // helper caps it at its own request_timeout.
+//
+// It is computed before Run (re)connects, so a reconnect (up to dialTimeout)
+// is spent before the helper's clock starts and the helper may run that
+// much past the caller's deadline; the caller still returns on time, and
+// the helper still bounds itself (code review 4.8).
 func remaining(ctx context.Context) time.Duration {
 	d := noDeadline
 	if dl, ok := ctx.Deadline(); ok {

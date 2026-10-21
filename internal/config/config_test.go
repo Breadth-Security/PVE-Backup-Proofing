@@ -47,7 +47,7 @@ target:
   node: pve1
   bridge: vmbr-pbp
   vmid_range: [990000, 990049]
-  api: {tls_fingerprint: "AB"}
+  api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
   ssh: {known_hosts_file: /kh}
 sources: {storages: [pbs-main]}
 restore: {storage: local-zfs}
@@ -100,7 +100,9 @@ func TestValidateErrors(t *testing.T) {
 		{"cron", `"0 2 * * *"`, `"nope"`, "schedule"},
 		{"cron never fires", `"0 2 * * *"`, `"0 0 30 2 *"`, "schedule"},
 		{"notify", "sources:", "notify: {when: sometimes}\nsources:", "notify.when"},
-		{"tls", `api: {tls_fingerprint: "AB"}`, "api: {}", "target.api.tls_fingerprint"},
+		{"tls", `api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}`, "api: {}", "target.api.tls_fingerprint"},
+		{"tls short", `api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}`, `api: {tls_fingerprint: "sha256:AB"}`, "target.api.tls_fingerprint"},
+		{"tls and ca", `api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}`, `api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89", ca_file: /ca.pem}`, "target.api.ca_file"},
 		{"known hosts", "known_hosts_file: /kh", "known_hosts_file: ''", "target.ssh.known_hosts_file"},
 		{"boot timeout short", RS, "restore: {storage: local-zfs, boot_timeout: 29s}", "restore.boot_timeout"},
 		{"boot timeout unitless", RS, "restore: {storage: local-zfs, boot_timeout: 300}", "restore.boot_timeout"},
@@ -290,7 +292,7 @@ func TestVMIDRangeTop(t *testing.T) {
 }
 
 func TestPendingSetupHint(t *testing.T) {
-	s := strings.Replace(strings.Replace(minimal, "node: pve1", "node: ''", 1), `api: {tls_fingerprint: "AB"}`, "api: {}", 1)
+	s := strings.Replace(strings.Replace(minimal, "node: pve1", "node: ''", 1), `api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}`, "api: {}", 1)
 	_, err := loadStr(t, s)
 	for _, want := range []string{
 		"target.node: required (run pbp setup to finish)",

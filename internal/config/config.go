@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -112,6 +113,9 @@ type Logging struct {
 	Dir        string `yaml:"dir"`
 	RetainRuns int    `yaml:"retain_runs"`
 }
+
+// reFingerprint is a SHA-256 certificate fingerprint without separators.
+var reFingerprint = regexp.MustCompile(`^[0-9A-Fa-f]{64}$`)
 
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
@@ -219,8 +223,15 @@ func (c Config) validate() error {
 	if err := ValidateVMIDRange(t.VMIDRange[0], t.VMIDRange[1]); err != nil {
 		bad("target.vmid_range", "%v", err)
 	}
-	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
+	switch {
+	case t.API.TLSFingerprint == "" && t.API.CAFile == "":
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported; run pbp setup to finish)")
+	case t.API.TLSFingerprint != "" && t.API.CAFile != "":
+		// The pin would win and the CA file be ignored, while its owner
+		// believes it in force (code review 4.6).
+		bad("target.api.ca_file", "set tls_fingerprint or ca_file, not both")
+	case t.API.TLSFingerprint != "" && !reFingerprint.MatchString(strings.NewReplacer(":", "", " ", "").Replace(t.API.TLSFingerprint)):
+		bad("target.api.tls_fingerprint", "%q is not a SHA-256 fingerprint (64 hex digits, colons allowed)", t.API.TLSFingerprint)
 	}
 	if t.SSH.User == "root" {
 		bad("target.ssh.user", `root is not allowed: PBP connects as the restricted pbp user (see docs/setup.md)`)

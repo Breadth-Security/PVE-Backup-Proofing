@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 )
@@ -346,7 +347,7 @@ func TestWaitTaskRetriesTransientErrors(t *testing.T) {
 	}
 }
 
-func TestWaitTaskGivesUpAfterFiveRetries(t *testing.T) {
+func TestWaitTaskGivesUpAfterEightRetries(t *testing.T) {
 	var polls int
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		polls++
@@ -358,8 +359,8 @@ func TestWaitTaskGivesUpAfterFiveRetries(t *testing.T) {
 	if !errors.As(err, &ae) || ae.Status != 500 {
 		t.Fatalf("err = %v", err)
 	}
-	if polls != 6 {
-		t.Errorf("polls = %d, want 6 (first try + 5 retries)", polls)
+	if polls != 9 {
+		t.Errorf("polls = %d, want 9 (first try + 8 retries)", polls)
 	}
 }
 
@@ -416,5 +417,58 @@ func TestPermissionDenied(t *testing.T) {
 		if got := PermissionDenied(err); got != want {
 			t.Errorf("%v: got %v, want %v", err, got, want)
 		}
+	}
+}
+
+// The default backoff rides out about two minutes of failed polls, each wait
+// at most 30s (code review 4.5).
+func TestDefaultRetryBackoff(t *testing.T) {
+	var total time.Duration
+	for n := 1; n <= maxPollRetries; n++ {
+		d := defaultRetryBackoff(n)
+		if d > 30*time.Second {
+			t.Errorf("retry %d waits %v", n, d)
+		}
+		total += d
+	}
+	if total < 2*time.Minute {
+		t.Errorf("total backoff %v, want at least 2m", total)
+	}
+}
+
+// A status reply without a status is a failed poll, not "still running":
+// WaitTask gives up after the retries instead of polling forever (4.4).
+func TestWaitTaskEmptyStatusIsAnError(t *testing.T) {
+	var polls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		_, _ = w.Write([]byte(`{"data":null}`))
+	}))
+	c.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	if err := c.WaitTask(context.Background(), "pve1", "UPID:pve1:4:"); !errors.Is(err, errNoTaskStatus) {
+		t.Fatalf("err = %v", err)
+	}
+	if polls != maxPollRetries+1 {
+		t.Errorf("polls = %d", polls)
+	}
+}
+
+// A long error body is cut to 1 KiB (4.9); redirects are not followed (4.7).
+func TestErrorMessageCappedAndNoRedirect(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/version" {
+			http.Redirect(w, r, "https://example.invalid/steal", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("é", 4000) + `"}`))
+	}))
+	if _, err := c.Version(context.Background()); err == nil {
+		t.Error("redirect followed or accepted")
+	}
+	_, err := c.StorageStatus(context.Background(), "pve1", "x")
+	var ae *APIError
+	if !errors.As(err, &ae) || len(ae.Message) > maxErrorMessage+len("…") || !utf8.ValidString(ae.Message) {
+		t.Errorf("message %d bytes, valid %v", len(ae.Message), utf8.ValidString(ae.Message))
 	}
 }

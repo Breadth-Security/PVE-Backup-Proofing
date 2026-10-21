@@ -90,7 +90,7 @@ target:
   node: pve1
   bridge: vmbr-pbp
   vmid_range: [990000, 990049]
-  api: {tls_fingerprint: "AB"}
+  api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
   ssh: {known_hosts_file: /kh}
 sources: {storages: [pbs]}
 restore: {storage: local-zfs}
