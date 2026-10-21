@@ -78,6 +78,8 @@ Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token
 - **Independence from node maintenance and failure.** Upgrades and reboots of the node do not interrupt it, and losing a node does not take PBP's config and state with it: a tool whose job is proving your disaster recovery should not depend on the machine it is checking.
 - **Independence from the cluster.** In a cluster, another node of the same cluster is not separate enough: it shares the cluster's health, network and maintenance. Run PBP outside it.
 
+**The proof copies can leave production too.** Where PBP runs is one choice; where it restores and boots the copies is another. By default that is a production node. With a [dedicated proofing node](dedicated-node.md) (a separate Proxmox host, ideally the standby hardware your disaster recovery plan would use), the copies never run on production hardware, and production nodes need no PBP helper, API token or bridge at all. That node's PBS storage must use the backups' owner credentials; see [Connecting the proofing node to PBS](dedicated-node.md#connecting-the-proofing-node-to-pbs).
+
 ## What setup never touches
 
 `pbp setup` and `pbp node setup` never create the bridge or reload networking, never touch root's `authorized_keys`, `/etc/ssh/sshd_config` or any guest, and never replace a file they did not write without `--replace` (which backs the old file up first). Both run only as root in an interactive terminal; the node side refuses to run from an SSH forced command or through the `pbp` account's sudo rule, so a stolen PBP key cannot reach them.

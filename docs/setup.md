@@ -5,7 +5,7 @@ Two guided commands set PBP up: `pbp setup` on the host that runs PBP, and `pbp 
 - **PBP on its own host** (recommended for production): two shells, one on the PBP host and a root shell on the node. Follow steps 1 to 6 below.
 - **PBP on the Proxmox node itself** (a single-node lab or a trial): one shell. Do steps 1 and 2, then see [PBP on the Proxmox node itself](#pbp-on-the-proxmox-node-itself).
 
-For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs: [Where to run PBP](security.md#where-to-run-pbp) explains why.
+For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs: [Where to run PBP](security.md#where-to-run-pbp) explains why. To restore and boot the proof copies on a separate Proxmox host as well (a standby or spare instead of a production node), the same steps apply to that host; [Proofing on a dedicated node](dedicated-node.md) covers what it needs first, above all its PBS credentials.
 
 Before you start, get PBP onto the PBP host: a checkout of this repository (Docker), or the `.deb` package ([Install from the .deb](install-deb.md)). If you would rather do everything by hand, or want to see exactly what the two commands change, see [Manual setup](manual-setup.md); the guided commands produce that same end state. Why the setup looks the way it does is in [Security model](security.md).
 
