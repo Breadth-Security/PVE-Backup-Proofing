@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -508,5 +509,40 @@ func TestSendFitsHelperLimit(t *testing.T) {
 	}
 	if last := failed[len(failed)-1].(string); !strings.HasPrefix(last, "… and ") || !strings.HasSuffix(last, " more; see the run log") {
 		t.Errorf("last line %q", last)
+	}
+}
+
+// The node helper accepts only DataKeys in a notify payload: TemplateData
+// must use exactly those (code review 2.4).
+func TestTemplateDataKeysAreDataKeys(t *testing.T) {
+	got := slices.Sorted(maps.Keys(TemplateData(failedSummary(), "pve1")))
+	want := slices.Sorted(slices.Values(DataKeys))
+	if !slices.Equal(got, want) {
+		t.Errorf("TemplateData keys %q, DataKeys %q", got, want)
+	}
+}
+
+// Even PBP's own text cannot push the notification over the helper's limit:
+// a huge run error leaves the essentials (#48 review).
+func TestSendFitsWithHugeRunError(t *testing.T) {
+	var gotIn []byte
+	n, _ := notifier("pve1", func(_ nodeproto.Request, stdin []byte) (sshx.Result, error) {
+		gotIn = stdin
+		return sshx.Result{}, nil
+	})
+	s := failedSummary()
+	s.RunError = strings.Repeat("x", 2<<20)
+	if err := n.Send(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotIn) > 1<<20 {
+		t.Fatalf("payload %d bytes", len(gotIn))
+	}
+	var in struct{ Data map[string]any }
+	if err := json.Unmarshal(gotIn, &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Data["headline"] == "" || !strings.HasSuffix(in.Data["run-error"].(string), "…") {
+		t.Errorf("essentials missing: %v", in.Data["headline"])
 	}
 }

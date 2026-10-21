@@ -1246,3 +1246,42 @@ func TestRunNotifiesWhenStateCannotOpen(t *testing.T) {
 		t.Errorf("sent = %+v", e.notif.sent)
 	}
 }
+
+// An exec is audited with its command name, argument count, exit code and
+// time taken, never its arguments (code review 2.5).
+func TestNodeExecAudit(t *testing.T) {
+	e, au := nodeEnv(t)
+	e.a.nodeSys = exitSys{exit: 3}
+	req := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"cat", "/etc/ssl/private/hunter2.key"}, Timeout: time.Minute, Nonce: nodeproto.NewNonce()}
+	enc, err := nodeproto.Encode(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 3 {
+		t.Fatalf("exit %d, stderr %q", code, e.errOut)
+	}
+	line := formatAudit(au.got[len(au.got)-1])
+	for _, want := range []string{`cmd="cat" argc=2`, "exit=3", "elapsed="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("audit %q lacks %q", line, want)
+		}
+	}
+	if strings.Contains(line, "hunter2") {
+		t.Errorf("audit leaks an argument: %q", line)
+	}
+}
+
+// exitSys runs every exec as a command exiting with exit.
+type exitSys struct {
+	stubSys
+	exit int
+}
+
+func (s exitSys) CTConfig(context.Context, int) (map[string]string, error) {
+	return map[string]string{"tags": "pbp"}, nil
+}
+
+func (s exitSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return s.exit, nil
+}

@@ -503,7 +503,7 @@ func TestExecInRange(t *testing.T) {
 
 func TestNotify(t *testing.T) {
 	h := helper(t)
-	payload := []byte(`{"severity":"warning","data":{"total":3},"fields":{"type":"other","guest":"web"}}`)
+	payload := []byte(`{"severity":"warning","data":{"headline":"3 failed"},"fields":{"type":"other","hostname":"web"}}`)
 	if err := h.Notify(ctxT(t, 30*time.Second), payload); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -520,14 +520,20 @@ func TestNotify(t *testing.T) {
 	}
 	var got struct {
 		Severity string            `json:"severity"`
-		Data     map[string]int    `json:"data"`
+		Data     map[string]string `json:"data"`
 		Fields   map[string]string `json:"fields"`
 	}
 	if err := json.Unmarshal([]byte(stdin), &got); err != nil {
 		t.Fatalf("perl stdin %q: %v", stdin, err)
 	}
-	if got.Severity != "warning" || got.Data["total"] != 3 || got.Fields["type"] != "pbp" || got.Fields["guest"] != "web" {
+	if got.Severity != "warning" || got.Data["headline"] != "3 failed" || got.Fields["type"] != "pbp" || got.Fields["hostname"] != "web" {
 		t.Errorf("perl stdin = %+v, want the payload with fields.type forced to pbp", got)
+	}
+	// A field PBP never sends is refused: a stolen key cannot shape what
+	// notification matchers key on (code review 2.4).
+	bad := []byte(`{"severity":"warning","data":{},"fields":{"guest":"web"}}`)
+	if err := h.Notify(ctxT(t, 30*time.Second), bad); err == nil {
+		t.Error("notify with an unknown field accepted")
 	}
 }
 

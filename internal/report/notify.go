@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
@@ -64,6 +65,30 @@ func shortened(data map[string]any, keep int) map[string]any {
 	return out
 }
 
+// essentials keeps the headline, summary, log path and node of data, a run
+// error cut to 4 KiB, and empty lists whose place says to read the run log.
+func essentials(data map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"node", "run-id", "headline", "summary", "logs"} {
+		out[k] = data[k]
+	}
+	re, _ := data["run-error"].(string)
+	if len(re) > 4096 {
+		cut := 4096
+		for cut > 0 && !utf8.RuneStart(re[cut]) {
+			cut--
+		}
+		re = re[:cut] + "…"
+	}
+	out["run-error"] = re
+	for _, k := range listKeys {
+		out[k] = []string{}
+	}
+	out["environment-errors"] = []string{"the details are too long for a notification; see the run log"}
+	out["proven"] = ""
+	return out
+}
+
 // CheckTemplates compares the templates installed on the node (their sha256,
 // as the helper reports them) with the embedded ones. It writes nothing: a
 // missing or different template is an error naming each such file and how
@@ -115,6 +140,20 @@ func (p *PVENotifier) Send(ctx context.Context, s model.RunSummary) error {
 		}
 		if len(payload) <= maxPayload {
 			break
+		}
+	}
+	if len(payload) > maxPayload {
+		// Still too big (PBP's own lines: a huge run error or many
+		// environment errors): send the essentials, which always fit, so
+		// the run is never silent (#48 review).
+		var err error
+		payload, err = json.Marshal(map[string]any{
+			"severity": s.Severity(),
+			"data":     essentials(data),
+			"fields":   map[string]string{"type": "pbp", "hostname": p.Node},
+		})
+		if err != nil {
+			return fmt.Errorf("report: encode notification: %w", err)
 		}
 	}
 	if err := p.Helper.Notify(ctx, payload); err != nil {
