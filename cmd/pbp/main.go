@@ -327,6 +327,7 @@ func (a *app) daemon(ctx context.Context, cfg config.Config) int {
 	if err := writeStarted(startedPath(), a.now()); err != nil {
 		slog.Error("record daemon start", "err", err)
 	}
+	a.recoverAtStart(ctx, cfg)
 	err := daemon.Serve(ctx, cfg, func(ctx context.Context, stop <-chan struct{}, trigger string) {
 		a.runOnce(ctx, cfg, run.Options{Trigger: trigger, Stop: stop})
 	})
@@ -378,6 +379,38 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 		return exitFail
 	}
 	return exitOK
+}
+
+// recoverAtStart, holding the run lock, marks a run that PBP's death
+// interrupted and cleans up jobs it left in flight (run.Recover). It
+// connects to the node only when there is something to recover; a busy lock
+// (a manual run) skips it, as that run's own start does the same.
+func (a *app) recoverAtStart(ctx context.Context, cfg config.Config) {
+	release, err := daemon.AcquireLock(daemon.LockPath())
+	if err != nil {
+		slog.Warn("startup recovery skipped", "err", err)
+		return
+	}
+	defer release()
+	store, err := state.Open(statePath())
+	if err != nil {
+		slog.Error("startup recovery: open state", "err", err)
+		return
+	}
+	snap := store.Snapshot()
+	if len(snap.InFlight) == 0 && !slices.ContainsFunc(snap.Runs, func(r state.RunRecord) bool { return r.Outcome == state.OutcomeRunning }) {
+		return
+	}
+	w := a.connect(cfg)
+	defer w.close()
+	d := run.Deps{Cfg: cfg, Store: store, Log: slog.Default(), Now: a.now}
+	if w.apiErr == nil {
+		d.API, d.Target = w.api, w.target
+	}
+	if w.sshErr == nil {
+		d.Notifier = w.notifier
+	}
+	run.Recover(ctx, d)
 }
 
 // runOnce performs one run with real wiring. The caller holds the run lock.

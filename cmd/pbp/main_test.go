@@ -1040,3 +1040,35 @@ func TestDaemonConfigErrorExit(t *testing.T) {
 		t.Errorf("pbp.service does not prevent restarts on exit %d", exitConfig)
 	}
 }
+
+// At start the daemon recovers from a run that PBP's death interrupted: the
+// record left "running" becomes an error (health reports it) and a
+// notification says the run was interrupted (code review I4).
+func TestDaemonStartRecoversInterruptedRun(t *testing.T) {
+	e := newEnv(t)
+	store, err := state.Open(statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRun(state.RunRecord{ID: "r-killed", Trigger: "schedule", Outcome: state.OutcomeRunning, Started: fixedNow.Add(-time.Hour)}, 30); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e.a.recoverAtStart(context.Background(), cfg)
+
+	if runs := e.runs(); len(runs) != 1 || runs[0].Outcome != state.OutcomeError {
+		t.Errorf("runs = %+v, want r-killed marked error", runs)
+	}
+	if len(e.notif.sent) != 1 || e.notif.sent[0].ID != "r-killed" {
+		t.Errorf("notifications = %+v", e.notif.sent)
+	}
+	// Nothing left to recover: a second start connects to nothing and sends nothing.
+	e.a.recoverAtStart(context.Background(), cfg)
+	if len(e.notif.sent) != 1 {
+		t.Errorf("second start sent %d notifications, want still 1", len(e.notif.sent))
+	}
+}

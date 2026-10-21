@@ -84,6 +84,13 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 
 	var runErrs []string
 	var envErrs []string
+	// This run holds the lock, so a run still recorded as running was
+	// interrupted, e.g. a killed manual run while the daemon kept going.
+	for _, r := range markInterrupted(d) {
+		msg := "previous run " + r.ID + " was interrupted (PBP stopped or crashed before it finished); the janitor cleans up its guests"
+		log.Warn(msg)
+		envErrs = append(envErrs, msg)
+	}
 	rec := state.RunRecord{ID: s.ID, Trigger: s.Trigger, Outcome: state.OutcomeRunning, Started: start}
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
 		log.Error("record run start", "err", err)
@@ -96,7 +103,7 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 				return nil, []string{"preflight: " + err.Error()}
 			}
 			log.Info("preflight ok (" + report.Dur(d.Now().Sub(t0)) + ")")
-			envErrs = strayTaggedErrors(ctx, d, log)
+			envErrs = append(envErrs, strayTaggedErrors(ctx, d, log)...)
 			return execute(ctx, d, opt, start, log)
 		})
 		s.Results = results
