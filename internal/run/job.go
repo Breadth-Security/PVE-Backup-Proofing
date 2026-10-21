@@ -238,7 +238,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	res.Verdict, res.Reason = out.Verdict, out.Reason
 	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits
 	res.NotCovered, res.Checks, res.BootLog = out.NotCovered, out.Checks, out.BootLog
-	j.logProbe(*res)
+	j.logProbe(*res, boot.OS)
 }
 
 // stepFailed logs that step failed after took and, for a failed PVE task,
@@ -275,8 +275,9 @@ func (j *job) logSanitized(s target.Sanitized) {
 	j.log.Info("not covered by the proof: " + strings.Join(pieces, ", "))
 }
 
-// logProbe logs what the probe found inside the guest.
-func (j *job) logProbe(r model.GuestResult) {
+// logProbe logs what the probe found inside the guest. Its extra log is
+// the boot journal for Linux, and why services stopped for Windows.
+func (j *job) logProbe(r model.GuestResult, os probe.OSFamily) {
 	if len(r.FailedUnits) > 0 {
 		j.log.Info("failed units: " + strings.Join(r.FailedUnits, ", "))
 	}
@@ -294,7 +295,11 @@ func (j *job) logProbe(r model.GuestResult) {
 		j.log.Info(n.LogLine())
 	}
 	if r.BootLog != "" {
-		j.log.Info("boot log:\n" + r.BootLog)
+		heading := "boot log:"
+		if os == probe.Windows {
+			heading = "service details:"
+		}
+		j.log.Info(heading + "\n" + r.BootLog)
 	}
 }
 

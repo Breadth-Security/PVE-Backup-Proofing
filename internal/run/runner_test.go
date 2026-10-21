@@ -17,6 +17,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe/probetest"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
@@ -1235,6 +1236,26 @@ func TestVerdictLineSingleWithMultilineReason(t *testing.T) {
 	}
 	if !strings.Contains(g, "got timeout: VM 990000 qga command failed") {
 		t.Errorf("verdict reason not on one line:\n%s", g)
+	}
+}
+
+// A Windows guest's stop reasons are logged under "service details:", not
+// "boot log:" (issue #44).
+func TestWindowsServiceDetailsHeading(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.tgt.Boot[990000] = target.BootInfo{OS: probe.Windows, OSName: "Microsoft Windows"}
+	f.tgt.Exec[990000] = probetest.Scripted{
+		"powershell.exe -NoProfile -NonInteractive -Command " + probe.WindowsServicesScript: {Stdout: "Spooler\t1077\t0\t\t\r\n"},
+	}
+	dir, _ := f.withRunLog(t)
+
+	f.run(context.Background(), Options{Trigger: "manual"})
+
+	g := readLog(t, dir, "VM101.log")
+	wantInOrder(t, "VM101.log", g, "failed units: Spooler", "service details:", "Spooler stopped: not started since boot (exit code 1077)")
+	if strings.Contains(g, "boot log:") {
+		t.Errorf("Windows details logged as a boot log:\n%s", g)
 	}
 }
 

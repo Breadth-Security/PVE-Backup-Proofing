@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,12 +73,12 @@ func TestDefaultsAndAbsence(t *testing.T) {
 	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) {
 		t.Fatal("absent ignore_units must default")
 	}
-	c, err = loadStr(t, strings.Replace(minimal, "restore: {storage: local-zfs}", "restore: {storage: local-zfs, boot_timeout: 90s}", 1)+"checks: {ignore_units: [], windows_ignore_services: [foo]}\n")
+	c, err = loadStr(t, strings.Replace(minimal, "restore: {storage: local-zfs}", "restore: {storage: local-zfs, boot_timeout: 90s}", 1)+"checks: {use_default_ignores: false, ignore_units: [], windows_ignore_services: [foo]}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(c.Checks.IgnoreUnits) != 0 || !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, []string{"foo"}) {
-		t.Fatalf("explicit lists must be exact: %+v", c.Checks)
+		t.Fatalf("with use_default_ignores: false the lists must be exact: %+v", c.Checks)
 	}
 	if c.Restore.BootTimeout != 90*time.Second {
 		t.Fatalf("duration: %v", c.Restore.BootTimeout)
@@ -326,5 +327,32 @@ func TestValidateVMIDRange(t *testing.T) {
 	}
 	if err := ValidateVMIDRange(99, 200); err == nil || err.Error() != "need 100 <= lo <= hi < 999999999, got [99, 200]" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Configured ignore lists add to the built-in ones (use_default_ignores,
+// default true), so a new built-in entry reaches configs that pbp setup
+// wrote with a full copy of the old list. Duplicates are dropped; Windows
+// names are compared ignoring case, as Windows does.
+func TestIgnoreListsAddToDefaults(t *testing.T) {
+	c, err := loadStr(t, minimal+"checks:\n  ignore_units: [myapp-sync.service, chronyd.service]\n  windows_ignore_services: [Bonjour Service, SPPSVC]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := append(DefaultIgnoreUnits(), "myapp-sync.service"); !reflect.DeepEqual(c.Checks.IgnoreUnits, want) {
+		t.Errorf("ignore_units = %q, want %q", c.Checks.IgnoreUnits, want)
+	}
+	if want := append(DefaultWindowsIgnore(), "Bonjour Service"); !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, want) {
+		t.Errorf("windows_ignore_services = %q, want %q", c.Checks.WindowsIgnoreServices, want)
+	}
+	// An old setup-written list (the 0.4.0 defaults, without WslInstaller)
+	// still gets WslInstaller.
+	old := "checks:\n  windows_ignore_services: [sppsvc, gupdate, edgeupdate, MapsBroker, RemoteRegistry, CDPSvc, tiledatamodelsvc, wuauserv, BITS, W32Time]\n"
+	if c, err := loadStr(t, minimal+old); err != nil || !slices.Contains(c.Checks.WindowsIgnoreServices, "WslInstaller") {
+		t.Errorf("old list: %q, err %v; want WslInstaller added", c.Checks.WindowsIgnoreServices, err)
+	}
+	// [] with the defaults on means "nothing extra".
+	if c, err := loadStr(t, minimal+"checks: {ignore_units: []}\n"); err != nil || !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) {
+		t.Errorf("[]: %q, err %v; want the defaults", c.Checks.IgnoreUnits, err)
 	}
 }

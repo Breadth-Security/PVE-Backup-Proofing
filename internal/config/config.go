@@ -67,7 +67,10 @@ type Restore struct {
 
 type Checks struct {
 	// CommandTimeout bounds each command PBP runs inside a guest.
-	CommandTimeout        time.Duration `yaml:"command_timeout"`
+	CommandTimeout time.Duration `yaml:"command_timeout"`
+	// UseDefaultIgnores (default true) adds the built-in ignore lists to
+	// IgnoreUnits and WindowsIgnoreServices; false uses those lists alone.
+	UseDefaultIgnores     *bool         `yaml:"use_default_ignores"`
 	IgnoreUnits           []string      `yaml:"ignore_units"`
 	WindowsIgnoreServices []string      `yaml:"windows_ignore_services"`
 	Profiles              []Profile     `yaml:"profiles"`
@@ -151,8 +154,10 @@ func parse(data []byte, name string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("parse %s: %w", name, err)
 	}
-	c.Checks.IgnoreUnits = orDefault(c.Checks.IgnoreUnits, DefaultIgnoreUnits)
-	c.Checks.WindowsIgnoreServices = orDefault(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore)
+	if c.Checks.UseDefaultIgnores == nil || *c.Checks.UseDefaultIgnores {
+		c.Checks.IgnoreUnits = withDefaults(DefaultIgnoreUnits(), c.Checks.IgnoreUnits, false)
+		c.Checks.WindowsIgnoreServices = withDefaults(DefaultWindowsIgnore(), c.Checks.WindowsIgnoreServices, true)
+	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid %s: %w", name, err)
 	}
@@ -161,11 +166,26 @@ func parse(data []byte, name string) (Config, error) {
 
 // orDefault returns list, or def() when list is nil: the key is absent or
 // null. Only an explicit [] (empty, not nil) means "none".
-func orDefault(list []string, def func() []string) []string {
-	if list == nil {
-		return def()
+// withDefaults returns the built-in entries followed by those of list that
+// are not already there (compared ignoring case if fold). A configured list
+// adds to the built-in one, so a new built-in entry reaches configs that pbp
+// setup wrote with a copy of an older list.
+func withDefaults(defaults, list []string, fold bool) []string {
+	key := func(s string) string {
+		if fold {
+			return strings.ToLower(s)
+		}
+		return s
 	}
-	return list
+	seen := make(map[string]bool, len(defaults)+len(list))
+	out := make([]string, 0, len(defaults)+len(list))
+	for _, e := range append(defaults, list...) {
+		if !seen[key(e)] {
+			seen[key(e)] = true
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (c Config) validate() error {
