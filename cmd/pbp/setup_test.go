@@ -18,6 +18,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/targetfake"
 )
@@ -393,5 +394,29 @@ func TestSetupRefusesOtherConfigPaths(t *testing.T) {
 	}
 	if exists(l.KeyPath()) {
 		t.Error("created a key after the refusal")
+	}
+}
+
+// A token secret on this host that the node rejects (401: rotated
+// elsewhere, or a wrong file) cannot be fixed by any reply without a new
+// secret: setup prints the --rotate-token line instead of looping (code
+// review 3.6).
+func TestSetupTokenRejectedOffersRotate(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.run(answers + e.reply(nil)); code != exitOK {
+		t.Fatalf("first run: exit %d err %s", code, e.errOut)
+	}
+	api := pvefake.New()
+	api.Fail["Version"] = &pve.APIError{Status: 401, Path: "/version", Message: "authentication failure"}
+	e.a.connect = func(cfg config.Config) wiring {
+		return wiring{api: api, target: e.tgt, notifier: &fakeNotifier{}, close: func() {}}
+	}
+	code := e.run("")
+	out := e.out.String()
+	if code != exitFail || !strings.Contains(out, "rejects this host's token secret") || !strings.Contains(out, "--rotate-token") {
+		t.Errorf("exit %d, out:\n%s", code, out)
+	}
+	if strings.Contains(out, msgPasteReply) {
+		t.Errorf("asked for a reply that cannot help:\n%s", out)
 	}
 }

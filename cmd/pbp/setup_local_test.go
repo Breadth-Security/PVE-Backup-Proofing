@@ -185,3 +185,25 @@ func TestSetupOnNodeReplace(t *testing.T) {
 		t.Errorf("daemon warning in the on-node flow:\n%s", r.errOut)
 	}
 }
+
+// In the one-shell flow, a token secret created before a later failure is
+// saved to this host's token file, never shown, so the next run can finish
+// without rotating it (code review 3.5).
+func TestSetupOnNodeFailureSavesSecret(t *testing.T) {
+	r := newLocalRig(t)
+	r.f.failACL = "/storage/pbs1"
+	code := r.setup(localAnswers + "y\ny\n")
+	out := r.out.String() + r.errOut.String()
+	if code == exitOK {
+		t.Fatalf("succeeded despite the failed ACL:\n%s", out)
+	}
+	if strings.Contains(out, fakeSecret) {
+		t.Errorf("secret shown:\n%s", out)
+	}
+	if !strings.Contains(out, "its secret is saved in") {
+		t.Errorf("output does not say where the secret went:\n%s", out)
+	}
+	if b, err := os.ReadFile(filepath.Join(r.deb, "secrets", "pve_token")); err != nil || string(b) != fakeSecret+"\n" {
+		t.Errorf("token file %q, %v", b, err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -482,15 +483,26 @@ func TestRunNeverSharesVMID(t *testing.T) {
 	for v := 101; v <= 116; v++ {
 		f.add("pbs", model.KindQEMU, v, 512, "")
 	}
-	f.tgt.onRestore = func(int) { time.Sleep(2 * time.Millisecond) }
+	// The first restores wait for a second to start, so jobs really
+	// overlap: a broken reservation cannot pass by running them one at a
+	// time (code review 7.9).
+	var restoring atomic.Int32
+	f.tgt.onRestore = func(int) {
+		restoring.Add(1)
+		defer restoring.Add(-1)
+		for deadline := time.Now().Add(2 * time.Second); restoring.Load() < 2 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
 	if len(f.tgt.dupes) != 0 {
 		t.Errorf("VMIDs given to two jobs at once: %v", f.tgt.dupes)
 	}
-	if f.tgt.maxHeld > 4 {
-		t.Errorf("max concurrent guests = %d", f.tgt.maxHeld)
+	if f.tgt.maxHeld > 4 || f.tgt.maxHeld < 2 {
+		t.Errorf("max concurrent guests = %d, want 2 to 4 (jobs must overlap)", f.tgt.maxHeld)
 	}
 	for _, r := range s.Results {
 		if r.Verdict != model.Proven {
@@ -725,6 +737,39 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	// The failure is this backup's own: its notes say so.
 	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read backup config: ") {
 		t.Errorf("notes = %q", got)
+	}
+}
+
+// With exclusion by tag configured, a gone guest whose backed-up config
+// cannot be read might be excluded by that config's own tags: PBP cannot
+// tell, so it reports ERROR but leaves the notes alone, as docs/operating.md
+// promises for excluded guests (code review 1.8). A live guest is decided
+// by its live tags, so its notes still record the failure.
+func TestRunOriginalConfigFailureWithTagExclusion(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Selection.Exclude.Tags = []string{"no-proof"}
+	gone := f.add("pbs", model.KindQEMU, 101, 1024, "")
+	live := f.add("pbs", model.KindQEMU, 102, 1024, "")
+	delete(f.api.BackupConfigs, gone.VolID)
+	delete(f.api.BackupConfigs, live.VolID)
+	f.api.GuestList = []pve.GuestRef{{Key: live.Key, Node: "pve1", Status: "running"}}
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	for _, id := range []int{101, 102} {
+		if r := byVMID(t, s)[id]; r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read backup config: ") {
+			t.Errorf("%d: got %s %q", id, r.Verdict, r.Reason)
+		}
+	}
+	notes := map[string]string{}
+	for _, b := range f.api.Backups["pbs"] {
+		notes[b.VolID] = b.Notes
+	}
+	if notes[gone.VolID] != "" {
+		t.Errorf("gone guest's notes written: %q", notes[gone.VolID])
+	}
+	if !strings.HasPrefix(notes[live.VolID], "PBP ERROR ") {
+		t.Errorf("live guest's notes = %q, want the ERROR line", notes[live.VolID])
 	}
 }
 

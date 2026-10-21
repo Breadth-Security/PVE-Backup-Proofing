@@ -90,7 +90,7 @@ target:
   node: pve1
   bridge: vmbr-pbp
   vmid_range: [990000, 990049]
-  api: {tls_fingerprint: "AB"}
+  api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
   ssh: {known_hosts_file: /kh}
 sources: {storages: [pbs]}
 restore: {storage: local-zfs}
@@ -1204,4 +1204,84 @@ func TestRootRefusalInContainer(t *testing.T) {
 			t.Errorf("message %q lacks %q", msg, want)
 		}
 	}
+}
+
+// The start file records the daemon's TZ when set, and health reads the
+// schedule in it (code review 6.6).
+func TestStartedZone(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "daemon.started")
+	t.Setenv("TZ", "America/New_York")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readStarted(p); err != nil || !got.Equal(fixedNow.Truncate(time.Second)) {
+		t.Errorf("readStarted = %v, %v", got, err)
+	}
+	if z := startedZone(p); z == nil || z.String() != "America/New_York" {
+		t.Errorf("zone = %v", z)
+	}
+	t.Setenv("TZ", "")
+	if err := writeStarted(p, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if z := startedZone(p); z != nil {
+		t.Errorf("zone without TZ = %v, want nil", z)
+	}
+}
+
+// A state store that cannot be opened stops the run, and the node is told,
+// so the night is not silent where nobody watches pbp health (code review
+// 6.10).
+func TestRunNotifiesWhenStateCannotOpen(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(statePath(), 0o700); err != nil { // a directory where state.json should be
+		t.Fatal(err)
+	}
+	if got := e.run("run"); got != exitFail {
+		t.Fatalf("exit %d; stderr %q", got, e.errOut.String())
+	}
+	e.notif.mu.Lock()
+	defer e.notif.mu.Unlock()
+	if len(e.notif.sent) != 1 || !strings.Contains(e.notif.sent[0].RunError, "run not started: state store") || e.notif.sent[0].Severity() != "error" {
+		t.Errorf("sent = %+v", e.notif.sent)
+	}
+}
+
+// An exec is audited with its command name, argument count, exit code and
+// time taken, never its arguments (code review 2.5).
+func TestNodeExecAudit(t *testing.T) {
+	e, au := nodeEnv(t)
+	e.a.nodeSys = exitSys{exit: 3}
+	req := nodeproto.Request{Op: "exec", VMID: 990001, Argv: []string{"cat", "/etc/ssl/private/hunter2.key"}, Timeout: time.Minute, Nonce: nodeproto.NewNonce()}
+	enc, err := nodeproto.Encode(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_ORIGINAL_COMMAND", enc)
+	if code := e.a.main(context.Background(), []string{"node"}); code != 3 {
+		t.Fatalf("exit %d, stderr %q", code, e.errOut)
+	}
+	line := formatAudit(au.got[len(au.got)-1])
+	for _, want := range []string{`cmd="cat" argc=2`, "exit=3", "elapsed="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("audit %q lacks %q", line, want)
+		}
+	}
+	if strings.Contains(line, "hunter2") {
+		t.Errorf("audit leaks an argument: %q", line)
+	}
+}
+
+// exitSys runs every exec as a command exiting with exit.
+type exitSys struct {
+	stubSys
+	exit int
+}
+
+func (s exitSys) CTConfig(context.Context, int) (map[string]string, error) {
+	return map[string]string{"tags": "pbp"}, nil
+}
+
+func (s exitSys) PctExec(context.Context, int, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return s.exit, nil
 }

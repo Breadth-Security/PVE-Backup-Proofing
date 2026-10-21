@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // victimDir stands for /etc/pve/priv or /root/.ssh: a directory holding an
@@ -322,4 +324,33 @@ func backupsIn(t *testing.T, dir string) []string {
 		}
 	}
 	return out
+}
+
+// The rewrite of a right-content authorized_keys sets the planned owner,
+// root's ids, not pbp's (code review I16, its #49 review): ids differ here,
+// unlike in the shared test environment.
+func TestApplyAuthorizedKeysSetsRootIDs(t *testing.T) {
+	dir := t.TempDir()
+	line := []byte("restrict,command=\"sudo /usr/bin/pbp node\" ssh-ed25519 AAAA pbp\n")
+	if err := os.WriteFile(filepath.Join(dir, akName), line, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(dir, unix.O_DIRECTORY|unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var gotUID, gotGID = -1, -1
+	env := Env{Fchown: func(_, uid, gid int) error { gotUID, gotGID = uid, gid; return nil }}
+	id := ids{uid: map[string]int{"root": 1111, PbpUser: 2222}, gid: map[string]int{"root": 3333, PbpUser: 4444}}
+	it := Item{Kind: KindFile, Path: AuthorizedKeys, Status: Differs, Mode: 0o644, Owner: "root", Group: "root", Content: line}
+	if err := applyAuthorizedKeys(env, id, fd, it); err != nil {
+		t.Fatal(err)
+	}
+	if gotUID != 1111 || gotGID != 3333 {
+		t.Errorf("chown %d:%d, want root's 1111:3333", gotUID, gotGID)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, akName)); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode %v, %v", fi.Mode().Perm(), err)
+	}
 }

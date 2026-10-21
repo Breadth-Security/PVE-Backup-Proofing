@@ -223,6 +223,8 @@ A node file that differs from what setup writes stops it, as with `pbp node setu
 
 If the token already exists on the node but this host has no secret for it (a rebuilt PBP host, a deleted `secrets/` directory, or a node an earlier setup created the token on), PVE cannot show the secret again. Setup writes nothing, explains this, and prints the `pbp node setup` line again with `--rotate-token`. Run it on the node, then `pbp setup` again and paste the new reply. Any other daemon using that token loses access until it gets the new secret.
 
+The same applies when this host has a secret but the node rejects it (HTTP 401: the token was replaced from elsewhere, or the file holds the wrong value): setup says so and prints the `--rotate-token` line.
+
 **Other errors** are listed in [Troubleshooting](troubleshooting.md).
 
 ## Removing PBP from a node

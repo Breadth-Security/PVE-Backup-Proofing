@@ -134,12 +134,16 @@ func (n *ExistingNode) Owned(ctx context.Context) ([]pve.GuestRef, error) {
 	}
 	var out []pve.GuestRef
 	for _, g := range guests {
-		if n.inRange(g.Key.VMID) && slices.Contains(g.Tags, OwnerTag) {
+		if n.inRange(g.Key.VMID) && slices.Contains(g.Tags, OwnerTag) && n.onNode(g) {
 			out = append(out, g)
 		}
 	}
 	return out, nil
 }
+
+// onNode reports whether g is on this target's node. A guest with no node
+// in the listing counts as this node's.
+func (n *ExistingNode) onNode(g pve.GuestRef) bool { return g.Node == "" || g.Node == n.node }
 
 func (n *ExistingNode) StrayTagged(ctx context.Context) ([]pve.GuestRef, error) {
 	guests, err := n.api.Guests(ctx)
@@ -148,7 +152,11 @@ func (n *ExistingNode) StrayTagged(ctx context.Context) ([]pve.GuestRef, error) 
 	}
 	var out []pve.GuestRef
 	for _, g := range guests {
-		if !n.inRange(g.Key.VMID) && slices.Contains(g.Tags, OwnerTag) {
+		// In the range but on another cluster node (a migrated proof
+		// guest, or target.node changed) is stray too: Destroy refuses
+		// it, so the janitor must not count it as its own (code review
+		// 1.7).
+		if slices.Contains(g.Tags, OwnerTag) && (!n.inRange(g.Key.VMID) || !n.onNode(g)) {
 			out = append(out, g)
 		}
 	}
@@ -292,6 +300,11 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 	if p := cfg["protection"]; p != "" && p != "0" {
 		bad = append(bad, "protection not 0")
 	}
+	for _, k := range keys {
+		if why := foreignDisk(k, cfg[k], vmid); why != "" {
+			bad = append(bad, why)
+		}
+	}
 	plan := sanitize.Sanitize(kind, cfg, n.bridge)
 	bad = append(bad, plan.Unsafe...)
 	for _, k := range plan.Delete {
@@ -401,25 +414,54 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 // notLeftover says why the stopped, untagged guest with config cfg is not
 // the leftover of the recorded restore rec ("" if it is): it must still be
 // locked by the restore ("lock: create") or carry the same non-empty name
-// (hostname for a container) as rec's backup. The name is rec.Name, or read
-// from rec.VolID's original config; an unreadable one is a reason (fail
-// safe).
+// (hostname for a container) as rec's backup. A backup without a name is
+// matched by its NICs' MAC addresses instead, which the restore keeps: the
+// same non-empty set (code review 1.6b). The name is rec.Name, or read from
+// rec.VolID's original config; an unreadable one is a reason (fail safe).
 func (n *ExistingNode) notLeftover(ctx context.Context, kind model.GuestKind, cfg map[string]string, rec Recorded) string {
 	if cfg["lock"] == "create" {
 		return ""
 	}
 	want := rec.Name
+	var orig map[string]string
 	if want == "" {
 		raw, err := n.api.OriginalConfig(ctx, n.node, rec.VolID)
 		if err != nil {
 			return fmt.Sprintf("the original config of %s cannot be read (%v)", rec.VolID, err)
 		}
-		want = sanitize.GuestName(kind, sanitize.ParseConfigText(raw))
+		orig = sanitize.ParseConfigText(raw)
+		want = sanitize.GuestName(kind, orig)
 	}
-	if got := sanitize.GuestName(kind, cfg); want == "" || got != want {
+	got := sanitize.GuestName(kind, cfg)
+	if want == "" && orig != nil {
+		if have, need := macs(cfg), macs(orig); len(need) > 0 && slices.Equal(have, need) {
+			return ""
+		}
+		return fmt.Sprintf("its name %q does not match the unnamed backup %s, nor do its NIC MAC addresses %v (%v in the backup)",
+			got, rec.VolID, macs(cfg), macs(orig))
+	}
+	if want == "" || got != want {
 		return fmt.Sprintf("its name %q does not match %q from %s", got, want, rec.VolID)
 	}
 	return ""
+}
+
+var reMAC = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
+
+// macs returns the sorted, upper-cased MAC addresses of a config's netN
+// entries.
+func macs(cfg map[string]string) []string {
+	var out []string
+	for k, v := range cfg {
+		if !strings.HasPrefix(k, "net") || strings.TrimLeft(k[3:], "0123456789") != "" || k == "net" {
+			continue
+		}
+		for _, m := range reMAC.FindAllString(v, -1) {
+			out = append(out, strings.ToUpper(m))
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // task runs a guest operation and waits for its task to finish.
@@ -497,4 +539,49 @@ func ClassifyRestoreError(err error) model.Verdict {
 		}
 	}
 	return model.Error
+}
+
+// reVolKey matches the config keys of a guest's disks and volumes (VM
+// drives, EFI and TPM state; a container's rootfs and mount points).
+var reVolKey = regexp.MustCompile(`^(scsi|virtio|sata|ide|efidisk|tpmstate|mp)\d+$|^rootfs$`)
+
+// reVolOwner finds the owner VMID in a volume name: vm-<id>-…, subvol-<id>-….
+var reVolOwner = regexp.MustCompile(`^(?:vm|subvol)-(\d+)-`)
+
+// foreignDisk says why disk key k with value v may not belong to the
+// temporary guest vmid ("" when it does): a host path, or a volume named
+// after another VMID. "none", an ISO image or the host's CD drive as a
+// CD-ROM, and non-disk keys are not judged.
+// PVE's restore always creates the copy's own volumes; this guards against
+// a change in that, so the copy can never boot from a production disk
+// (code review 1.9).
+func foreignDisk(k, v string, vmid int) string {
+	if !reVolKey.MatchString(k) {
+		return ""
+	}
+	vol, opts, _ := strings.Cut(v, ",")
+	if vol == "none" {
+		return ""
+	}
+	if slices.Contains(strings.Split(opts, ","), "media=cdrom") {
+		// An ISO image or the host's drive is read-only media, not a
+		// disk; any other volume as a CD-ROM is judged like a disk
+		// (#50 review): a production volume must not be attached at all.
+		if _, name, ok := strings.Cut(vol, ":"); vol == "cdrom" || (ok && strings.HasPrefix(name, "iso/")) {
+			return ""
+		}
+	}
+	if strings.HasPrefix(vol, "/") {
+		return fmt.Sprintf("%s is a host path (%s)", k, vol)
+	}
+	_, name, ok := strings.Cut(vol, ":")
+	if !ok {
+		return fmt.Sprintf("%s has no storage volume (%s)", k, vol)
+	}
+	name = name[strings.LastIndex(name, "/")+1:] // linked clone base, dir storage subdir
+	m := reVolOwner.FindStringSubmatch(name)
+	if m == nil || m[1] != strconv.Itoa(vmid) {
+		return fmt.Sprintf("%s is not a volume of guest %d (%s)", k, vmid, vol)
+	}
+	return ""
 }

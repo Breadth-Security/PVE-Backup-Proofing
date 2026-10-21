@@ -968,8 +968,24 @@ func TestDestroyRecorded(t *testing.T) {
 	t.Run("untagged guest without a name refused", func(t *testing.T) {
 		f := healthyFake()
 		leftover(990003, "stopped", map[string]string{})(f)
-		f.BackupConfigs[vmVol] = "memory: 512\n" // the backup has no name either
+		f.BackupConfigs[vmVol] = "memory: 512\n" // the backup has no name either, and no NIC
 		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "does not match")
+	})
+	// A backup without a name: the restore kept its NICs' MAC addresses, so
+	// the same set identifies the leftover (code review 1.6b); without that
+	// the janitor could never clear it.
+	t.Run("nameless leftover with the backup's MACs destroyed", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{
+			"net0": "virtio=BC:24:11:ED:57:35,bridge=vmbr0", "net1": "e1000=bc:24:11:00:00:02,bridge=vmbr1"})(f)
+		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0,tag=2\nnet1: e1000=BC:24:11:00:00:02,bridge=vmbr1\n"
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec))
+	})
+	t.Run("nameless leftover with other MACs refused", func(t *testing.T) {
+		f := healthyFake()
+		leftover(990003, "stopped", map[string]string{"net0": "virtio=BC:24:11:AA:AA:AA,bridge=vmbr0"})(f)
+		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n"
+		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "MAC")
 	})
 	t.Run("unreadable original config refused", func(t *testing.T) {
 		f := healthyFake()
@@ -1114,6 +1130,13 @@ func TestStrayTagged(t *testing.T) {
 		guest(model.KindQEMU, 106, "running", "web"),        // untagged, outside: fine
 		guest(model.KindQEMU, 990050, "stopped", "pbp"),     // just above range: stray
 	}
+	other := guest(model.KindLXC, 990007, "stopped", "pbp") // in range, other node: stray (1.7)
+	other.Node = "pve2"
+	f.GuestList = append(f.GuestList, other)
+	owned, err := newTarget(t, f, f, nil).Owned(context.Background())
+	if err != nil || len(owned) != 1 || owned[0].Key.VMID != 990000 {
+		t.Errorf("owned = %v (%v), want only 990000: a guest on another node is not the janitor's", owned, err)
+	}
 	got, err := newTarget(t, f, f, nil).StrayTagged(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1122,7 +1145,7 @@ func TestStrayTagged(t *testing.T) {
 	for _, g := range got {
 		ids = append(ids, g.Key.VMID)
 	}
-	if !slices.Equal(ids, []int{105, 210, 990050}) {
+	if !slices.Equal(ids, []int{105, 210, 990050, 990007}) {
 		t.Errorf("stray = %v", ids)
 	}
 	if n := countMutating(f.CallLog()); n != 0 {
@@ -1186,5 +1209,62 @@ func TestSanitizeReReadFails(t *testing.T) {
 	}
 	if s, _ := f.GuestStatus(ctx, node, model.KindQEMU, 990000); s == "running" {
 		t.Error("guest started")
+	}
+}
+
+// The copy may only boot from its own volumes: a disk naming another
+// VMID's volume (a production disk) or a host path refuses the start, a
+// CD-ROM does not (code review 1.9).
+func TestStartRefusesForeignDisks(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		key, val string
+		ok       bool
+	}{
+		{"scsi0", "local-lvm:vm-101-disk-0,size=32G", false},
+		{"virtio1", "/dev/disk/by-id/ata-PROD", false},
+		{"efidisk0", "local-lvm:vm-990001-disk-0,efitype=4m", false},
+		{"ide2", "nfs:iso/win.iso,media=cdrom", true},
+		{"ide3", "none,media=cdrom", true},
+		{"ide0", "local-lvm:vm-100-disk-5,media=cdrom", false},
+		{"sata1", "local-lvm:vm-990000-cloudinit,media=cdrom", true},
+		{"sata2", "cdrom,media=cdrom", true},
+		{"scsi2", "local-lvm:base-101-disk-0/vm-990000-disk-3,size=8G", true},
+		{"sata0", "local:990000/vm-990000-disk-4.qcow2,size=8G", true},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			f := healthyFake()
+			f.BackupConfigs[vmVol] = vmConf
+			n := newTarget(t, f, f, nil)
+			if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
+				t.Fatal(err)
+			}
+			f.Configs[990000][tc.key] = tc.val
+			err := n.Start(ctx, model.KindQEMU, 990000)
+			if tc.ok && err != nil {
+				t.Errorf("refused: %v", err)
+			}
+			if !tc.ok && (!errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), tc.key)) {
+				t.Errorf("err = %v, want ErrUnsafe naming %s", err, tc.key)
+			}
+		})
+	}
+}
+
+func TestForeignDiskContainer(t *testing.T) {
+	for v, want := range map[string]bool{
+		"local-zfs:subvol-990000-disk-0,size=8G": true,
+		"local-zfs:subvol-201-disk-0,size=8G":    false,
+		"/srv/share,mp=/mnt/share":               false,
+	} {
+		if got := foreignDisk("mp0", v, 990000) == ""; got != want {
+			t.Errorf("%s: own = %v, want %v", v, got, want)
+		}
+	}
+	if foreignDisk("net0", "/whatever", 990000) != "" || foreignDisk("unused0", "local:vm-1-disk-0", 990000) != "" {
+		t.Error("non-disk keys judged")
 	}
 }

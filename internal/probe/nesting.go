@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"slices"
 	"strings"
 )
 
@@ -35,7 +36,14 @@ func nestingFailures(ctx context.Context, ex Executor, failed []string) (nesting
 	}
 	for _, u := range failed {
 		if svc, ok := strings.CutSuffix(u, ".socket"); ok {
-			isNesting[u] = result[u]["Result"] == "service-start-limit-hit" && isNesting[svc+".service"]
+			// The service the socket starts: its Triggers property, which
+			// may name a service other than the socket's own name (code
+			// review 5.13), or else the same-named service.
+			triggers := strings.Fields(result[u]["Triggers"])
+			if len(triggers) == 0 {
+				triggers = []string{svc + ".service"}
+			}
+			isNesting[u] = result[u]["Result"] == "service-start-limit-hit" && slices.ContainsFunc(triggers, func(s string) bool { return isNesting[s] })
 		}
 		if isNesting[u] {
 			nesting = append(nesting, u)
@@ -46,9 +54,10 @@ func nestingFailures(ctx context.Context, ex Executor, failed []string) (nesting
 	return nesting, other
 }
 
-// showResult reads a unit's Result and ExecMainStatus; nil if it cannot.
+// showResult reads a unit's Result, ExecMainStatus and Triggers; nil if it
+// cannot.
 func showResult(ctx context.Context, ex Executor, unit string) map[string]string {
-	res, err := ex.Exec(ctx, []string{"systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "--", unit})
+	res, err := ex.Exec(ctx, []string{"systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "-p", "Triggers", "--", unit})
 	if err != nil || res.ExitCode != 0 {
 		return nil
 	}

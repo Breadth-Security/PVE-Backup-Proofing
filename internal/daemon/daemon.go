@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -35,13 +36,35 @@ func StateDir() string {
 // LockPath is the run lock in the state directory.
 func LockPath() string { return filepath.Join(StateDir(), "run.lock") }
 
+// clock is what Serve needs of time; a seam for tests.
+type clock struct {
+	now func() time.Time
+	// wake caps each wait, so a wall-clock step (NTP, a manual fix) or a
+	// suspend is noticed within it (code review 6.8).
+	wake time.Duration
+	// retryEvery and retryFor: a tick that finds the lock held by another
+	// pbp command (not this daemon's own run) retries this often, for this
+	// long, instead of losing the run (code review 6.7).
+	retryEvery, retryFor time.Duration
+}
+
+var realClock = clock{now: time.Now, wake: time.Minute, retryEvery: time.Minute, retryFor: 15 * time.Minute}
+
 // Serve calls runFn with trigger "schedule" at each time cfg.Schedule names
 // (container time zone), holding the run lock for the whole call. A tick
-// that finds the lock taken is skipped. When ctx ends, Serve stops
-// scheduling and waits for an in-flight run: its stop channel closes at
-// once, so it starts no further proofs, and its own context is cancelled
-// only after shutdownGrace, so proofs in flight can finish or tear down.
+// that finds this daemon's previous run still active is skipped; one that
+// finds the lock held by another pbp command (pbp check, pbp run) retries
+// for a while. Ticks follow the wall clock: a run starts once the clock
+// reaches its time, never early and never twice for the same time, even if
+// the clock steps. When ctx ends, Serve stops scheduling and waits for an
+// in-flight run: its stop channel closes at once, so it starts no further
+// proofs, and its own context is cancelled only after shutdownGrace, so
+// proofs in flight can finish or tear down.
 func Serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Context, stop <-chan struct{}, trigger string)) error {
+	return serve(ctx, cfg, runFn, realClock)
+}
+
+func serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Context, stop <-chan struct{}, trigger string), c clock) error {
 	sched, err := cron.ParseStandard(cfg.Schedule)
 	if err != nil {
 		return fmt.Errorf("schedule %q: %w", cfg.Schedule, err)
@@ -51,44 +74,101 @@ func Serve(ctx context.Context, cfg config.Config, runFn func(ctx context.Contex
 	runCtx, cancelRuns := context.WithCancel(context.Background())
 	defer cancelRuns()
 	var wg sync.WaitGroup
+	var own atomic.Bool // this daemon's run is active
 
-	log.Info("daemon started", "schedule", cfg.Schedule, "next", sched.Next(time.Now()))
+	next := sched.Next(c.now())
+	log.Info("daemon started", "schedule", cfg.Schedule, "next", next)
 	for {
-		next := sched.Next(time.Now())
 		if next.IsZero() {
 			return errors.New("schedule never fires")
 		}
-		timer := time.NewTimer(time.Until(next))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return shutdown(log, &wg, cancelRuns)
-		case <-timer.C:
-			if ctx.Err() != nil {
+		// Wait on the wall clock, in bounded steps.
+		for now := c.now(); now.Before(next); now = c.now() {
+			if !sleep(ctx, min(next.Sub(now), c.wake)) {
 				return shutdown(log, &wg, cancelRuns)
 			}
 		}
+		if ctx.Err() != nil {
+			return shutdown(log, &wg, cancelRuns)
+		}
+		fired := next
 
 		release, err := AcquireLock(LockPath())
-		if errors.Is(err, ErrBusy) {
-			log.Warn("previous run still active, skipping", "scheduled", next)
-			continue
+		retried := false
+		if errors.Is(err, ErrBusy) && !own.Load() {
+			retried = true
+			release, err = retryLock(ctx, log, c, fired)
+			if err == nil && ctx.Err() != nil {
+				// Got the lock just as shutdown came: start nothing.
+				release()
+				return shutdown(log, &wg, cancelRuns)
+			}
 		}
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrBusy) && retried:
+			log.Warn("run lock still held by another pbp command; skipping this run", "scheduled", fired, "waited", c.retryFor)
+		case errors.Is(err, ErrBusy):
+			log.Warn("previous run still active, skipping", "scheduled", fired)
+		case ctx.Err() != nil && err != nil:
+			return shutdown(log, &wg, cancelRuns)
+		case err != nil:
 			log.Error("scheduled run not started", "err", err)
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer release()
-			defer func() {
-				if p := recover(); p != nil {
-					log.Error("panic in scheduled run", "panic", p)
-				}
+		default:
+			own.Store(true)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// own clears after the lock is free, so a tick between
+				// the two never mistakes this run's lock for another's.
+				defer own.Store(false)
+				defer release()
+				defer func() {
+					if p := recover(); p != nil {
+						log.Error("panic in scheduled run", "panic", p)
+					}
+				}()
+				runFn(runCtx, ctx.Done(), "schedule")
 			}()
-			runFn(runCtx, ctx.Done(), "schedule")
-		}()
+		}
+		// Never the same time again, even if the clock stepped back.
+		next = sched.Next(later(c.now(), fired))
+	}
+}
+
+// retryLock waits for a lock another pbp command holds, every
+// c.retryEvery for up to c.retryFor; ErrBusy if it stays held.
+func retryLock(ctx context.Context, log *slog.Logger, c clock, scheduled time.Time) (func(), error) {
+	deadline := c.now().Add(c.retryFor)
+	log.Warn("run lock held by another pbp command; retrying", "scheduled", scheduled, "for", c.retryFor)
+	for c.now().Before(deadline) {
+		if !sleep(ctx, c.retryEvery) {
+			return nil, ctx.Err()
+		}
+		release, err := AcquireLock(LockPath())
+		if !errors.Is(err, ErrBusy) {
+			return release, err
+		}
+	}
+	return nil, ErrBusy
+}
+
+// later returns the later of a and b.
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// sleep waits d or until ctx ends; it reports whether ctx is still live.
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 

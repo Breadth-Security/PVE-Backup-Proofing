@@ -18,6 +18,9 @@ type linuxRun struct {
 	out Outcome
 	// nesting are failed units that fail only for lack of nesting.
 	nesting []string
+	// triedSystemd: the systemd path found systemctl missing and handed
+	// over to OpenRC, which must not hand back.
+	triedSystemd bool
 }
 
 func (r *linuxRun) exec(ctx context.Context, argv ...string) (ExecResult, error) {
@@ -111,6 +114,17 @@ func openRCFailed(ini string) []string {
 	return failed
 }
 
+// readOnlyRootAllowed reports whether a checks.guests entry matching this
+// guest says its root is read-only by design.
+func (r *linuxRun) readOnlyRootAllowed() bool {
+	for _, g := range r.in.Checks.Guests {
+		if g.AllowReadOnlyRoot && guestMatches(g.Match, r.in.Guest) {
+			return true
+		}
+	}
+	return false
+}
+
 // rootOptions returns the mount options of the root filesystem: from
 // findmnt, or, when findmnt is missing or fails, from /proc/self/mounts (the
 // last "/" entry, which an overmount puts last). nil means neither could be
@@ -124,6 +138,12 @@ func (r *linuxRun) rootOptions(ctx context.Context) ([]string, error) {
 		return strings.Split(s, ","), nil
 	}
 	res, err = r.exec(ctx, "cat", "/proc/self/mounts")
+	if errors.Is(err, errCommandTimeout) {
+		// A guest too slow to cat a /proc file says nothing about the
+		// backup: no options, so the caller reports ERROR, not a FAILED
+		// "check timed out" (#47 review).
+		return nil, nil
+	}
 	if err != nil || res.ExitCode != 0 {
 		return nil, err
 	}
@@ -258,6 +278,12 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	if openRCTypes[in.OSType] {
 		return r.runOpenRC(ctx)
 	}
+	return r.runSystemd(ctx)
+}
+
+// runSystemd judges a systemd guest.
+func (r *linuxRun) runSystemd(ctx context.Context) Outcome {
+	ex, in := r.ex, r.in
 
 	// Wait for boot to settle, bounded by the probe's time rather than the
 	// per-command timeout: on the isolated bridge, DHCP and wait-online units
@@ -296,6 +322,7 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 			return r.booted("init answering, service state unknown")
 		}
 		// A VM: its init is unknown until asked.
+		r.triedSystemd = true
 		return r.runOpenRC(ctx)
 	}
 	switch state := strings.TrimSpace(res.Stdout); state {
@@ -312,7 +339,7 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 		// Never pass a guest whose root PBP could not check (code review I8).
 		return r.errorOut("cannot read the root filesystem's mount options")
 	}
-	if slices.Contains(opts, "ro") {
+	if slices.Contains(opts, "ro") && !r.readOnlyRootAllowed() {
 		return r.fail(ctx, "root filesystem read-only")
 	}
 
@@ -344,7 +371,10 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	if res.ExitCode != 0 {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-unit-files exited %d", res.ExitCode))
 	}
-	c := &checker{ex: ex}
+	c := &checker{ex: ex, notCovered: map[string]bool{}}
+	for _, n := range r.out.NotCovered {
+		c.notCovered[n.Unit] = true
+	}
 	err = c.runProfiles(ctx, in, firstFields(res.Stdout))
 	r.out.Checks = c.results
 	if err != nil {
@@ -357,8 +387,20 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 	if n := len(r.nesting); n > 0 {
 		// The production guest has the same failures: they say nothing
 		// about the backup, but the guest cannot be proven either.
-		return r.booted(fmt.Sprintf("container without nesting: %d units cannot start sandboxed (%s); enable nesting=1",
-			n, nameList(r.nesting)))
+		reason := fmt.Sprintf("container without nesting: %d units cannot start sandboxed (%s); enable nesting=1",
+			n, nameList(r.nesting))
+		// Checks that failed too are named, so they are not hidden behind
+		// the nesting reason (code review 5.11).
+		var failedChecks []string
+		for _, c := range r.out.Checks {
+			if !c.OK {
+				failedChecks = append(failedChecks, c.Name)
+			}
+		}
+		if len(failedChecks) > 0 {
+			reason += "; checks also failed: " + nameList(failedChecks)
+		}
+		return r.booted(reason)
 	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
@@ -401,7 +443,12 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 	// up, start only after the boot runlevel, which on the isolated bridge
 	// waits on networking. Checking earlier would miss them.
 	start := time.Now()
-	_, err := r.ex.settle(ctx, settleBudget(ctx, r.in.SettleTimeout), []string{"sh", "-c", openRCSettleScript})
+	sres, err := r.ex.settle(ctx, settleBudget(ctx, r.in.SettleTimeout), []string{"sh", "-c", openRCSettleScript})
+	if err == nil && sres.ExitCode == 127 && !r.triedSystemd {
+		// No rc-status: a container whose ostype says OpenRC may run
+		// systemd (Gentoo offers both; code review 5.15).
+		return r.runSystemd(ctx)
+	}
 	if errors.Is(err, errSettleTimeout) {
 		return r.errorOut("guest still starting after " + time.Since(start).Round(time.Second).String())
 	}
@@ -439,7 +486,7 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 	if opts == nil {
 		return r.errorOut("cannot read the root filesystem's mount options")
 	}
-	if slices.Contains(opts, "ro") {
+	if slices.Contains(opts, "ro") && !r.readOnlyRootAllowed() {
 		return r.fail(ctx, "root filesystem read-only")
 	}
 

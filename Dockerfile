@@ -21,10 +21,12 @@ RUN v="${VERSION:-$(packaging/versionfile.sh)}" \
 RUN mkdir -p /out/var/lib/pbp/state /out/var/log/pbp
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/pbp /pbp
+# On the PATH, so `docker compose exec pbp pbp …` finds it (code review
+# 6.13: /pbp was not, and the documented commands failed).
+COPY --from=build /out/pbp /usr/local/bin/pbp
 COPY --from=build --chown=65532:65532 /out/var/lib/pbp /var/lib/pbp
 COPY --from=build --chown=65532:65532 /out/var/log/pbp /var/log/pbp
 USER 65532:65532
-ENTRYPOINT ["/pbp"]
+ENTRYPOINT ["/usr/local/bin/pbp"]
 CMD ["daemon"]
-HEALTHCHECK --interval=5m --timeout=20s CMD ["/pbp","health"]
+HEALTHCHECK --interval=5m --timeout=20s CMD ["/usr/local/bin/pbp","health"]

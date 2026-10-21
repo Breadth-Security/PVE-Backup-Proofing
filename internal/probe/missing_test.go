@@ -218,6 +218,30 @@ func TestCoveredButProfileFails(t *testing.T) {
 	}
 }
 
+// The docs' own example: postgresql.service fails because its data disk was
+// not backed up. That says nothing about the backup, so the postgresql
+// profile's checks (pg_isready, which fails with the server down) are not
+// run either; the guest is PROVEN with the unit listed as not covered (code
+// review 5.9).
+func TestProfileOfNotCoveredUnitSkipped(t *testing.T) {
+	ex := failing(map[string]string{
+		"srv-pgdata.mount":   "Type=ext4\nWhat=/dev/disk/by-uuid/abc\nWhere=/srv/pgdata\n",
+		"postgresql.service": "RequiresMountsFor=/srv/pgdata\n",
+	})
+	ex["test -e /dev/disk/by-uuid/abc"] = probe.ExecResult{ExitCode: 1}
+	ex[enabledC] = out("postgresql.service enabled enabled\n")
+	ex["sh -c pg_isready -q"] = probe.ExecResult{ExitCode: 2}
+	o := runMissing(ex, scsi1)
+	if o.Verdict != model.Proven || len(o.NotCovered) != 2 {
+		t.Fatalf("got %v %q, not covered %v", o.Verdict, o.Reason, o.NotCovered)
+	}
+	for _, c := range o.Checks {
+		if strings.HasPrefix(c.Name, "postgresql:") {
+			t.Errorf("ran a check of a not-covered unit: %+v", c)
+		}
+	}
+}
+
 func TestShowFailureUntraced(t *testing.T) {
 	ex := failing(map[string]string{"a.mount": ""})
 	ex[showC("a.mount")] = probe.ExecResult{ExitCode: 1, Stdout: "Type=nfs\nWhat=nas:/a\nWhere=/a\n"}

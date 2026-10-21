@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -96,8 +97,12 @@ type GuestMatch struct {
 }
 
 type GuestChecks struct {
-	Match    GuestMatch `yaml:"match"`
-	CheckSet `yaml:",inline"`
+	Match GuestMatch `yaml:"match"`
+	// AllowReadOnlyRoot: the guest's root is read-only by design (Home
+	// Assistant OS, Fedora CoreOS), so a read-only root is not a failure
+	// (code review 5.10).
+	AllowReadOnlyRoot bool `yaml:"allow_readonly_root"`
+	CheckSet          `yaml:",inline"`
 }
 
 type Notify struct {
@@ -109,10 +114,14 @@ type Logging struct {
 	RetainRuns int    `yaml:"retain_runs"`
 }
 
+// reFingerprint is a SHA-256 certificate fingerprint without separators.
+var reFingerprint = regexp.MustCompile(`^[0-9A-Fa-f]{64}$`)
+
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
 // explicit zero is kept (and validated) rather than replaced. The ignore
-// lists are defaulted after decoding instead (see orDefault).
+// lists are merged with the built-in ones after decoding instead (see
+// withDefaults).
 func defaults() Config {
 	return Config{
 		Workers: 1,
@@ -164,8 +173,6 @@ func parse(data []byte, name string) (Config, error) {
 	return c, nil
 }
 
-// orDefault returns list, or def() when list is nil: the key is absent or
-// null. Only an explicit [] (empty, not nil) means "none".
 // withDefaults returns the built-in entries followed by those of list that
 // are not already there (compared ignoring case if fold). A configured list
 // adds to the built-in one, so a new built-in entry reaches configs that pbp
@@ -193,8 +200,12 @@ func (c Config) validate() error {
 	bad := func(key, format string, a ...any) {
 		errs = append(errs, fmt.Errorf("%s: %s", key, fmt.Sprintf(format, a...)))
 	}
-	if _, err := cron.ParseStandard(c.Schedule); err != nil {
+	if sched, err := cron.ParseStandard(c.Schedule); err != nil {
 		bad("schedule", "invalid cron expression %q: %v", c.Schedule, err)
+	} else if sched.Next(time.Now()).IsZero() {
+		// Such as "0 0 30 2 *": it parses, but the daemon would exit and
+		// be restarted forever while health says ok (code review 6.9).
+		bad("schedule", "%q never fires (no matching time in the next five years)", c.Schedule)
 	}
 	if c.Workers < 1 {
 		bad("workers", "must be >= 1, got %d", c.Workers)
@@ -212,8 +223,15 @@ func (c Config) validate() error {
 	if err := ValidateVMIDRange(t.VMIDRange[0], t.VMIDRange[1]); err != nil {
 		bad("target.vmid_range", "%v", err)
 	}
-	if t.API.TLSFingerprint == "" && t.API.CAFile == "" {
+	switch {
+	case t.API.TLSFingerprint == "" && t.API.CAFile == "":
 		bad("target.api.tls_fingerprint", "set tls_fingerprint or target.api.ca_file (skip-verify is not supported; run pbp setup to finish)")
+	case t.API.TLSFingerprint != "" && t.API.CAFile != "":
+		// The pin would win and the CA file be ignored, while its owner
+		// believes it in force (code review 4.6).
+		bad("target.api.ca_file", "set tls_fingerprint or ca_file, not both")
+	case t.API.TLSFingerprint != "" && !reFingerprint.MatchString(strings.NewReplacer(":", "", " ", "").Replace(t.API.TLSFingerprint)):
+		bad("target.api.tls_fingerprint", "%q is not a SHA-256 fingerprint (64 hex digits, colons allowed)", t.API.TLSFingerprint)
 	}
 	if t.SSH.User == "root" {
 		bad("target.ssh.user", `root is not allowed: PBP connects as the restricted pbp user (see docs/setup.md)`)

@@ -395,7 +395,7 @@ func TestServeBridgeError(t *testing.T) {
 
 func TestServeNotify(t *testing.T) {
 	f := newFake()
-	in := `{"severity":"warning","data":{"title":"x"},"fields":{"type":"other","hostname":"pve1"}}`
+	in := `{"severity":"warning","data":{"headline":"x"},"fields":{"type":"other","hostname":"pve1"}}`
 	r := serve(t, f, req(t, nodeproto.Request{Op: "notify"}), in)
 	if r.exit != 0 || r.stderr != "" {
 		t.Fatalf("got %+v", r)
@@ -411,7 +411,7 @@ func TestServeNotify(t *testing.T) {
 	if err := json.Unmarshal(f.notified[0], &p); err != nil {
 		t.Fatal(err)
 	}
-	if p.Severity != "warning" || p.Fields["type"] != "pbp" || p.Fields["hostname"] != "pve1" || p.Data["title"] != "x" {
+	if p.Severity != "warning" || p.Fields["type"] != "pbp" || p.Fields["hostname"] != "pve1" || p.Data["headline"] != "x" {
 		t.Errorf("payload %s", f.notified[0])
 	}
 }
@@ -436,7 +436,10 @@ func TestServeNotifyRefusals(t *testing.T) {
 		{"data not object", `{"severity":"info","data":"x"}`},
 		{"non-string field", `{"severity":"info","data":{},"fields":{"type":1}}`},
 		{"trailing data", `{"severity":"info","data":{}} {}`},
-		{"too large", `{"severity":"info","data":{"x":"` + strings.Repeat("a", maxNotifyPayload) + `"}}`},
+		{"unknown field", `{"severity":"info","data":{},"fields":{"severity-override":"x"}}`},
+		{"hostname with spaces", `{"severity":"info","data":{},"fields":{"hostname":"pve1 FAILED"}}`},
+		{"unknown data key", `{"severity":"info","data":{"link":"https://evil"}}`},
+		{"too large", `{"severity":"info","data":{"headline":"` + strings.Repeat("a", maxNotifyPayload) + `"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()

@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
@@ -38,7 +39,10 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-const usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp setup [--dir DIR] [--deb]\n       pbp node [install-templates|setup|uninstall]\n"
+// usage lists every subcommand; the node ones come from nodeUsage, so the
+// options shown match the ones parsed.
+var usage = "usage: pbp daemon|run [--guest VMID]|check|health [--config PATH]\n       pbp version\n       pbp setup [--dir DIR] [--deb [--replace]]\n" +
+	"       " + strings.TrimPrefix(nodeUsage, "usage: ")
 
 // version is set at build time: -ldflags "-X main.version=...".
 var version = "dev"
@@ -544,14 +548,25 @@ func (a *app) runOnce(ctx context.Context, cfg config.Config, opt run.Options) m
 		}()
 	}
 
+	w := a.connect(cfg)
+	defer w.close()
 	store, err := state.Open(statePath())
 	if err != nil {
 		log.Error("RUN NOT STARTED: cannot open state store; health will report unhealthy", "err", err)
-		return model.RunSummary{ID: opt.RunID, Trigger: opt.Trigger, Started: a.now(), Ended: a.now(),
-			RunError: "state: " + err.Error()}
+		s := model.RunSummary{ID: opt.RunID, Trigger: opt.Trigger, Started: a.now(), Ended: a.now(),
+			RunError: "run not started: state store: " + err.Error(), LogDir: opt.LogDir}
+		// Tell the node, so the night is not silent on hosts without
+		// health monitoring (code review 6.10).
+		switch {
+		case w.sshErr != nil:
+			log.Error("SSH TO THE NODE FAILED too: no notification can be sent", "err", w.sshErr)
+		case w.notifier != nil:
+			if nerr := w.notifier.Send(ctx, s); nerr != nil {
+				log.Error("send notification", "err", nerr)
+			}
+		}
+		return s
 	}
-	w := a.connect(cfg)
-	defer w.close()
 	if w.sshErr != nil {
 		log.Error("SSH TO THE NODE FAILED: the run fails and no notification can be sent; health will report unhealthy", "err", w.sshErr)
 	}
@@ -580,6 +595,9 @@ func (a *app) check(ctx context.Context, cfg config.Config, path string) int {
 type checkOut struct {
 	w  io.Writer
 	ok bool
+	// tokenRejected: the API answered 401, so the token secret is wrong
+	// (pbp setup then offers the --rotate-token line; code review 3.6).
+	tokenRejected bool
 }
 
 func (c *checkOut) line(name string, err error) {
@@ -614,6 +632,8 @@ func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.St
 			apiErr = err
 		}
 	}
+	var ae *pve.APIError
+	c.tokenRejected = errors.As(apiErr, &ae) && ae.Status == http.StatusUnauthorized
 	c.line("pve api "+cfg.Target.API.URL, apiErr)
 	c.line("ssh "+cfg.Target.SSH.Host, w.sshErr)
 	if !c.ok {
@@ -667,7 +687,7 @@ func (a *app) health(cfg config.Config) int {
 	}
 	r := cfg.Restore
 	limits := health.RunLimits{MaxRun: r.MaxRunDuration, BootTimeout: r.BootTimeout, ProbeTimeout: r.ProbeTimeout}
-	if ok, reason := health.Evaluate(st, a.now(), sched, limits, startedAt); !ok {
+	if ok, reason := health.Evaluate(st, a.now(), sched, limits, startedAt, startedZone(startedPath())); !ok {
 		return fail(reason)
 	}
 	fprintln(a.stdout, "ok")
@@ -680,7 +700,31 @@ func writeStarted(path string, t time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return fsutil.WriteFileAtomic(path, []byte(t.Format(time.RFC3339)+"\n"), 0o600)
+	b := t.Format(time.RFC3339) + "\n"
+	// The daemon's TZ, when set (a service drop-in), so health reads the
+	// schedule in the daemon's zone, not its own (code review 6.6).
+	if tz := os.Getenv("TZ"); tz != "" {
+		b += "TZ=" + tz + "\n"
+	}
+	return fsutil.WriteFileAtomic(path, []byte(b), 0o600)
+}
+
+// startedZone returns the daemon's zone recorded in the start file, or nil
+// (this process's own zone) when none is recorded or it does not load.
+func startedZone(path string) *time.Location {
+	// #nosec G304 -- path is PBP's own state file under the state dir
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if tz, ok := strings.CutPrefix(line, "TZ="); ok {
+			if loc, err := time.LoadLocation(strings.TrimPrefix(tz, ":")); err == nil {
+				return loc
+			}
+		}
+	}
+	return nil
 }
 
 // readStarted reads the daemon start time; a missing file is the zero time,
@@ -694,7 +738,8 @@ func readStarted(path string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("daemon start time %s: %w", path, err)
 	}
-	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	first, _, _ := strings.Cut(string(b), "\n")
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(first))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("daemon start time %s is corrupt: %w", path, err)
 	}

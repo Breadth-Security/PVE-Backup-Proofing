@@ -136,6 +136,7 @@ func BuildPlan(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName str
 	add(planShell(ids))
 	add(planHome(env, ids))
 	add(planKeySources(ctx, env, ids))
+	p.Warnings = append(p.Warnings, matchWarnings(env)...)
 	add(planSSHDirContents(env))
 	add(planFile(env, ids, fileItem("sudoers rule", SudoersPath, 0o440, "root", "root",
 		[]byte(SudoersText)), sameSudoers))
@@ -662,6 +663,12 @@ func planPVE(ctx context.Context, env Env, a nodeproto.SetupArgs, nodeName strin
 		}
 		if token || tok.Status == Create {
 			items = append(items, tok)
+		} else if tok.Status == Differs {
+			// Not in the plan without a token flag, but privsep 0 means
+			// the token has every right the user has, now and whatever is
+			// granted to it later (code review 3.9).
+			warn = append(warn, TokenID+" has privsep 0, so it gets every permission of "+UserID+
+				"; run the setup line with --rotate-token to recreate it with privsep 1")
 		}
 	}
 
@@ -725,4 +732,39 @@ func groupList(raw json.RawMessage) string {
 		return strings.Join(list, ", ")
 	}
 	return ""
+}
+
+// reMatchByConnection finds an sshd Match line whose criteria depend on the
+// connection rather than the user.
+var reMatchByConnection = regexp.MustCompile(`(?i)^\s*match\s.*\b(address|host|localaddress|localport|rdomain)\b`)
+
+// matchWarnings names the Match blocks in sshd's configuration that depend
+// on the connection. The key-source check evaluates a connection from
+// localhost, so a block that matches the PBP host's address could add a
+// key source or CA it never sees (code review 3.2). Setup warns rather
+// than refuses: such blocks are common and usually harmless.
+func matchWarnings(env Env) []string {
+	files := []string{"/etc/ssh/sshd_config"}
+	if more, err := filepath.Glob(env.path("/etc/ssh/sshd_config.d/*.conf")); err == nil {
+		for _, m := range more {
+			rel, _ := filepath.Rel(env.Root, m)
+			files = append(files, "/"+filepath.ToSlash(rel))
+		}
+	}
+	var warn []string
+	for _, f := range files {
+		// #nosec G304 -- fixed sshd configuration paths under env.Root
+		b, err := os.ReadFile(env.path(f))
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if reMatchByConnection.MatchString(line) {
+				warn = append(warn, fmt.Sprintf("%s:%d %q: the sshd key-source check only sees a connection from localhost; "+
+					"make sure this block adds no AuthorizedKeysFile, AuthorizedKeysCommand or TrustedUserCAKeys for pbp",
+					f, i+1, strings.TrimSpace(line)))
+			}
+		}
+	}
+	return warn
 }

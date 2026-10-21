@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
@@ -266,7 +267,7 @@ func (h *lineHandler) Handle(_ context.Context, rec slog.Record) error {
 	case rec.Level >= slog.LevelWarn:
 		b.WriteString("WARN ")
 	}
-	b.WriteString(strings.ReplaceAll(rec.Message, "\n", "\n    "))
+	b.WriteString(strings.ReplaceAll(printable(rec.Message), "\n", "\n    "))
 	for _, a := range h.attrs {
 		writeAttr(&b, "", a)
 	}
@@ -308,7 +309,7 @@ func writeAttr(b *strings.Builder, prefix string, a slog.Attr) {
 		}
 		return
 	}
-	val := v.String()
+	val := printable(v.String())
 	if val == "" || strings.ContainsAny(val, " =\"") {
 		val = strconv.Quote(val)
 	}
@@ -345,4 +346,32 @@ func (g *guestHandler) Handle(ctx context.Context, rec slog.Record) error {
 		}
 	}
 	return err
+}
+
+// printable escapes the control characters in s as \xNN (the bytes of a C1
+// character), keeping newlines and tabs. Messages carry guest-controlled
+// text, such as a command's stderr; raw, it could rewrite log lines or send
+// terminal escapes to whoever views the log (code review 5.12).
+func printable(s string) string {
+	if !strings.ContainsFunc(s, isControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if !isControl(r) {
+			b.WriteRune(r)
+			continue
+		}
+		var buf [utf8.UTFMax]byte
+		for _, c := range buf[:utf8.EncodeRune(buf[:], r)] {
+			fmt.Fprintf(&b, "\\x%02x", c)
+		}
+	}
+	return b.String()
+}
+
+// isControl reports whether r is a C0 (other than newline and tab), DEL or
+// C1 control character.
+func isControl(r rune) bool {
+	return (r < 0x20 && r != '\n' && r != '\t') || (r >= 0x7f && r <= 0x9f)
 }

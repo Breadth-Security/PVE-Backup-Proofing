@@ -55,7 +55,10 @@ func OverrunLimit(maxRun, bootTimeout, probeTimeout time.Duration) time.Duration
 //     passed more than 30 minutes ago.
 //
 // A zero startedAt with no runs is healthy.
-func Evaluate(st state.State, now time.Time, sched cron.Schedule, limits RunLimits, startedAt time.Time) (ok bool, reason string) {
+func Evaluate(st state.State, now time.Time, sched cron.Schedule, limits RunLimits, startedAt time.Time, zone *time.Location) (ok bool, reason string) {
+	if zone == nil {
+		zone = time.Local
+	}
 	limit := OverrunLimit(limits.MaxRun, limits.BootTimeout, limits.ProbeTimeout)
 	runs := st.Runs
 	for i := len(runs) - 1; i >= 0; i-- {
@@ -73,8 +76,12 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, limits RunLimi
 		last := runs[n-1]
 		if last.Outcome == state.OutcomeRunning {
 			// The daemon skips ticks while a run is active, so only the
-			// run's own length matters.
-			if now.Sub(last.Started) > limit {
+			// run's own length matters. A restore in progress has no
+			// timeout of its own: a large one admitted just before
+			// max_run_duration may run long, and is not an overrun until
+			// the hard cap (code review 6.12).
+			el := now.Sub(last.Started)
+			if el > limit && (!restoring(st) || el > defaultMaxRun) {
 				return false, ReasonOverran
 			}
 			return true, ""
@@ -90,9 +97,21 @@ func Evaluate(st state.State, now time.Time, sched cron.Schedule, limits RunLimi
 		return true, ""
 	}
 	// Stored times keep the offset they were written with; the schedule is
-	// in the container's zone.
-	if due := sched.Next(base.In(time.Local)); !due.IsZero() && now.After(due.Add(missGrace)) {
+	// in the daemon's zone, which may differ from this process's (a TZ set
+	// only on the service; code review 6.6).
+	if due := sched.Next(base.In(zone)); !due.IsZero() && now.After(due.Add(missGrace)) {
 		return false, ReasonMissed
 	}
 	return true, ""
+}
+
+// restoring reports whether a proof in flight is restoring (its restore task
+// may still be running).
+func restoring(st state.State) bool {
+	for _, j := range st.InFlight {
+		if j.Stage == state.StageRestored {
+			return true
+		}
+	}
+	return false
 }

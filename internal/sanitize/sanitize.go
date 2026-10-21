@@ -25,6 +25,7 @@ var (
 	reRNG      = regexp.MustCompile(`^rng\d+$`)
 	reDev      = regexp.MustCompile(`^dev\d+$`)
 	reMP       = regexp.MustCompile(`^mp\d+$`)
+	reDrive    = regexp.MustCompile(`^(scsi|virtio|sata|ide)\d+$`)
 )
 
 // Sanitize computes the plan for a restored guest config. Disk keys are kept,
@@ -64,6 +65,11 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		case kind == model.KindQEMU && (reVirtiofs.MatchString(k) || k == "ivshmem"):
 			// ivshmem with a name would attach to the production guest's host shm.
 			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+		case kind == model.KindQEMU && reDrive.MatchString(k) && strings.HasPrefix(firstField(v), "/") && !strings.Contains(","+v+",", ",media=cdrom,"):
+			// A host device (raw disk passthrough): not in the backup, and
+			// PVE's restore keeps the line, so the copy would boot with
+			// the production disk (code review 1.9).
+			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k, Path: firstField(v)})
 		case kind == model.KindQEMU && reRNG.MatchString(k):
 			if src, _ := optValue(v, "source"); src == "/dev/hwrng" {
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})

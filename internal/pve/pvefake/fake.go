@@ -4,6 +4,7 @@ package pvefake
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -299,6 +300,12 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 		return "", fmt.Errorf("volume %s does not exist", volid)
 	}
 	cfg := parseConfig(raw)
+	// Like PVE, the restore creates new volumes named after the new VMID.
+	for k, v := range cfg {
+		if reVolKey.MatchString(k) {
+			cfg[k] = reOwnVol.ReplaceAllString(v, fmt.Sprintf("${1}-%d-", vmid))
+		}
+	}
 	// Like PVE with the client's onboot=0 restore override.
 	cfg["onboot"] = "0"
 	f.Configs[vmid] = cfg
@@ -308,6 +315,13 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	f.syncListing(vmid)
 	return upid("restore", vmid), nil
 }
+
+// reVolKey matches the config keys of disks and volumes; reOwnVol a volume
+// name's owner part ("vm-101-", "subvol-101-").
+var (
+	reVolKey = regexp.MustCompile(`^(scsi|virtio|sata|ide|efidisk|tpmstate|mp)\d+$|^rootfs$`)
+	reOwnVol = regexp.MustCompile(`\b(vm|subvol)-\d+-`)
+)
 
 // parseConfig reads "key: value" lines, skipping '#' comments and stopping at the first '[' section.
 func parseConfig(raw string) map[string]string {

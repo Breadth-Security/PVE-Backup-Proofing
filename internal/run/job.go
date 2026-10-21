@@ -134,8 +134,21 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		if err := j.setProtected(ctx, true); err != nil {
 			if pve.PermissionDenied(err) {
 				// PBS refused: nothing changed, so nothing to undo and
-				// nothing for the janitor (issue #30).
+				// nothing for the janitor (issue #30). Say so in the
+				// record at once: were PBP to stop before teardown
+				// drops it, the janitor would try to unprotect, PBS
+				// would refuse again, and every later run would stop
+				// at preflight (code review 1.6a).
 				j.protectSet = false
+				if uerr := d.Store.Update(func(st *state.State) error {
+					if job, ok := st.InFlight[j.vmid]; ok {
+						job.ProtectedOrig = nil
+						st.InFlight[j.vmid] = job
+					}
+					return nil
+				}); uerr != nil {
+					j.log.Warn("record that protect was refused: " + oneLine(uerr.Error()))
+				}
 				j.log.Info("PBS refused to protect the backup: " + oneLine(err.Error()))
 				fail(model.Error, "protect backup: %s", reasonPBSRefused)
 				return
@@ -240,7 +253,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 	out := probe.Run(pctx, d.Target.Executor(kind, j.vmid), probe.Input{
 		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
-		NoNesting: kind == model.KindLXC && !sanitize.Nesting(j.orig),
+		NoNesting: noNesting(kind, j.orig),
 	})
 	res.Verdict, res.Reason = out.Verdict, out.Reason
 	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits
@@ -457,3 +470,11 @@ var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 // oneLine turns each run of line breaks in s into one space: a reason is
 // always one line.
 func oneLine(s string) string { return lineBreaks.ReplaceAllString(s, " ") }
+
+// noNesting reports whether the probe should treat namespace failures as
+// the container's configuration: an unprivileged container without
+// nesting=1. A privileged container can set up its namespaces, so its
+// failed units are real (code review 5.11).
+func noNesting(kind model.GuestKind, orig map[string]string) bool {
+	return kind == model.KindLXC && orig["unprivileged"] == "1" && !sanitize.Nesting(orig)
+}

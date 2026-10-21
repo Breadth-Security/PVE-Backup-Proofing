@@ -89,12 +89,13 @@ func TestServeSkipsWhileRunActive(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(2500 * time.Millisecond)
+		// Stay active until a later tick has been skipped.
+		eventually(t, func() bool { return strings.Contains(buf.String(), "previous run still active, skipping") }, "a skipped tick")
 		active.Add(-1)
 		stop() // shut down once the run ends, so no second run starts
 	}
 
-	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, runFn); err != nil {
+	if err := serve(ctx, config.Config{Schedule: "* * * * *"}, runFn, ticking()); err != nil {
 		t.Fatal(err)
 	}
 	if active.Load() != 0 {
@@ -103,12 +104,112 @@ func TestServeSkipsWhileRunActive(t *testing.T) {
 	if maxActive.Load() != 1 || calls.Load() != 1 {
 		t.Errorf("max concurrent = %d, calls = %d; want 1, 1", maxActive.Load(), calls.Load())
 	}
-	if !strings.Contains(buf.String(), "previous run still active, skipping") {
-		t.Errorf("skip not logged: %s", buf)
+}
+
+// fakeClock is a wall clock the test sets; the loop wakes every few
+// milliseconds to look at it.
+type fakeClock struct {
+	mu   sync.Mutex
+	t    time.Time
+	step time.Duration // added at each read, when set
+}
+
+func (f *fakeClock) now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.t
+	f.t = f.t.Add(f.step)
+	return t
+}
+func (f *fakeClock) set(t time.Time) { f.mu.Lock(); f.t = t; f.mu.Unlock() }
+func (f *fakeClock) clock() clock {
+	return clock{now: f.now, wake: 2 * time.Millisecond, retryEvery: 5 * time.Millisecond, retryFor: time.Hour}
+}
+
+// ticking is a clock that reaches the next minute within a few reads, for
+// tests that need ticks without waiting for real ones (code review 7.8).
+func ticking() clock {
+	return (&fakeClock{t: at(1, 59, 50), step: 10 * time.Second}).clock()
+}
+
+func at(hh, mm, ss int) time.Time { return time.Date(2026, 10, 22, hh, mm, ss, 0, time.Local) }
+func eventually(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
-func TestServeSkipsWhenLockHeldElsewhere(t *testing.T) {
+// A run starts when the wall clock reaches its time: a clock that steps
+// back after the timer would have fired does not start it early, and the
+// same time never runs twice (code review 6.8).
+func TestServeFollowsTheWallClock(t *testing.T) {
+	t.Setenv("PBP_STATE_DIR", t.TempDir())
+	fc := &fakeClock{t: at(1, 59, 0)}
+	var calls atomic.Int32
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config.Config{Schedule: "0 2 * * *"}, func(context.Context, <-chan struct{}, string) { calls.Add(1) }, fc.clock())
+	}()
+	time.Sleep(50 * time.Millisecond) // many wakes, all before 02:00
+	if calls.Load() != 0 {
+		t.Fatal("ran before 02:00")
+	}
+	fc.set(at(2, 0, 1))
+	eventually(t, func() bool { return calls.Load() == 1 }, "the 02:00 run")
+	fc.set(at(1, 59, 30)) // the clock steps back over 02:00
+	time.Sleep(20 * time.Millisecond)
+	fc.set(at(2, 0, 30))
+	time.Sleep(50 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Errorf("02:00 ran %d times", n)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A tick that finds the lock held by another pbp command (a pbp check,
+// say) waits for it instead of losing the night's run (code review 6.7).
+func TestServeRetriesWhenLockHeldElsewhere(t *testing.T) {
+	t.Setenv("PBP_STATE_DIR", t.TempDir())
+	buf := captureLog(t)
+	release, err := AcquireLock(LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeClock{t: at(1, 59, 59)}
+	var calls atomic.Int32
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config.Config{Schedule: "0 2 * * *"}, func(context.Context, <-chan struct{}, string) { calls.Add(1) }, fc.clock())
+	}()
+	eventually(t, func() bool { return strings.Contains(buf.String(), "daemon started") }, "the start")
+	fc.set(at(2, 0, 1))
+	eventually(t, func() bool { return strings.Contains(buf.String(), "retrying") }, "the retry")
+	time.Sleep(30 * time.Millisecond)
+	if calls.Load() != 0 {
+		t.Fatal("ran while another process held the lock")
+	}
+	release()
+	eventually(t, func() bool { return calls.Load() == 1 }, "the run after the lock was released")
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "run lock held by another pbp command; retrying") {
+		t.Errorf("retry not logged: %s", buf)
+	}
+}
+
+// If the lock stays held for the whole retry window, the run is skipped.
+func TestServeGivesUpWhenLockStaysHeld(t *testing.T) {
 	t.Setenv("PBP_STATE_DIR", t.TempDir())
 	buf := captureLog(t)
 	release, err := AcquireLock(LockPath())
@@ -116,18 +217,28 @@ func TestServeSkipsWhenLockHeldElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
+	fc := &fakeClock{t: at(1, 59, 59)}
+	c := fc.clock()
+	c.retryFor = 20 * time.Minute
 	var calls atomic.Int32
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-
-	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, func(context.Context, <-chan struct{}, string) { calls.Add(1) }); err != nil {
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config.Config{Schedule: "0 2 * * *"}, func(context.Context, <-chan struct{}, string) { calls.Add(1) }, c)
+	}()
+	eventually(t, func() bool { return strings.Contains(buf.String(), "daemon started") }, "the start")
+	fc.set(at(2, 0, 1))
+	eventually(t, func() bool { return strings.Contains(buf.String(), "retrying") }, "the retry")
+	fc.set(at(2, 30, 0)) // past the retry window
+	eventually(t, func() bool {
+		return strings.Contains(buf.String(), "run lock still held by another pbp command; skipping")
+	}, "the skip")
+	stop()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 0 {
 		t.Errorf("ran %d times while another process held the lock", calls.Load())
-	}
-	if !strings.Contains(buf.String(), "previous run still active, skipping") {
-		t.Errorf("skip not logged: %s", buf)
 	}
 }
 
@@ -145,7 +256,7 @@ func TestServeHoldsLockDuringRun(t *testing.T) {
 		}
 		lockErr = err
 	}
-	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, runFn); err != nil {
+	if err := serve(ctx, config.Config{Schedule: "* * * * *"}, runFn, ticking()); err != nil {
 		t.Fatal(err)
 	}
 	if !errors.Is(lockErr, ErrBusy) {
@@ -179,7 +290,7 @@ func TestServeShutdownGrace(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- Serve(ctx, config.Config{Schedule: "@every 1s"}, runFn) }()
+	go func() { errc <- serve(ctx, config.Config{Schedule: "* * * * *"}, runFn, ticking()) }()
 	<-started
 	mu.Lock()
 	stopAt = time.Now()
@@ -242,7 +353,7 @@ func TestServeSignalsStopBeforeCancelling(t *testing.T) {
 		<-started
 		cancel()
 	}()
-	if err := Serve(ctx, config.Config{Schedule: "@every 1s"}, runFn); err != nil {
+	if err := serve(ctx, config.Config{Schedule: "* * * * *"}, runFn, ticking()); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-result; got != "ok" {

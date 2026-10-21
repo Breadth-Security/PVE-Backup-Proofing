@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
 )
 
@@ -327,6 +328,22 @@ func notify(ctx context.Context, sys System, stdin io.Reader) *failure {
 	}
 	if !severities[p.Severity] {
 		return refused("bad-severity", "notify severity %q is not one of info, notice, warning, error", p.Severity)
+	}
+	// Only what the daemon sends: a stolen key must not shape fields a
+	// notification matcher keys on, or data the templates never show
+	// (code review 2.4).
+	for k, v := range p.Fields {
+		switch {
+		case k == "type":
+		case k == "hostname" && len(v) <= 253 && strings.IndexFunc(v, func(r rune) bool { return r <= ' ' || r > '~' }) < 0:
+		default:
+			return refused("bad-payload", "notify field %q is not one PBP sends", k)
+		}
+	}
+	for k := range p.Data {
+		if !slices.Contains(report.DataKeys, k) {
+			return refused("bad-payload", "notify data key %q is not one PBP sends", k)
+		}
 	}
 	if p.Data == nil {
 		p.Data = map[string]json.RawMessage{}

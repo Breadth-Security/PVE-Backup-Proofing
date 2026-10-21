@@ -186,6 +186,16 @@ type settlingOpenRC struct {
 	calls *[]string
 }
 
+// settledThen answers the OpenRC settle script at once and delegates the rest.
+type settledThen struct{ probe.Executor }
+
+func (s settledThen) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if openRCSettle(argv) {
+		return out(""), nil
+	}
+	return s.Executor.Exec(ctx, argv)
+}
+
 func (s settlingOpenRC) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
 	if s.calls != nil {
 		*s.calls = append(*s.calls, strings.Join(argv, " "))
@@ -253,10 +263,10 @@ func (r recordingExec) Exec(ctx context.Context, argv []string) (probe.ExecResul
 func TestOpenRCByContainerOSType(t *testing.T) {
 	for _, ostype := range []string{"alpine", "gentoo"} {
 		var calls []string
-		ex := recordingExec{probetest.Scripted{
+		ex := settlingOpenRC{Scripted: probetest.Scripted{
 			"rc-status --crashed": out(""), "findmnt -n -o OPTIONS /": out("rw\n"),
 			sysState: out("running\n"), // must not be consulted
-		}, &calls}
+		}, calls: &calls}
 		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, OSType: ostype})
 		if o.Verdict != model.Proven {
 			t.Errorf("%s: %+v", ostype, o)
@@ -594,7 +604,8 @@ func TestBaseCommandTimesOut(t *testing.T) {
 			t.Errorf("%s: got %v %q", cmd, o.Verdict, o.Reason)
 		}
 	}
-	o := probe.Run(context.Background(), hanging(probetest.Scripted{}, "rc-status --crashed"), probe.Input{OS: probe.Linux, OSType: "alpine", Checks: ck})
+	ex := probetest.Scripted{"rc-status --format ini": probe.ExecResult{ExitCode: 1}}
+	o := probe.Run(context.Background(), settledThen{hanging(ex, "rc-status --crashed")}, probe.Input{OS: probe.Linux, OSType: "alpine", Checks: ck})
 	if o.Verdict != model.Failed || o.Reason != "check timed out: openrc services" {
 		t.Errorf("rc-status: got %v %q", o.Verdict, o.Reason)
 	}
@@ -954,5 +965,53 @@ func TestStalledTransportIsError(t *testing.T) {
 	o := probe.Run(context.Background(), noAnswerExec{healthy(), ssC}, probe.Input{OS: probe.Linux, Checks: ck})
 	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "probe transport error: ") {
 		t.Fatalf("got %v %q, want ERROR probe transport error", o.Verdict, o.Reason)
+	}
+}
+
+// A guest whose root is read-only by design can say so in checks.guests;
+// others still fail (code review 5.10).
+func TestReadOnlyRootAllowedPerGuest(t *testing.T) {
+	ex := healthy()
+	ex[findmnt] = out("ro,relatime\n")
+	ck := config.Checks{Guests: []config.GuestChecks{{Match: config.GuestMatch{Tag: "haos"}, AllowReadOnlyRoot: true}}}
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{Tags: []string{"haos"}}})
+	if o.Verdict != model.Proven {
+		t.Errorf("allowed: got %v %q", o.Verdict, o.Reason)
+	}
+	o = probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{Tags: []string{"web"}}})
+	if o.Verdict != model.Failed || o.Reason != "root filesystem read-only" {
+		t.Errorf("not matched: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// A Gentoo container running systemd: the ostype sends it to OpenRC, which
+// finds no rc-status, so the systemd path judges it (code review 5.15).
+func TestGentooWithSystemd(t *testing.T) {
+	o := probe.Run(context.Background(), healthy(), probe.Input{OS: probe.Linux, OSType: "gentoo"})
+	if o.Verdict != model.Proven {
+		t.Fatalf("got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+	// Neither init: still BOOTED, without looping.
+	o = probe.Run(context.Background(), probetest.Scripted{}, probe.Input{OS: probe.Linux, OSType: "gentoo"})
+	if o.Verdict != model.Booted || o.Reason != "init answering, service state unknown" {
+		t.Fatalf("no init tools: got %v %q", o.Verdict, o.Reason)
+	}
+}
+
+// A timeout reading the /proc fallbacks (no findmnt, no ss) is ERROR, not
+// a FAILED "check timed out": a slow cat says nothing about the backup.
+func TestProcFallbackTimeoutIsError(t *testing.T) {
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
+	ex := healthy()
+	delete(ex, findmnt)
+	o := probe.Run(context.Background(), hanging(ex, procMounts), probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error {
+		t.Errorf("mounts: got %v %q, want ERROR", o.Verdict, o.Reason)
+	}
+	ex = healthy()
+	delete(ex, ssC)
+	o = probe.Run(context.Background(), hanging(ex, procTCP), probe.Input{OS: probe.Linux, Checks: ck})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "cannot list listening ports") {
+		t.Errorf("ports: got %v %q, want ERROR", o.Verdict, o.Reason)
 	}
 }

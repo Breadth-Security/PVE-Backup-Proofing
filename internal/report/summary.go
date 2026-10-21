@@ -9,6 +9,11 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
+// DataKeys are the keys of TemplateData, which the node helper accepts in a
+// notify payload and no others (code review 2.4).
+var DataKeys = []string{"node", "run-id", "headline", "summary", "logs", "run-error", "environment-errors",
+	"failed", "errored", "booted", "skipped", "proven", "not-covered"}
+
 // TemplateData builds the data passed to the PVE notification templates.
 // The lists hold ready-made lines so the templates only print them (no key
 // may be a proxmox-notify helper name, and the templates use only plain

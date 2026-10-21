@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/syslog"
 	"os"
@@ -27,13 +28,20 @@ const nodeUsage = "usage: pbp node            (SSH forced command only; reads SS
 const msgNoRequest = "pbp-node: refused: no request (pbp node runs only as an SSH forced command)"
 
 // auditEntry is one helper request for the node's journal. It never holds
-// argv or notify payloads, which may contain secrets.
+// the arguments of an exec or notify payloads, which may contain secrets;
+// for an exec it keeps the command name, the argument count, the time taken
+// and the exit code, enough to see what a stolen key ran (code review 2.5).
 type auditEntry struct {
 	Outcome string // "received", "ok", or a nodeproto.Kind* value
 	Op      string
 	VMID    int // 0 when the request has none
 	Reason  string
 	Client  string // from SSH_CONNECTION / SSH_CLIENT, may be empty
+	Cmd     string // exec: argv[0]
+	Argc    int    // exec: len(argv)
+	Elapsed time.Duration
+	Exit    int
+	HasExit bool // exec: Exit is the command's exit code
 }
 
 // auditLog records helper requests.
@@ -87,6 +95,15 @@ func formatAudit(e auditEntry) string {
 	}
 	if e.VMID != 0 {
 		b.WriteString(" vmid=" + strconv.Itoa(e.VMID))
+	}
+	if e.Cmd != "" {
+		fmt.Fprintf(&b, " cmd=%s argc=%d", strconv.Quote(e.Cmd), e.Argc)
+	}
+	if e.HasExit {
+		b.WriteString(" exit=" + strconv.Itoa(e.Exit))
+	}
+	if e.Elapsed > 0 {
+		b.WriteString(" elapsed=" + e.Elapsed.Round(time.Millisecond).String())
 	}
 	if e.Client != "" {
 		b.WriteString(" client=" + e.Client)
@@ -166,6 +183,9 @@ func (a *app) nodeMain(ctx context.Context, args []string) int {
 
 	req, perr := nodeproto.Parse(request)
 	entry := auditEntry{Outcome: "ok", Op: req.Op, VMID: req.VMID, Client: clientAddr()}
+	if perr == nil && req.Op == "exec" && len(req.Argv) > 0 {
+		entry.Cmd, entry.Argc = cleanField(req.Argv[0], 64), len(req.Argv)
+	}
 	if a.audit == nil {
 		a.audit = newSyslogAudit()
 	}
@@ -187,7 +207,14 @@ func (a *app) nodeMain(ctx context.Context, args []string) int {
 	}
 
 	errw := &tailWriter{w: a.stderr}
+	start := time.Now()
 	code, refusal := node.ServeCoded(ctx, cfg, a.nodeSys, version, request, a.stdin, a.stdout, errw)
+	if entry.Cmd != "" {
+		entry.Elapsed = time.Since(start)
+		if code != nodeproto.ExitRefused {
+			entry.Exit, entry.HasExit = code, true
+		}
+	}
 
 	switch {
 	case perr != nil:

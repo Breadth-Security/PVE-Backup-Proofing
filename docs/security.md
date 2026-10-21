@@ -4,7 +4,7 @@ PBP restores copies of your production guests and boots them on a production Pro
 
 ## What PBP touches: the VMID range and the `pbp` tag
 
-PBP restores into a range of VMIDs you choose (for example `990000`-`990049`), names each temporary guest `pbp-<vmid>-<timestamp>` and tags it `pbp`.
+PBP restores into a range of VMIDs you choose (for example `990000`-`990049`), tags each temporary guest `pbp`, and names a VM `pbp-<original VMID>-<backup time, UTC, YYYYMMDDHHMM>` (a container keeps its own hostname, since changing it would change the guest).
 
 > **PBP owns every guest in the range that carries the tag `pbp`, and it will destroy it.** Never tag your own guests `pbp`, and never put your own guests in the range. PBP never creates, changes, starts, stops or destroys anything outside the range.
 
@@ -26,14 +26,14 @@ At every preflight PBP reads the bridge's live state on the node and refuses to 
 
 PBP uses the Proxmox API with a token for almost everything. A few things have no API equivalent: `pct exec` (checking inside containers), the bridge's live state (IPv6, addresses, members), and arbitrary notifications (`PVE::Notify`; the notifications REST API can only send a fixed test message). For these, PBP logs in over SSH as the unprivileged `pbp` user. **PBP never uses root SSH.**
 
-That login is locked to one command. The key in `/var/lib/pbp/.ssh/authorized_keys` is marked `restrict,command="sudo /usr/bin/pbp node"`, so whatever the client asks for, sshd runs only the `pbp node` helper (no shell, no forwarding, no pty), and one sudo rule lets `pbp` run exactly that command as root. The helper does these four things, and only for guests it is allowed to touch:
+That login is locked to one command. The key in `/var/lib/pbp/.ssh/authorized_keys` is marked `restrict,command="sudo /usr/bin/pbp node"`, so whatever the client asks for, sshd runs only the `pbp node` helper (no shell, no forwarding, no pty), and one sudo rule lets `pbp` run exactly that command as root. The helper does these things, and only for guests it is allowed to touch:
 
 - it runs `pct exec` only in a container whose VMID is inside its `vmid_range` and which carries the `pbp` tag, and passes the command as an argument list, never through a shell; it passes on at most 8 MiB of the command's output per stream and kills a command that prints more, so a hostile proof container cannot flood PBP (which caps what it reads, too),
 - it reports the one configured bridge's state, read-only,
 - it sends notifications of type `pbp` through `PVE::Notify`, and
-- it prints its own configuration and version.
+- it prints its own configuration and version, and the hashes of the installed notification templates (so `pbp check` can tell whether they are current).
 
-**What a stolen PBP key gets:** those four things, within the range. It does not get a shell, any other command, a guest outside the range or untagged, forwarding, or root. The range, tag and bridge are read from `/etc/pbp/node.yaml` on the node, which the key cannot change. The key file, its `.ssh` directory and the `pbp` account's home `/var/lib/pbp` all belong to root, so a process running as `pbp` cannot rewrite its own forced command or swap the key file. `pbp node setup` also checks that sshd reads `pbp`'s keys from nowhere else (no `authorized_keys2`, no other `AuthorizedKeysFile`, no `AuthorizedKeysCommand`, no SSH user CA) and that the sudo rule is exactly the one above.
+**What a stolen PBP key gets:** those things, within the range. It does not get a shell, any other command, a guest outside the range or untagged, forwarding, or root. The range, tag and bridge are read from `/etc/pbp/node.yaml` on the node, which the key cannot change. The key file, its `.ssh` directory and the `pbp` account's home `/var/lib/pbp` all belong to root, so a process running as `pbp` cannot rewrite its own forced command or swap the key file. `pbp node setup` also checks that sshd reads `pbp`'s keys from nowhere else (no `authorized_keys2`, no other `AuthorizedKeysFile`, no `AuthorizedKeysCommand`, no SSH user CA) and that the sudo rule is exactly the one above.
 
 **What it does reach is production data.** `pct exec` runs as root inside the container, and every `pbp`-tagged container in the range is a running copy of a production container while PBP proofs it. A stolen key can therefore read anything in that copy (database files, TLS and SSH private keys, application secrets) during the proof window and carry it out over the same SSH session, and from inside it reach the other proof guests on the isolated bridge. Protect the PBP SSH key like a root credential for your production containers, not like a low-value service login.
 
@@ -85,4 +85,4 @@ Granting `Sys.Modify` on `/` lifts the first restriction but also lets the token
 
 ## What setup never touches
 
-`pbp setup` and `pbp node setup` never create the bridge or reload networking, never touch root's `authorized_keys`, `/etc/ssh/sshd_config` or any guest, and never replace a file they did not write without `--replace` (which backs the old file up first). Both run only as root in an interactive terminal; the node side refuses to run from an SSH forced command or through the `pbp` account's sudo rule, so a stolen PBP key cannot reach them.
+`pbp setup` and `pbp node setup` never create the bridge or reload networking, never touch root's `authorized_keys`, `/etc/ssh/sshd_config` or any guest, and never replace a file they did not write without `--replace` (which backs the old file up first). `pbp node setup` (and `uninstall` and `install-templates`) runs only as root in an interactive terminal: it refuses to run from an SSH forced command or through the `pbp` account's sudo rule, so a stolen PBP key cannot reach it. `pbp setup` runs on the PBP host and writes only there.

@@ -35,6 +35,8 @@ Guests that appear, and backups that appear or go away during the test (a
 scheduled backup or prune), are not compared. A production guest that an
 admin stops, starts or reboots during the test also fails it: rerun.
 
+Each snapshot reads every guest's config and every backup's notes on the source storages, about 2 × (guests + backups) API calls per test: fine on a node with tens of guests, slow on one with thousands of backups.
+
 There is no Windows case: the suite has no Windows guest to proof. The
 PowerShell check is unit-tested against a real capture
 (internal/probe/testdata), and Windows proofing is otherwise tested by hand.

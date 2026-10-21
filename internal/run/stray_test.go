@@ -171,3 +171,16 @@ func assertNoStrayMutation(t *testing.T, calls []string, vmidRange [2]int, stray
 		}
 	}
 }
+
+// A pbp-tagged guest in the range but on another cluster node is reported
+// with its node, not as outside the range (code review 1.7).
+func TestRunReportsTaggedGuestOnAnotherNode(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	g := pve.GuestRef{Key: model.GuestKey{Kind: model.KindLXC, VMID: 990003}, Node: "pve2", Name: "web", Tags: []string{"pbp"}}
+	f.tgt.StrayGuests = []pve.GuestRef{g}
+	s := f.run(context.Background(), Options{Trigger: "schedule"})
+	want := "CT 990003 (web) is tagged pbp and in the PBP range but on node pve2, not pve1; not touched (remove it by hand if it is a leftover)"
+	if !slices.Equal(s.EnvironmentErrors, []string{want}) {
+		t.Errorf("EnvironmentErrors = %q", s.EnvironmentErrors)
+	}
+}

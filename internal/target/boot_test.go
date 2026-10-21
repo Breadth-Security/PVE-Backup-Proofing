@@ -264,14 +264,14 @@ func TestWaitBootedLXC(t *testing.T) {
 	})
 	t.Run("ostype reported", func(t *testing.T) {
 		f := mk("alpine")
-		got, err := newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+		got, err := newTarget(t, f, f, &helperfake.Fake{Handler: helperfake.OK}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
 		if err != nil || got.OS != probe.Linux || got.OSType != "alpine" {
 			t.Errorf("got %+v, %v", got, err)
 		}
 	})
 	t.Run("unmanaged ostype", func(t *testing.T) {
 		f := mk("unmanaged")
-		got, err := newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+		got, err := newTarget(t, f, f, &helperfake.Fake{Handler: helperfake.OK}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
 		if err != nil || got.OS != probe.Unknown {
 			t.Errorf("got %+v, %v", got, err)
 		}
@@ -562,7 +562,7 @@ func TestWaitBootedOSName(t *testing.T) {
 	f = healthyFake()
 	f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990001, "running", "pbp")}
 	f.Configs[990001] = map[string]string{"tags": "pbp", "ostype": "debian"}
-	got, err = newTarget(t, f, f, &helperfake.Fake{}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
+	got, err = newTarget(t, f, f, &helperfake.Fake{Handler: helperfake.OK}).WaitBooted(ctx, model.KindLXC, 990001, time.Second)
 	if err != nil || got.OSName != "debian" {
 		t.Errorf("CT: got %+v, %v", got, err)
 	}

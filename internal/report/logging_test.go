@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,5 +283,25 @@ func TestNewRunLogRejectsUnknownTrigger(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(root); len(ents) != 0 {
 		t.Errorf("created %v", ents)
+	}
+}
+
+// Guest-controlled text (a command's stderr, a Windows event) cannot put
+// raw control characters into the log files: they could rewrite lines or
+// send terminal escapes to whoever views the log (code review 5.12).
+func TestRunLogEscapesControlCharacters(t *testing.T) {
+	root := t.TempDir()
+	start := time.Date(2026, 10, 21, 23, 59, 58, 0, edt)
+	rl, err := NewRunLog(root, start, "schedule", tickClock(start))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rl.Close() }()
+	l := rl.Logger(io.Discard)
+	l.Info("check failed (exit 1: \x1b[2Jgone\rover\u0085x\x7f)\tok", "detail", "a\x1bb")
+	got := readLines(t, filepath.Join(rl.Dir(), "run.log"))
+	want := `2026-10-21 23:59:58 EDT check failed (exit 1: \x1b[2Jgone\x0dover\xc2\x85x\x7f)` + "\tok" + ` detail=a\x1bb`
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
 	}
 }

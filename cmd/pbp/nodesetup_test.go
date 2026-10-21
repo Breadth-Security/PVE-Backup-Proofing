@@ -733,3 +733,22 @@ func TestNodeSetupWarnsAboutLocalDaemon(t *testing.T) {
 		})
 	}
 }
+
+// A planted authorized_keys line or file name cannot send escape sequences
+// to root's terminal through the plan (code review 3.4).
+func TestPrintPlanEscapesControlCharacters(t *testing.T) {
+	var b strings.Builder
+	printPlan(&b, nodesetup.Plan{Items: []nodesetup.Item{{
+		Kind: nodesetup.KindFile, Name: "authorized_keys", Path: "/var/lib/pbp/.ssh/authorized_keys",
+		Status: nodesetup.Differs, Diff: "-ssh-ed25519 AAAA \x1b[2J\x1b[1;1Hall good\r\n+restrict ...",
+	}, {Kind: nodesetup.KindCheck, Name: "extra .ssh entry", Path: "evil\x07\x9bname", Status: nodesetup.Differs}}})
+	out := b.String()
+	if strings.ContainsAny(out, "\x1b\x07\r") || strings.Contains(out, "\u009b") {
+		t.Fatalf("raw control characters in the plan: %q", out)
+	}
+	for _, want := range []string{`\x1b[2J`, `\x0d`, `evil\x07\x9bname`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan lacks %q: %q", want, out)
+		}
+	}
+}

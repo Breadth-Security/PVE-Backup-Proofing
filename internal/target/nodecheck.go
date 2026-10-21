@@ -97,7 +97,14 @@ func (n *ExistingNode) CheckNodeSteps(ctx context.Context) []NodeStep {
 	}
 
 	const stepRefusal = "node helper refusal"
-	probe := n.hi + 1
+	// Probe a VMID above the range that no guest uses: if the helper is
+	// broken in exactly the way this step exists to catch, the exec must
+	// not reach a real container (code review 1.5).
+	probe, err := n.unusedAbove(ctx)
+	if err != nil {
+		add(stepRefusal, "", err)
+		return steps
+	}
 	_, err = n.helper.Exec(ctx, probe, []string{"true"})
 	var re *sshx.RefusedError
 	switch {
@@ -113,4 +120,32 @@ func (n *ExistingNode) CheckNodeSteps(ctx context.Context) []NodeStep {
 		add(stepRefusal, "", fmt.Errorf("helper did not refuse an out-of-range exec in %d: %s", probe, reason))
 	}
 	return steps
+}
+
+// maxVMID is the largest VMID PVE accepts.
+const maxVMID = 999999999
+
+// unusedAbove returns the first VMID above the range that no guest in the
+// cluster uses. Without an API (unit tests of the helper steps alone) it is
+// the one just above the range.
+func (n *ExistingNode) unusedAbove(ctx context.Context) (int, error) {
+	probe := n.hi + 1
+	if n.api == nil {
+		return probe, nil
+	}
+	gs, err := n.api.Guests(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list guests to pick an unused VMID above the range: %w", err)
+	}
+	used := make(map[int]bool, len(gs))
+	for _, g := range gs {
+		used[g.Key.VMID] = true
+	}
+	for used[probe] {
+		if probe == maxVMID {
+			return 0, errors.New("no unused VMID above the range to check the helper's refusal with")
+		}
+		probe++
+	}
+	return probe, nil
 }
