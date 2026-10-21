@@ -5,9 +5,10 @@ By default PBP restores and boots its proof copies on a production Proxmox node.
 This page covers **one source cluster** whose backups are proofed on one dedicated node. Proofing backups of several clusters from one datastore is not supported yet: guests are identified by kind and VMID, so two clusters' VM 100 would be treated as one guest.
 
 ```
-production PVE  ── backup jobs ──▶  PBS datastore  ◀── same datastore ──  proofing PVE
-                                                                             ▲
-                                                                  PBP (its own host, or on it)
+Production PVE  ── Backup jobs ──▶  PBS datastore  ◀── same datastore ──  Proofing PVE
+                                                                          ▲
+                                                                          │
+                                                                          PBP (its own host, or on the proofing host directly)
 ```
 
 PBP itself is unchanged: it talks only to the proofing node, which is its `target.node`. Where to run PBP is a separate choice: [Where to run PBP](security.md#where-to-run-pbp).
