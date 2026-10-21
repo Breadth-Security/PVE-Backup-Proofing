@@ -454,10 +454,11 @@ var errorMarkers = []string{"decrypt", "encryption key", "permission", "no space
 	"reset by peer", "broken pipe", "not online"}
 
 // damageMarkers name damage to the backup itself: only these make a restore
-// failure FAILED (code review I6).
+// failure FAILED (code review I6). A chunk missing from the datastore shows
+// as a failed read of its .chunks/ path (PBS answers HTTP 400).
 var damageMarkers = []string{"corrupt", "bad chunk", "chunk digest", "wrong digest", "digest mismatch",
 	"checksum", "failed to decode", "decode error", "unable to parse", "invalid magic", "bad magic",
-	"missing chunk"}
+	"missing chunk", "/.chunks/", "unable to load chunk"}
 
 // ClassifyRestoreError maps a restore failure to a verdict. FAILED, which
 // blames the backup, only for known damage to it (corrupt or missing

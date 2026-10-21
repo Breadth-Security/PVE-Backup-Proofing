@@ -36,35 +36,54 @@ func (r *linuxRun) fail(ctx context.Context, reason string) Outcome {
 	return r.out
 }
 
+// errProbeExit: a probe command the guest has exited non-zero. As for the
+// other base commands, that is a FAILED "probe error".
+var errProbeExit = errors.New("probe error")
+
 // crashLoopRestarts is how many restarts make a service in auto-restart a
-// crash loop rather than a slow start.
+// crash loop even when its last run ended cleanly.
 const crashLoopRestarts = 3
 
 // crashLooping lists services that keep crashing under Restart=: they sit in
 // the auto-restart sub-state and never become "failed" (code review I7). One
-// counts with crashLoopRestarts restarts or more, or when NRestarts is
-// unknown (systemd < 235). Best effort: if the list cannot be read, none.
-func (r *linuxRun) crashLooping(ctx context.Context) []string {
-	res, err := r.exec(ctx, "systemctl", "list-units", "--type=service", "--state=auto-restart", "--plain", "--no-legend", "--no-pager")
-	if err != nil || res.ExitCode != 0 {
-		return nil
+// counts once it restarted after a run that failed (Result not "success"),
+// after crashLoopRestarts clean restarts, or when NRestarts is unknown
+// (systemd < 235). An error reading the list or a unit is returned: a
+// guest whose crash loops PBP could not check is not passed.
+func (r *linuxRun) crashLooping(ctx context.Context) ([]string, error) {
+	res, err := r.exec(ctx, "systemctl", "list-units", "--type=service", "--state=auto-restart,auto-restart-queued",
+		"--plain", "--no-legend", "--no-pager")
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("%w: systemctl list-units exited %d", errProbeExit, res.ExitCode)
 	}
 	var out []string
 	for _, u := range firstFields(res.Stdout) {
-		n, err := r.exec(ctx, "systemctl", "show", "-p", "NRestarts", "--value", "--", u)
+		n, err := r.exec(ctx, "systemctl", "show", "-p", "Result", "-p", "NRestarts", "--", u)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		v := strings.TrimSpace(n.Stdout)
-		if k, perr := strconv.Atoi(v); v == "" || n.ExitCode != 0 || (perr == nil && k >= crashLoopRestarts) {
+		props := map[string]string{}
+		for _, line := range strings.Split(n.Stdout, "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+				props[k] = v
+			}
+		}
+		k, perr := strconv.Atoi(props["NRestarts"])
+		switch {
+		case n.ExitCode != 0 || perr != nil:
+			out = append(out, u)
+		case k >= crashLoopRestarts, k >= 1 && props["Result"] != "" && props["Result"] != "success":
 			out = append(out, u)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // openRCFailed lists the services `rc-status --format ini` reports as
-// failed: crashed in any section, or stopped in a runlevel section (a
+// failed: crashed or failed in any section, or stopped in a runlevel section (a
 // service of the runlevel that failed to start, which --crashed misses;
 // seen on Alpine 3.24). The "Dynamic" sections (dependencies, hotplugged,
 // manual) are not the runlevel's own (code review I9).
@@ -82,7 +101,10 @@ func openRCFailed(ini string) []string {
 			continue
 		}
 		name, state = strings.TrimSpace(name), strings.TrimSpace(state)
-		if (state == "crashed" || (runlevel && state == "stopped")) && !slices.Contains(failed, name) {
+		// "scheduled" (waiting on another service) and "inactive" are not
+		// failures.
+		bad := state == "crashed" || state == "failed" || (runlevel && state == "stopped")
+		if bad && !slices.Contains(failed, name) {
 			failed = append(failed, name)
 		}
 	}
@@ -124,6 +146,16 @@ func waitUnsupported(res ExecResult) bool {
 	return strings.Contains(e, "unrecognized option") || strings.Contains(e, "unknown option")
 }
 
+// stillStarting reports whether is-system-running answered that boot is
+// not finished.
+func stillStarting(res ExecResult) bool {
+	switch strings.TrimSpace(res.Stdout) {
+	case "starting", "initializing":
+		return true
+	}
+	return false
+}
+
 // pollSettle polls `systemctl is-system-running` until the state is past
 // starting/initializing, or until deadline, when it returns errSettleTimeout
 // like guard.settle does. It replaces --wait on old systemd.
@@ -131,12 +163,12 @@ func (r *linuxRun) pollSettle(ctx context.Context, deadline time.Time) (ExecResu
 	every := min(5*time.Second, max(time.Until(deadline)/20, 10*time.Millisecond))
 	for {
 		res, err := r.exec(ctx, "systemctl", "is-system-running")
-		if err != nil {
+		switch {
+		case errors.Is(err, errCommandTimeout):
+			// A guest busy booting can be slow to answer: still starting.
+		case err != nil:
 			return res, err
-		}
-		switch strings.TrimSpace(res.Stdout) {
-		case "starting", "initializing":
-		default:
+		case !stillStarting(res):
 			return res, nil
 		}
 		if !time.Now().Before(deadline) || !sleep(ctx, every) {
@@ -192,6 +224,10 @@ func (r *linuxRun) execErr(ctx context.Context, name string, err error) Outcome 
 		return r.errorOut(endedReason(err))
 	case errors.Is(err, errCommandTimeout):
 		return r.fail(ctx, "check timed out: "+name)
+	case errors.Is(err, errProbeExit):
+		return r.fail(ctx, err.Error())
+	case errors.Is(err, errNoPortSource):
+		return r.errorOut(err.Error())
 	}
 	return r.errorOut(transportReason(err))
 }
@@ -229,14 +265,19 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 	start := time.Now()
 	budget := settleBudget(ctx, in.SettleTimeout)
 	res, err := r.ex.settle(ctx, budget, []string{"systemctl", "is-system-running", "--wait"})
-	if err == nil && waitUnsupported(res) {
-		// systemd < 240 has no --wait (code review I12): poll instead.
+	if err == nil && (waitUnsupported(res) || stillStarting(res)) {
+		// systemd < 240 has no --wait (code review I12): 232-239 accept and
+		// ignore it, older ones refuse it. Poll instead.
 		res, err = r.pollSettle(ctx, start.Add(budget))
 	}
 	if errors.Is(err, errSettleTimeout) {
 		// Not settled in time: judge the state it is in now.
 		waited := time.Since(start).Round(time.Second)
 		res, err = r.exec(ctx, "systemctl", "is-system-running")
+		if errors.Is(err, errCommandTimeout) {
+			// Too busy booting to answer.
+			return r.errorOut("guest still starting after " + waited.String() + r.pendingJobs(ctx))
+		}
 		if err == nil && res.ExitCode != 127 {
 			switch strings.TrimSpace(res.Stdout) {
 			case "starting", "initializing":
@@ -283,7 +324,11 @@ func runLinux(ctx context.Context, ex *guard, in Input) Outcome {
 		return r.fail(ctx, fmt.Sprintf("probe error: systemctl list-units exited %d", res.ExitCode))
 	}
 	failed := firstFields(res.Stdout)
-	for _, u := range r.crashLooping(ctx) {
+	looping, err := r.crashLooping(ctx)
+	if err != nil {
+		return r.execErr(ctx, "crash-looping services", err)
+	}
+	for _, u := range looping {
 		if !slices.Contains(failed, u) {
 			failed = append(failed, u)
 		}

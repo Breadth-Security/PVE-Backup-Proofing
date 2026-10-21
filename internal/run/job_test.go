@@ -44,6 +44,7 @@ func healthy() probetest.Scripted {
 		failedC:                   out(""),
 		"systemctl list-unit-files --state=enabled --no-legend --plain": out(""),
 		"ss -ltnH": out(""),
+		"systemctl list-units --type=service --state=auto-restart,auto-restart-queued --plain --no-legend --no-pager": out(""),
 	}
 }
 

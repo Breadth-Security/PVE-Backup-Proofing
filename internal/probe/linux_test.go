@@ -28,11 +28,12 @@ func out(s string) probe.ExecResult { return probe.ExecResult{Stdout: s} }
 
 func healthy() probetest.Scripted {
 	return probetest.Scripted{
-		sysState: out("running\n"),
-		findmnt:  out("rw,relatime\n"),
-		failedC:  out(""),
-		enabledC: out("nginx.service enabled enabled\n"),
-		ssC:      out("LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\nLISTEN 0 4096 [::]:22 [::]:*\n"),
+		sysState:     out("running\n"),
+		findmnt:      out("rw,relatime\n"),
+		failedC:      out(""),
+		enabledC:     out("nginx.service enabled enabled\n"),
+		ssC:          out("LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\nLISTEN 0 4096 [::]:22 [::]:*\n"),
+		autoRestartC: out(""),
 	}
 }
 
@@ -74,7 +75,9 @@ func TestFailedUnit(t *testing.T) {
 }
 
 func TestSystemStatesFail(t *testing.T) {
-	for _, s := range []string{"emergency", "maintenance", "starting", "stopping", "offline"} {
+	// "starting" from --wait means an old systemd ignored --wait; it is
+	// polled (TestSystemdIgnoresWait).
+	for _, s := range []string{"emergency", "maintenance", "stopping", "offline"} {
 		ex := healthy()
 		ex[sysState] = out(s + "\n")
 		o := run(ex, config.Checks{})
@@ -280,7 +283,7 @@ func TestContainerWithoutSystemctl(t *testing.T) {
 }
 
 func TestUnexpectedSystemState(t *testing.T) {
-	for _, s := range []string{"initializing", "unknown", ""} {
+	for _, s := range []string{"unknown", ""} {
 		ex := healthy()
 		ex[sysState] = out(s + "\n")
 		o := run(ex, config.Checks{})
@@ -511,6 +514,49 @@ func TestOldSystemdWithoutWait(t *testing.T) {
 	}
 }
 
+// stateSeq answers one command with each result in turn, repeating the
+// last; other commands come from the script.
+type stateSeq struct {
+	probetest.Scripted
+	cmd   string
+	res   []probe.ExecResult
+	calls *int
+}
+
+func (s stateSeq) Exec(ctx context.Context, argv []string) (probe.ExecResult, error) {
+	if strings.Join(argv, " ") != s.cmd {
+		return s.Scripted.Exec(ctx, argv)
+	}
+	i := min(*s.calls, len(s.res)-1)
+	*s.calls++
+	return s.res[i], nil
+}
+
+// systemd 232-239 accept --wait but ignore it, answering "starting" at once:
+// that is polled like an old systemd that refuses --wait, not FAILED.
+func TestSystemdIgnoresWait(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = probe.ExecResult{ExitCode: 1, Stdout: "starting\n"}
+	calls := 0
+	seq := stateSeq{ex, sysStateNow, []probe.ExecResult{{ExitCode: 1, Stdout: "starting\n"}, out("running\n")}, &calls}
+	o := probe.Run(context.Background(), seq, probe.Input{OS: probe.Linux, SettleTimeout: 5 * time.Second})
+	if o.Verdict != model.Proven || calls != 2 {
+		t.Fatalf("got %v %q after %d polls, want PROVEN after 2", o.Verdict, o.Reason, calls)
+	}
+}
+
+// A poll that times out while the guest is busy booting counts as still
+// starting, not as a failed check.
+func TestOldSystemdPollTimesOut(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = probe.ExecResult{ExitCode: 1, Stderr: "systemctl: unrecognized option '--wait'\n"}
+	o := probe.Run(context.Background(), hanging(ex, sysStateNow),
+		probe.Input{OS: probe.Linux, SettleTimeout: 100 * time.Millisecond, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+	if o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "guest still starting after ") {
+		t.Fatalf("got %v %q, want ERROR guest still starting", o.Verdict, o.Reason)
+	}
+}
+
 // A guest that is still starting is ERROR even when no probe deadline was
 // set: the settle wait has its own default bound.
 func TestBootSettleWithoutProbeDeadline(t *testing.T) {
@@ -536,10 +582,11 @@ func TestBootSettleCancelled(t *testing.T) {
 func TestBaseCommandTimesOut(t *testing.T) {
 	ck := config.Checks{CommandTimeout: 20 * time.Millisecond}
 	for cmd, name := range map[string]string{
-		findmnt:  "root filesystem",
-		failedC:  "failed units",
-		enabledC: "enabled units",
-		ssC:      "nginx:ports:80,443",
+		findmnt:      "root filesystem",
+		failedC:      "failed units",
+		enabledC:     "enabled units",
+		ssC:          "nginx:ports:80,443",
+		autoRestartC: "crash-looping services",
 	} {
 		o := probe.Run(context.Background(), hanging(healthy(), cmd), probe.Input{OS: probe.Linux, Checks: ck})
 		if o.Verdict != model.Failed || o.Reason != "check timed out: "+name {
@@ -724,33 +771,55 @@ func TestListeningPortsWithoutSS(t *testing.T) {
 	}
 	ex = healthy()
 	delete(ex, ssC)
-	if o := run(ex, config.Checks{}); o.Verdict == model.Failed || o.Verdict == model.Proven {
+	if o := run(ex, config.Checks{}); o.Verdict != model.Error || !strings.HasPrefix(o.Reason, "cannot list listening ports") {
 		t.Errorf("neither ss nor /proc/net/tcp: got %v %q, want ERROR", o.Verdict, o.Reason)
 	}
 }
 
-const autoRestartC = "systemctl list-units --type=service --state=auto-restart --plain --no-legend --no-pager"
+const autoRestartC = "systemctl list-units --type=service --state=auto-restart,auto-restart-queued --plain --no-legend --no-pager"
 
-func nRestarts(unit string) string { return "systemctl show -p NRestarts --value -- " + unit }
+func showRestarts(unit string) string { return "systemctl show -p Result -p NRestarts -- " + unit }
 
 // A service that keeps crashing under Restart=always never reaches
-// "failed": it sits in auto-restart. With 3 restarts or more (or no
-// NRestarts, systemd < 235) it counts as a failed unit, subject to the
-// ignore list; one that restarted once or twice is not judged yet (code
-// review I7).
+// "failed": it sits in auto-restart. It counts as a failed unit, subject to
+// the ignore list, once it restarted after a failed run, after 3 clean
+// restarts, or when NRestarts is unknown (systemd < 235); one that restarted
+// once or twice after clean exits is not judged yet (code review I7).
 func TestCrashLoopingServiceFails(t *testing.T) {
 	ex := healthy()
-	ex[autoRestartC] = out("redis-server.service loaded activating auto-restart Advanced key-value store\nflaky.service loaded activating auto-restart Flaky\nold.service loaded activating auto-restart Old\n")
-	ex[nRestarts("redis-server.service")] = out("17\n")
-	ex[nRestarts("flaky.service")] = out("1\n")
-	ex[nRestarts("old.service")] = out("\n")
+	ex[autoRestartC] = out("redis-server.service loaded activating auto-restart Advanced key-value store\n" +
+		"slow.service loaded activating auto-restart Slow\nclean.service loaded activating auto-restart Clean\n" +
+		"oneshot.service loaded activating auto-restart Oneshot\nold.service loaded activating auto-restart Old\n")
+	ex[showRestarts("redis-server.service")] = out("Result=exit-code\nNRestarts=17\n")
+	ex[showRestarts("slow.service")] = out("Result=exit-code\nNRestarts=1\n") // RestartSec=10: one crash so far
+	ex[showRestarts("clean.service")] = out("Result=success\nNRestarts=3\n")
+	ex[showRestarts("oneshot.service")] = out("Result=success\nNRestarts=1\n")
+	ex[showRestarts("old.service")] = out("Result=exit-code\n")
 	o := run(ex, config.Checks{})
-	if o.Verdict != model.Failed || o.Reason != "failed: redis-server.service, old.service" {
-		t.Fatalf("got %v %q, want FAILED naming redis-server and old", o.Verdict, o.Reason)
+	want := "failed: redis-server.service, slow.service, clean.service, old.service"
+	if o.Verdict != model.Failed || o.Reason != want {
+		t.Fatalf("got %v %q, want FAILED %q", o.Verdict, o.Reason, want)
 	}
-	o = run(ex, config.Checks{IgnoreUnits: []string{"redis-server.service", "old.service"}})
+	o = run(ex, config.Checks{IgnoreUnits: []string{"redis-server.service", "slow.service", "clean.service", "old.service"}})
 	if o.Verdict != model.Proven {
 		t.Errorf("ignored: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+}
+
+// A crash-loop check that cannot run is not skipped: a guest PBP could not
+// check for crash loops is not PROVEN.
+func TestCrashLoopCheckErrors(t *testing.T) {
+	ex := healthy()
+	ex[autoRestartC] = probe.ExecResult{ExitCode: 1}
+	if o := run(ex, config.Checks{}); o.Verdict != model.Failed || o.Reason != "probe error: systemctl list-units exited 1" {
+		t.Errorf("list exits 1: got %v %q", o.Verdict, o.Reason)
+	}
+	ex = healthy()
+	ex[autoRestartC] = out("a.service loaded activating auto-restart A\n")
+	o := probe.Run(context.Background(), hanging(ex, showRestarts("a.service")),
+		probe.Input{OS: probe.Linux, Checks: config.Checks{CommandTimeout: 20 * time.Millisecond}})
+	if o.Verdict != model.Failed || o.Reason != "check timed out: crash-looping services" {
+		t.Errorf("show hangs: got %v %q", o.Verdict, o.Reason)
 	}
 }
 
@@ -783,6 +852,11 @@ func TestOpenRCFailedToStart(t *testing.T) {
 	ini := "[default]\nsshd =  started \n[Dynamic needed/wanted]\nhwdrivers =  stopped \n"
 	if o := alpine(probetest.Scripted{rcIni: out(ini), findmnt: out("rw\n")}); o.Verdict != model.Proven {
 		t.Errorf("dynamic stopped: got %v %q, want PROVEN", o.Verdict, o.Reason)
+	}
+	// "failed" is a failure in any section; "scheduled" is not.
+	ini = "[default]\nsshd =  started \nqueued =  scheduled \n[Dynamic needed/wanted]\nnetmount =  failed \n"
+	if o := alpine(probetest.Scripted{rcIni: out(ini), findmnt: out("rw\n")}); o.Verdict != model.Failed || o.Reason != "failed: netmount" {
+		t.Errorf("failed state: got %v %q, want FAILED naming netmount", o.Verdict, o.Reason)
 	}
 }
 
