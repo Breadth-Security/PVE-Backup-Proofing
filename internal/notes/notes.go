@@ -90,10 +90,17 @@ func Merge(existing, line, name string) string {
 			}
 		}
 	}
-	if len(out) > 1 && name != "" && strings.TrimSpace(out[1]) == clean(name, maxName) {
+	if len(out) > 1 && name != "" && isName(out[1], name) {
 		out = append(out[:1], out[2:]...)
 	}
 	return strings.Join(out, "\n")
+}
+
+// isName reports whether a notes line is just the guest's name, uncut or as
+// Line cuts it.
+func isName(line, name string) bool {
+	line = strings.TrimSpace(line)
+	return line == clean(name, maxName) || line == clean(name, len(name)+1)
 }
 
 // OldFormat reports whether notes start with a PBP line in the name-less
@@ -107,13 +114,13 @@ func OldFormat(notes string) bool {
 // that it starts with name, keeping the verdict, time and reason. It
 // reports false, and returns notes unchanged, for notes in any other form.
 func Migrate(notes, name string) (string, bool) {
-	name = clean(name, maxName)
-	if name == "" || !OldFormat(notes) {
+	short := clean(name, maxName)
+	if short == "" || !OldFormat(notes) {
 		return notes, false
 	}
 	first, _, _ := strings.Cut(notes, "\n")
 	first = strings.TrimRight(first, "\r")
-	return Merge(notes, name+sep+first, name), true
+	return Merge(notes, short+sep+first, name), true
 }
 
 // HasProven reports whether notes contain a PBP line with verdict PROVEN.

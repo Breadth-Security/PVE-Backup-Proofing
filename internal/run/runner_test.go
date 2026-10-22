@@ -1582,8 +1582,8 @@ func TestRunMigratesOldNotes(t *testing.T) {
 	older := model.Backup{
 		Storage: "pbs", Notes: "PBP FAILED 2026-10-11 02:14 · failed: x.service\nweekly",
 		VolID: "pbs:backup/qemu/101/2026-10-11T22:00:00Z", Size: gib,
-		Key:   model.GuestKey{Kind: model.KindQEMU, VMID: 101},
-		Time:  time.Date(2026, 10, 11, 22, 0, 0, 0, time.UTC),
+		Key:  model.GuestKey{Kind: model.KindQEMU, VMID: 101},
+		Time: time.Date(2026, 10, 11, 22, 0, 0, 0, time.UTC),
 	}
 	f.api.Backups["pbs"] = append(f.api.Backups["pbs"], older)
 	f.api.BackupConfigs[older.VolID] = "name: g101\n"
@@ -1614,5 +1614,52 @@ func TestRunMigratesOldNotes(t *testing.T) {
 	}
 	if !strings.Contains(f.logBuf.String(), "added the guest name in front of the PBP line on 2 older backups") {
 		t.Errorf("migration not logged:\n%s", f.logBuf.String())
+	}
+}
+
+// The notes sweep stops with the run: a run that is stopping leaves the old
+// format for the next run and says how many are left.
+func TestRunMigrateNotesStops(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	b := f.add("pbs", model.KindQEMU, 101, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok\ng101")
+	stop := make(chan struct{})
+	close(stop)
+
+	f.run(context.Background(), Options{Trigger: "manual", Stop: stop})
+
+	if got := f.api.Backups["pbs"][0].Notes; got != b.Notes {
+		t.Errorf("notes rewritten while stopping: %q", got)
+	}
+	if !strings.Contains(f.logBuf.String(), "0 failed, 1 left for the next run") {
+		t.Errorf("left-over count not logged:\n%s", f.logBuf.String())
+	}
+}
+
+// An old-format backup whose config cannot be read is named by its label,
+// unless tags may exclude guests: then its notes are left alone, without a
+// warning each run.
+func TestRunMigrateNotesUnreadableConfig(t *testing.T) {
+	for _, tags := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exclude tags %v", tags), func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			b := f.add("pbs", model.KindQEMU, 101, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok\ng101")
+			f.api.Fail["OriginalConfig"] = errors.New("extractconfig failed")
+			want := "VM101 · PBP PROVEN 2026-10-18 02:14 · agent ok\ng101"
+			if tags {
+				f.d.Cfg.Selection.Exclude.Tags = []string{"no-proof"}
+				want = b.Notes
+			} else {
+				f.allow(b.VolID)
+			}
+
+			f.run(context.Background(), Options{Trigger: "manual"})
+
+			if got := f.api.Backups["pbs"][0].Notes; got != want {
+				t.Errorf("notes = %q, want %q", got, want)
+			}
+			if strings.Contains(f.logBuf.String(), "level=WARN") {
+				t.Errorf("warned:\n%s", f.logBuf.String())
+			}
+		})
 	}
 }

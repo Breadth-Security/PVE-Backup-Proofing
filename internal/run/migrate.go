@@ -2,8 +2,10 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
@@ -23,17 +25,31 @@ func oldNotes(all []model.Backup) []model.Backup {
 	return out
 }
 
+// maxMigrations bounds the backups one run rewrites: each costs a config
+// extraction from PBS, and the first run after upgrading may find hundreds.
+// The rest wait for the next run.
+const maxMigrations = 100
+
+// errNoConfig is a backup whose config cannot be read while tags may
+// exclude its guest: its notes are left alone.
+var errNoConfig = errors.New("backup config unreadable")
+
 // migrateNotes puts the guest's name back in front of the old-format PBP
 // line of each backup in bs, every backup of a guest and not only the
 // newest, so a search by name finds them again. It runs after the proofs,
-// skips excluded guests (their notes are left alone) and stops when the run
-// is cancelled or stopping. Failures are logged only: the next run retries.
-func (p *pool) migrateNotes(ctx context.Context, bs []model.Backup) {
+// skips excluded guests (their notes are left alone), rewrites at most
+// maxMigrations backups, and stops when the run is cancelled, stopping or
+// past restore.max_run_duration. Failures are logged only: the next run
+// retries.
+func (p *pool) migrateNotes(ctx context.Context, bs []model.Backup, start time.Time) {
 	d := p.d
 	node := d.Cfg.Target.Node
-	done, failed := 0, 0
-	for _, b := range bs {
-		if ctx.Err() != nil || p.stopping() {
+	done, failed, left := 0, 0, 0
+	for i, b := range bs {
+		limit := d.Cfg.Restore.MaxRunDuration
+		if ctx.Err() != nil || p.stopping() || done+failed >= maxMigrations ||
+			(limit > 0 && !d.Now().Before(start.Add(limit))) {
+			left = len(bs) - i
 			break
 		}
 		if d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, p.liveTags[b.Key]) != "" {
@@ -41,6 +57,8 @@ func (p *pool) migrateNotes(ctx context.Context, bs []model.Backup) {
 		}
 		changed, err := migrateOne(ctx, d, node, b, p.log)
 		switch {
+		case errors.Is(err, errNoConfig):
+			p.log.Info("notes of " + b.VolID + " left in the old format: its backup config cannot be read and might exclude the guest by tag")
 		case err != nil:
 			failed++
 			p.log.Warn(fmt.Sprintf("notes of %s: cannot add the guest name to the PBP line: %s", b.VolID, oneLine(err.Error())))
@@ -48,8 +66,8 @@ func (p *pool) migrateNotes(ctx context.Context, bs []model.Backup) {
 			done++
 		}
 	}
-	if done > 0 || failed > 0 {
-		p.log.Info(fmt.Sprintf("notes: added the guest name in front of the PBP line on %d older backups (%d failed, retried at the next run)", done, failed))
+	if done > 0 || failed > 0 || left > 0 {
+		p.log.Info(fmt.Sprintf("notes: added the guest name in front of the PBP line on %d older backups (%d failed, %d left for the next run)", done, failed, left))
 	}
 }
 
@@ -65,11 +83,17 @@ func migrateOne(ctx context.Context, d Deps, node string, b model.Backup, log *s
 	if !notes.OldFormat(full) {
 		return false, nil // rewritten meanwhile, by this run's proof
 	}
-	raw, err := d.API.OriginalConfig(ctx, node, b.VolID)
-	if err != nil {
-		return false, err
+	var orig map[string]string
+	switch raw, err := d.API.OriginalConfig(ctx, node, b.VolID); {
+	case err == nil:
+		orig = sanitize.ParseConfigText(raw)
+	case len(d.Cfg.Selection.Exclude.Tags) > 0:
+		// Its own tags might exclude it, as in admit.
+		return false, errNoConfig
+	default:
+		// Named by its label (noteName with no config), as in admit.
+		log.Debug("backup config unreadable, naming the guest by its label", "volid", b.VolID, "err", err)
 	}
-	orig := sanitize.ParseConfigText(raw)
 	if rule := d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, sanitize.SplitList(orig["tags"])); rule != "" {
 		return false, nil
 	}

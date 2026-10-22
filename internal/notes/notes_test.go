@@ -184,3 +184,26 @@ func TestMigrate(t *testing.T) {
 		t.Error("migrated without a name")
 	}
 }
+
+// A name longer than maxName is cut in the line, but a first line holding
+// the whole name is still recognised as the name and not repeated.
+func TestMergeAbsorbsLongName(t *testing.T) {
+	name := strings.Repeat("host-", 15) + "example.lan"
+	l := Line(name, model.Proven, time.Date(2026, 10, 19, 2, 14, 0, 0, time.UTC), "ok")
+	if got := Merge(name+"\nnote", l, name); got != l+"\nnote" {
+		t.Fatalf("got %q", got)
+	}
+	o := old(model.Proven, 18, 2, 10, "ok")
+	got, _ := Migrate(o+"\n"+name, name)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("name repeated: %q", got)
+	}
+}
+
+func TestMigrateCRLF(t *testing.T) {
+	o := old(model.Proven, 18, 2, 10, "ok")
+	got, changed := Migrate(o+"\r\ndb01\r\nnote", "db01")
+	if !changed || got != "db01 · "+o+"\nnote" {
+		t.Fatalf("got %q, %v", got, changed)
+	}
+}
