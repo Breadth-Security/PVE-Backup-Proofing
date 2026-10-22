@@ -393,7 +393,7 @@ func (j *job) teardown(res *model.GuestResult) {
 			if res.Verdict == model.Proven {
 				res.Verdict, res.Reason = model.Error, "booted, but PBP could not remove its test copy (retried at the next run)"
 			} else {
-				res.Reason += "; test copy not removed (retried at the next run)"
+				res.Reason = withSuffix(res.Reason, "; test copy not removed (retried at the next run)")
 			}
 			clean = false
 		} else {
@@ -411,7 +411,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		})
 		if err != nil {
 			j.log.Error("restore backup protected flag failed; left for the janitor", "vmid", j.vmid, "err", err)
-			res.Reason += "; backup left protected until the next run"
+			res.Reason = withSuffix(res.Reason, "; backup left protected until the next run")
 			clean = false
 		} else {
 			done = append(done, "protected set back to false")

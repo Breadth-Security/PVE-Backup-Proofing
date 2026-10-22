@@ -399,6 +399,18 @@ func TestRestoreDecryptError(t *testing.T) {
 	}
 }
 
+// A restore PVE refuses for a missing privilege names the privilege and
+// the docs, not the API path or the temporary VMID (issue #73).
+func TestRestoreRefusedNamesPrivilege(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.RestoreErr = map[int]error{tmpVMID: fmt.Errorf("restore pbs:backup/ct/101/x to %d: pve api /nodes/pve1/lxc: 403: Permission check failed (/, Sys.Modify)", tmpVMID)}
+	res := f.run(context.Background())
+	const want = "restore refused: PBP's token lacks Sys.Modify (" + docsToken + ")"
+	if res.Verdict != model.Error || res.Reason != want {
+		t.Errorf("result %s %q, want ERROR %q", res.Verdict, res.Reason, want)
+	}
+}
+
 func TestRestoreCorruptIsFailed(t *testing.T) {
 	f := newFixture(t)
 	f.tgt.RestoreErr = map[int]error{tmpVMID: errors.New("unable to read archive: bad chunk digest")}

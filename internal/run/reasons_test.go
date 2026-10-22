@@ -59,3 +59,25 @@ func assertPlainReason(t *testing.T, who, reason string) {
 		t.Errorf("%s: reason is %d runes, too long for the notes line: %q", who, n, reason)
 	}
 }
+
+func TestScrubVolumeAndTarget(t *testing.T) {
+	for in, want := range map[string]string{
+		"lvcreate 'pve/vm-990000-disk-0' error: VG has insufficient free space": "lvcreate 'pve/vm-…-disk-0' error: VG has insufficient free space",
+		"restore pbs:backup/ct/123/2026 to 990000: unable to read config":       "restore pbs:backup/ct/123/2026: unable to read config",
+	} {
+		if got := scrub(in, 990000, "CT123"); got != want {
+			t.Errorf("scrub(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWithSuffixKeepsSuffix(t *testing.T) {
+	long := strings.Repeat("x", 160)
+	got := withSuffix(withSuffix(long, "; test copy not removed (retried at the next run)"), "; backup left protected until the next run")
+	if n := utf8.RuneCountInString(got); n > maxNotedRunes {
+		t.Errorf("%d runes", n)
+	}
+	if !strings.HasSuffix(got, "; backup left protected until the next run") {
+		t.Errorf("suffix lost: %q", got)
+	}
+}

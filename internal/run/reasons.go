@@ -54,6 +54,10 @@ func scrub(s string, vmid int, label string) string {
 		}
 		return m[:2]
 	})
+	// "restore … to 990000: …" and volume names such as vm-990000-disk-0
+	// read better shortened than with the VMID cut out.
+	s = regexp.MustCompile(`\s+to\s+`+id+`\b`).ReplaceAllString(s, "")
+	s = regexp.MustCompile(`-`+id+`-`).ReplaceAllString(s, "-…-")
 	s = regexp.MustCompile(`\s*\b`+id+`\b`).ReplaceAllString(s, "")
 	if reInternal.MatchString(s) {
 		return "see the guest's log"
@@ -75,4 +79,14 @@ func cutRunes(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n-1]) + "…"
+}
+
+// maxNotedRunes is what a reason may take of the notes line, after "PBP
+// BOOTED 2026-10-19 02:14 · ".
+const maxNotedRunes = 170
+
+// withSuffix appends a teardown note to reason, shortening reason so the
+// note survives the notes line's cut.
+func withSuffix(reason, suffix string) string {
+	return cutRunes(reason, maxNotedRunes-utf8.RuneCountInString(suffix)) + suffix
 }
