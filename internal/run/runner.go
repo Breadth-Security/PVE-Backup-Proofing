@@ -37,7 +37,8 @@ const (
 	reasonDeadline      = "run deadline"
 	reasonCancelled     = "run cancelled"
 	reasonNoMemory      = "insufficient node memory"
-	reasonNoVMID        = "no free VMID"
+	reasonPrivileged    = "PBP cannot restore privileged containers (see " + docsToken + " for options)"
+	reasonNoVMID        = "no free VMID for the test copy (target.vmid_range is full)"
 	reasonTemplate      = "template (not bootable)"
 	reasonStopping      = "PBP stopping"
 )
@@ -185,10 +186,9 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 			outcome = state.OutcomeError
 		}
 	}
-	c := s.Counts()
-	log.Info(fmt.Sprintf("run finished in %s · %d proven, %d failed, %d booted, %d skipped, %d error · severity %s",
-		report.Dur(s.Ended.Sub(s.Started)), c[model.Proven], c[model.Failed], c[model.Booted], c[model.Skipped], c[model.Error], sev),
-		"outcome", outcome)
+	log.Info(fmt.Sprintf("run finished in %s · %s severity %s",
+		report.Dur(s.Ended.Sub(s.Started)), report.SeverityMark(sev), sev), "outcome", outcome)
+	log.Info(report.CountsLine(s))
 
 	rec.Outcome, rec.Ended, rec.Counts = outcome, s.Ended, s.Counts()
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {
@@ -489,7 +489,8 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		b.Time.In(at.Location()).Format("2006-01-02 15:04"), report.Age(at.Sub(b.Time)), report.Bytes(b.Size)))
 	raw, err := d.API.OriginalConfig(ctx, node, b.VolID)
 	if err != nil {
-		l, res := fail(model.Error, "cannot read backup config: "+err.Error())
+		glog.Info("read the backup's config: " + oneLine(err.Error()))
+		l, res := fail(model.Error, plainErr("cannot read the backup's config from PBS", err))
 		// Unlike the node-wide gates below, this failure is the backup's
 		// own, so its notes record it (annotate skips a SKIPPED result).
 		// p.mu is not held yet. But when tags exclude guests and the guest
@@ -522,9 +523,25 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 	// not be the guest it stands for. Like an unreadable config, this is the
 	// backup's own condition: its notes record it.
 	if keys := sanitize.RawLXCKeys(orig); b.Key.Kind == model.KindLXC && len(keys) > 0 {
-		l, res := fail(model.Error, "raw lxc config ("+strings.Join(keys, ", ")+") needs root@pam to restore")
+		l, res := fail(model.Error, "PBP cannot restore containers with raw lxc settings ("+strings.Join(keys, ", ")+"): only root@pam can ("+docsToken+")")
 		annotate(d, glog, b, *res)
 		return l, res
+	}
+	// PVE restores a privileged container only for a caller with Sys.Modify
+	// on /, which PBP's role does not grant (issue #73). Say so plainly,
+	// before anything is reserved or restored, rather than leave PVE's
+	// refusal of the restore to explain it.
+	if b.Key.Kind == model.KindLXC && orig["unprivileged"] != "1" {
+		privs, err := d.API.Privileges(ctx, "/")
+		switch {
+		case err != nil:
+			// The restore itself still reports a refusal.
+			glog.Info("cannot read PBP's privileges on /, restoring the privileged container anyway: " + oneLine(err.Error()))
+		case !privs["Sys.Modify"]:
+			l, res := fail(model.Error, reasonPrivileged)
+			annotate(d, glog, b, *res)
+			return l, res
+		}
 	}
 	needRAM := guestMemoryMiB(b.Key.Kind, orig) * (1 << 20) * 110 / 100
 
@@ -533,7 +550,8 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 
 	st, err := d.API.StorageStatus(ctx, node, store)
 	if err != nil {
-		return fail(model.Error, fmt.Sprintf("cannot read storage %s: %v", store, err))
+		glog.Info("read storage " + store + ": " + oneLine(err.Error()))
+		return fail(model.Error, plainErr("cannot read storage "+store, err))
 	}
 	margin := st.Total * int64(d.Cfg.Restore.SpaceMarginPercent) / 100
 	if freeSpace := st.Avail - p.spaceRes - margin; b.Size > freeSpace {
@@ -544,7 +562,8 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 
 	mem, err := d.API.NodeMemory(ctx, node)
 	if err != nil {
-		return fail(model.Error, "cannot read node memory: "+err.Error())
+		glog.Info("read node memory: " + oneLine(err.Error()))
+		return fail(model.Error, plainErr("cannot read the node's memory", err))
 	}
 	freeRAM := mem.Available - p.ramRes
 	ramFigures := fmt.Sprintf("need %s RAM, %s free (after %s reserved)",
@@ -562,7 +581,8 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		return fail(model.Skipped, reasonNoVMID)
 	}
 	if err != nil {
-		return fail(model.Error, "allocate VMID: "+err.Error())
+		glog.Info("allocate a VMID: " + oneLine(err.Error()))
+		return fail(model.Error, plainErr("cannot allocate a VMID for the test copy", err))
 	}
 	p.inUse[vmid] = true
 	p.spaceRes += b.Size

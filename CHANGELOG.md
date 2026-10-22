@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.7.0
 
+**Upgrade both sides, and reinstall the notification templates.** The notification carries two new data keys (the severity marker and the counts line), which a 0.6 node helper refuses; the daemon and the helper must share major.minor, so a 0.7 daemon's preflight refuses a 0.6 helper. Follow [Upgrading](docs/upgrading.md), then run the `pbp node setup` line again (or `pbp node install-templates` as root on the node); preflight says so if the templates are stale. Configs need no change.
+
+- **Plain verdict reasons** ([#73](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/73)). A privileged container now ends `ERROR` before any restore with `PBP cannot restore privileged containers`, pointing to the options (convert it to unprivileged, exclude it, or grant `Sys.Modify`) in [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof); it used to fail on PVE's 403 with the temporary VMID in the reason. Every reason in the notes and notifications now leaves out the temporary VMID and PVE's API internals, names the missing privilege when PVE refused a step, and points to the guest's log for the detail. Check names read `postgresql (command pg_isready -q)` instead of `postgresql:commands:pg_isready -q`. A VM without an agent says whether the agent is not enabled or did not answer, and what to do ([VMs and the guest agent](docs/checks.md#vms-and-the-guest-agent)).
+- **Run summary at a glance.** The run's counts are on their own line, with markers: ✅ proven, ☑️ previously proven (a backup an earlier run proved, which used to count as skipped), ❌ failed, ⚠️ error or booted, ⏭️ skipped, in `run.log`, the service log and the notification. The notification's subject leads with the run's severity marker, and its sections carry the same markers.
 - Maintenance: `golang.org/x/crypto` 0.58.0 and `golang.org/x/sys` 0.49.0; the Docker image is now built on `distroless/static-debian13` (Debian 13, was 12); CI uses `actions/checkout` and `actions/setup-go` v7 (Node 24, was Node 20) and Trivy 0.76.1.
 
 ## v0.6.1

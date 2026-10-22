@@ -166,6 +166,7 @@ func (t *recTarget) Destroy(ctx context.Context, kind model.GuestKind, vmid int,
 }
 
 type fixture struct {
+	t      *testing.T
 	d      Deps
 	api    *recAPI
 	tgt    *recTarget
@@ -202,7 +203,7 @@ func newFixture(t *testing.T) *fixture {
 	var logBuf bytes.Buffer
 	f := &fixture{
 		api: &recAPI{Fake: pf, rec: rec}, tgt: &recTarget{Fake: tf, rec: rec},
-		rec: rec, store: store, b: b, logBuf: &logBuf,
+		rec: rec, store: store, b: b, logBuf: &logBuf, t: t,
 	}
 	f.d = Deps{
 		Cfg: cfg, API: f.api, Target: f.tgt, Store: store,
@@ -217,7 +218,9 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) run(ctx context.Context) model.GuestResult {
-	return proofOne(ctx, f.d, f.b, tmpVMID, sanitize.ParseConfigText(f.api.BackupConfigs[f.b.VolID]), guestLogger(f.d, f.b.Key))
+	r := proofOne(ctx, f.d, f.b, tmpVMID, sanitize.ParseConfigText(f.api.BackupConfigs[f.b.VolID]), guestLogger(f.d, f.b.Key))
+	assertPlainReason(f.t, f.b.Key.Label(), r.Reason)
+	return r
 }
 
 // notes returns the backup's notes as stored in the fake.
@@ -309,7 +312,7 @@ func TestProtectedReadFailure(t *testing.T) {
 	f := newFixture(t)
 	f.api.Fail["VolumeProtected"] = errors.New("api down")
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || !strings.HasPrefix(res.Reason, "read backup protected flag: ") {
+	if res.Verdict != model.Error || res.Reason != "cannot read the backup's protected flag from PBS (see the guest's log)" {
 		t.Fatalf("got %s %q", res.Verdict, res.Reason)
 	}
 	for _, c := range f.rec.entries() {
@@ -363,7 +366,7 @@ func TestUnsafeNeverStarts(t *testing.T) {
 	f := newFixture(t)
 	f.tgt.SanitizeErr = map[int]error{tmpVMID: fmt.Errorf("%w: hostpci0", target.ErrUnsafe)}
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || res.Reason != "unsafe config: hostpci0" {
+	if res.Verdict != model.Error || res.Reason != "unsafe copy: hostpci0" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	calls := strings.Join(f.rec.entries(), "\n")
@@ -373,7 +376,7 @@ func TestUnsafeNeverStarts(t *testing.T) {
 	if !strings.Contains(calls, "Destroy") {
 		t.Errorf("guest not destroyed:\n%s", calls)
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · unsafe config: hostpci0\n") {
+	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · unsafe copy: hostpci0\n") {
 		t.Errorf("notes %q", f.notes())
 	}
 }
@@ -393,6 +396,18 @@ func TestRestoreDecryptError(t *testing.T) {
 	}
 	if f.protected() {
 		t.Error("backup left protected")
+	}
+}
+
+// A restore PVE refuses for a missing privilege names the privilege and
+// the docs, not the API path or the temporary VMID (issue #73).
+func TestRestoreRefusedNamesPrivilege(t *testing.T) {
+	f := newFixture(t)
+	f.tgt.RestoreErr = map[int]error{tmpVMID: fmt.Errorf("restore pbs:backup/ct/101/x to %d: pve api /nodes/pve1/lxc: 403: Permission check failed (/, Sys.Modify)", tmpVMID)}
+	res := f.run(context.Background())
+	const want = "restore refused: PBP's token lacks Sys.Modify (" + docsToken + ")"
+	if res.Verdict != model.Error || res.Reason != want {
+		t.Errorf("result %s %q, want ERROR %q", res.Verdict, res.Reason, want)
 	}
 }
 
@@ -434,18 +449,18 @@ func TestDestroyFailure(t *testing.T) {
 		reason  string
 		stage   string
 	}{
-		{"proven becomes error", func(*fixture) {}, model.Error, "cleanup failed: destroy (booted ok)", state.StageStarted},
+		{"proven becomes error", func(*fixture) {}, model.Error, "booted, but PBP could not remove its test copy (retried at the next run)", state.StageStarted},
 		{"failed kept", func(f *fixture) {
 			ex := healthy()
 			ex[failedC] = out("postgresql.service loaded failed failed PG\n")
 			f.tgt.Exec[tmpVMID] = ex
-		}, model.Failed, "failed: postgresql.service; cleanup failed: destroy", state.StageStarted},
+		}, model.Failed, "failed: postgresql.service; test copy not removed (retried at the next run)", state.StageStarted},
 		{"booted kept", func(f *fixture) {
 			f.tgt.Boot[tmpVMID] = target.BootInfo{AgentMissing: true}
-		}, model.Booted, "guest agent missing; cleanup failed: destroy", state.StageStarted},
+		}, model.Booted, "guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?; test copy not removed (retried at the next run)", state.StageStarted},
 		{"error kept", func(f *fixture) {
 			f.tgt.SanitizeErr = map[int]error{tmpVMID: fmt.Errorf("%w: hostpci0", target.ErrUnsafe)}
-		}, model.Error, "unsafe config: hostpci0; cleanup failed: destroy", state.StageRestored},
+		}, model.Error, "unsafe copy: hostpci0; test copy not removed (retried at the next run)", state.StageRestored},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -504,7 +519,7 @@ func TestDestroyPanicStillCleansUp(t *testing.T) {
 	f := newFixture(t)
 	f.tgt.panicDestroy = true
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || res.Reason != "cleanup failed: destroy (booted ok)" {
+	if res.Verdict != model.Error || res.Reason != "booted, but PBP could not remove its test copy (retried at the next run)" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	got := f.rec.entries()
@@ -518,7 +533,7 @@ func TestDestroyPanicStillCleansUp(t *testing.T) {
 	if j, ok := f.inFlight(); !ok || j.Stage != state.StageStarted {
 		t.Errorf("InFlight = %+v, %v", j, ok)
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · cleanup failed: destroy (booted ok)\n") {
+	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · booted, but PBP could not remove its test copy (retried at the next run)\n") {
 		t.Errorf("notes %q", f.notes())
 	}
 	if !strings.Contains(f.logBuf.String(), "destroy boom") || !strings.Contains(f.logBuf.String(), "stack=") {
@@ -545,7 +560,7 @@ func TestSanitizeErrorNeverStarts(t *testing.T) {
 	f := newFixture(t)
 	f.tgt.SanitizeErr = map[int]error{tmpVMID: errors.New("read config 990000: connection reset")}
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || res.Reason != "sanitize failed: read config 990000: connection reset" {
+	if res.Verdict != model.Error || res.Reason != "cannot make the copy safe (see the guest's log)" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	calls := strings.Join(f.rec.entries(), "\n")
@@ -558,7 +573,7 @@ func TestProtectFailure(t *testing.T) {
 	f := newFixture(t)
 	f.api.failProtect = true
 	res := f.run(context.Background())
-	if res.Verdict != model.Error || res.Reason != "protect backup: protect refused" {
+	if res.Verdict != model.Error || res.Reason != "cannot protect the backup on PBS (see the guest's log)" {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	want := []string{"SetProtected=true @protected", "SetProtected=false @protected", "SetNotes @-"}
@@ -662,7 +677,7 @@ func TestUnprotectFailureKeepsVerdict(t *testing.T) {
 	f := newFixture(t)
 	f.api.failUnprotect = true
 	res := f.run(context.Background())
-	if res.Verdict != model.Proven || !strings.HasSuffix(res.Reason, "; cleanup failed: unprotect") {
+	if res.Verdict != model.Proven || !strings.HasSuffix(res.Reason, "; backup left protected until the next run") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	j, ok := f.inFlight()
@@ -680,10 +695,10 @@ func TestBootOutcomes(t *testing.T) {
 		reason       string
 		agentMissing bool
 	}{
-		{"agent missing", target.BootInfo{OS: probe.Unknown, AgentMissing: true}, nil, model.Booted, "guest agent missing", true},
-		{"exec blocked", target.BootInfo{OS: probe.Linux, ExecBlocked: true}, nil, model.Booted, "agent cannot run commands", false},
-		{"no boot", target.BootInfo{}, fmt.Errorf("%w: status stopped", target.ErrBootFailed), model.Failed, "did not boot: guest did not boot: status stopped", false},
-		{"node fault", target.BootInfo{}, errors.New("pve api: 500 internal"), model.Error, "boot check error: pve api: 500 internal", false},
+		{"agent missing", target.BootInfo{OS: probe.Unknown, AgentMissing: true}, nil, model.Booted, "guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?", true},
+		{"exec blocked", target.BootInfo{OS: probe.Linux, ExecBlocked: true}, nil, model.Booted, "the guest agent refuses to run commands (guest-exec disabled by its policy)", false},
+		{"no boot", target.BootInfo{}, fmt.Errorf("%w: status stopped", target.ErrBootFailed), model.Failed, "did not boot: status stopped", false},
+		{"node fault", target.BootInfo{}, errors.New("pve api: 500 internal"), model.Error, "could not check whether the guest booted (see the guest's log)", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -953,6 +968,14 @@ func TestNoNestingOnlyUnprivileged(t *testing.T) {
 	} {
 		if got := noNesting(tc.kind, tc.cfg); got != tc.want {
 			t.Errorf("%s %v: %v, want %v", tc.kind, tc.cfg, got, tc.want)
+		}
+	}
+}
+
+func TestAgentEnabled(t *testing.T) {
+	for v, want := range map[string]bool{"1": true, "enabled=1,fstrim_cloned_disks=1": true, "1,fstrim_cloned_disks=1": true, "0": false, "": false, "enabled=0": false} {
+		if got := agentEnabled(map[string]string{"agent": v}); got != want {
+			t.Errorf("agent %q: %v, want %v", v, got, want)
 		}
 	}
 }

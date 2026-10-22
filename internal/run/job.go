@@ -115,7 +115,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	// to pruning (code review I1).
 	orig, err := d.API.VolumeProtected(ctx, d.Cfg.Target.Node, b.Storage, b.VolID)
 	if err != nil {
-		fail(model.Error, "read backup protected flag: %v", err)
+		j.log.Info("read the backup's protected flag: " + oneLine(err.Error()))
+		fail(model.Error, "%s", plainErr("cannot read the backup's protected flag from PBS", err))
 		return
 	}
 	err = d.Store.Update(func(st *state.State) error {
@@ -126,7 +127,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return nil
 	})
 	if err != nil {
-		fail(model.Error, "record job: %v", err)
+		j.log.Error("record the job in the state file", "err", err)
+		fail(model.Error, "PBP could not write its state file (see the run log)")
 		return
 	}
 	if !orig {
@@ -153,7 +155,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 				fail(model.Error, "protect backup: %s", reasonPBSRefused)
 				return
 			}
-			fail(model.Error, "protect backup: %v", err)
+			j.log.Info("protect the backup: " + oneLine(err.Error()))
+			fail(model.Error, "%s", plainErr("cannot protect the backup on PBS", err))
 			return
 		}
 		j.log.Info("backup marked protected (was not)")
@@ -162,7 +165,8 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	}
 
 	if err := j.setStage(state.StageRestored); err != nil {
-		fail(model.Error, "record job: %v", err)
+		j.log.Error("record the job in the state file", "err", err)
+		fail(model.Error, "PBP could not write its state file (see the run log)")
 		return
 	}
 	j.restoreTried = true
@@ -183,7 +187,11 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		}
 		// Otherwise a guest may exist, untagged; the InFlight entry
 		// (stage restored) makes it PBP's, and teardown removes it.
-		fail(target.ClassifyRestoreError(err), "restore failed: %s", detail)
+		if priv, ok := permissionDenied(err); ok {
+			fail(model.Error, "%s", lacksPrivilege("restore refused", priv))
+		} else {
+			fail(target.ClassifyRestoreError(err), "restore failed: %s", scrub(detail, j.vmid, j.b.Key.Label()))
+		}
 		return
 	}
 	j.log.Info("restore done in " + report.Dur(res.RestoreDuration))
@@ -191,11 +199,13 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	sanitized, err := d.Target.Sanitize(ctx, kind, j.vmid)
 	removed := sanitized.Removed
 	if errors.Is(err, target.ErrUnsafe) {
-		fail(model.Error, "unsafe config: %s", strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "))
+		j.log.Info("unsafe copy: " + oneLine(err.Error()))
+		fail(model.Error, "unsafe copy: %s", scrub(strings.TrimPrefix(err.Error(), target.ErrUnsafe.Error()+": "), j.vmid, j.b.Key.Label()))
 		return
 	}
 	if err != nil {
-		fail(model.Error, "sanitize failed: %v", err)
+		j.log.Info("make the copy safe: " + oneLine(err.Error()))
+		fail(model.Error, "%s", plainErr("cannot make the copy safe", err))
 		return
 	}
 	j.logSanitized(sanitized)
@@ -205,12 +215,18 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	res.Name = guest.Name
 
 	if err := j.setStage(state.StageStarted); err != nil {
-		fail(model.Error, "record job: %v", err)
+		j.log.Error("record the job in the state file", "err", err)
+		fail(model.Error, "PBP could not write its state file (see the run log)")
 		return
 	}
 	t0 = d.Now()
 	if err := d.Target.Start(ctx, kind, j.vmid); err != nil {
-		fail(model.Error, "start failed: %s", j.stepFailed("start", d.Now().Sub(t0), err))
+		detail := j.stepFailed("start", d.Now().Sub(t0), err)
+		if priv, ok := permissionDenied(err); ok {
+			fail(model.Error, "%s", lacksPrivilege("start refused", priv))
+		} else {
+			fail(model.Error, "start failed: %s", scrub(detail, j.vmid, j.b.Key.Label()))
+		}
 		return
 	}
 	j.log.Info("started; waiting for the guest (up to " + report.Dur(d.Cfg.Restore.BootTimeout) + ")")
@@ -219,13 +235,14 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	res.BootDuration = boot.Duration
 	switch {
 	case errors.Is(err, target.ErrBootFailed):
-		fail(model.Failed, "did not boot: %v", err)
-		j.log.Info(res.Reason)
+		j.log.Info("boot: " + oneLine(err.Error()))
+		why := strings.TrimPrefix(strings.TrimPrefix(err.Error(), target.ErrBootFailed.Error()), ": ")
+		fail(model.Failed, "did not boot: %s", scrub(why, j.vmid, j.b.Key.Label()))
 		return
 	case err != nil:
 		// A node, API or SSH fault while waiting: not the backup's fault.
-		fail(model.Error, "boot check error: %v", err)
-		j.log.Info(res.Reason)
+		j.log.Info("boot check: " + oneLine(err.Error()))
+		fail(model.Error, "%s", plainErr("could not check whether the guest booted", err))
 		return
 	}
 	running := "running after " + report.Dur(d.Now().Sub(t0))
@@ -236,10 +253,14 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	switch {
 	case boot.AgentMissing:
 		res.AgentMissing = true
-		fail(model.Booted, "guest agent missing")
+		if agentEnabled(j.orig) {
+			fail(model.Booted, "guest agent did not answer within %s: is qemu-guest-agent installed and running?", report.Dur(d.Cfg.Restore.BootTimeout))
+		} else {
+			fail(model.Booted, "guest agent not enabled for this VM (docs/checks.md#vms-and-the-guest-agent)")
+		}
 		return
 	case boot.ExecBlocked:
-		fail(model.Booted, "agent cannot run commands")
+		fail(model.Booted, "the guest agent refuses to run commands (guest-exec disabled by its policy)")
 		return
 	}
 
@@ -255,7 +276,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		OS: boot.OS, OSType: boot.OSType, Checks: d.Cfg.Checks, Guest: guest, Missing: missing,
 		NoNesting: noNesting(kind, j.orig),
 	})
-	res.Verdict, res.Reason = out.Verdict, out.Reason
+	res.Verdict, res.Reason = out.Verdict, j.plainProbeReason(out.Reason)
 	res.FailedUnits, res.IgnoredUnits = out.FailedUnits, out.IgnoredUnits
 	res.NotCovered, res.Checks, res.BootLog = out.NotCovered, out.Checks, out.BootLog
 	j.logProbe(*res, boot.OS)
@@ -370,9 +391,9 @@ func (j *job) teardown(res *model.GuestResult) {
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "vmid", j.vmid, "err", err)
 			if res.Verdict == model.Proven {
-				res.Verdict, res.Reason = model.Error, "cleanup failed: destroy (booted ok)"
+				res.Verdict, res.Reason = model.Error, "booted, but PBP could not remove its test copy (retried at the next run)"
 			} else {
-				res.Reason += "; cleanup failed: destroy"
+				res.Reason = withSuffix(res.Reason, "; test copy not removed (retried at the next run)")
 			}
 			clean = false
 		} else {
@@ -390,7 +411,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		})
 		if err != nil {
 			j.log.Error("restore backup protected flag failed; left for the janitor", "vmid", j.vmid, "err", err)
-			res.Reason += "; cleanup failed: unprotect"
+			res.Reason = withSuffix(res.Reason, "; backup left protected until the next run")
 			clean = false
 		} else {
 			done = append(done, "protected set back to false")
@@ -481,4 +502,40 @@ func oneLine(s string) string { return lineBreaks.ReplaceAllString(s, " ") }
 // failed units are real (code review 5.11).
 func noNesting(kind model.GuestKind, orig map[string]string) bool {
 	return kind == model.KindLXC && orig["unprivileged"] == "1" && !sanitize.Nesting(orig)
+}
+
+// plainErr is the reason for a step that failed with err: the missing
+// privilege when PVE refused, else what failed and where the detail is
+// (issue #73).
+func plainErr(what string, err error) string {
+	if priv, ok := permissionDenied(err); ok {
+		return lacksPrivilege(what, priv)
+	}
+	return what + " (see the guest's log)"
+}
+
+// plainProbeReason keeps a probe's reason fit for the notes: a transport
+// error becomes a plain sentence, its detail logged; anything else is
+// scrubbed of the temporary VMID.
+func (j *job) plainProbeReason(reason string) string {
+	if strings.HasPrefix(reason, "probe transport error: ") {
+		j.log.Info(oneLine(reason))
+		return "lost contact with the guest during the checks (see the guest's log)"
+	}
+	return scrub(reason, j.vmid, j.b.Key.Label())
+}
+
+// agentEnabled reports whether a VM config enables the QEMU guest agent
+// ("agent: 1" or "agent: enabled=1,…").
+func agentEnabled(cfg map[string]string) bool {
+	for i, part := range strings.Split(cfg["agent"], ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok && i == 0 && (k == "1" || k == "true") {
+			return true
+		}
+		if ok && k == "enabled" && (v == "1" || v == "true") {
+			return true
+		}
+	}
+	return false
 }

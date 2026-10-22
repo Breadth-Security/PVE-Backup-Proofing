@@ -489,7 +489,7 @@ func TestProofVMWithAgent(t *testing.T) {
 func TestProofVMWithoutAgent(t *testing.T) {
 	e := setup(t)
 	r := e.proof(t, model.GuestKey{Kind: model.KindQEMU, VMID: envInt(t, "PBP_IT_VM_NOAGENT")})
-	if r.Verdict != model.Booted || r.Reason != "guest agent missing" {
+	if r.Verdict != model.Booted || !strings.HasPrefix(r.Reason, "guest agent ") {
 		t.Errorf("verdict %s: %s", r.Verdict, r.Reason)
 	}
 }

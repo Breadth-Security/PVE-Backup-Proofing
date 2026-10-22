@@ -102,7 +102,7 @@ func TestProfileCommandFails(t *testing.T) {
 	ex[enabledC] = out("postgresql@16-main.service enabled\npostgresql.service enabled\n")
 	ex["sh -c pg_isready -q"] = probe.ExecResult{ExitCode: 2}
 	o := run(ex, config.Checks{})
-	if o.Verdict != model.Failed || o.Reason != "check failed: postgresql:commands:pg_isready -q" {
+	if o.Verdict != model.Failed || o.Reason != "check failed: postgresql (command pg_isready -q)" {
 		t.Fatalf("got %+v", o)
 	}
 }
@@ -115,7 +115,7 @@ func TestGuestCheckByTag(t *testing.T) {
 	}}}
 	ex["systemctl is-active postgresql"] = out("active\n")
 	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{Tags: []string{"x", "db"}}})
-	if o.Verdict != model.Failed || o.Reason != "check failed: guest:ports:5432" {
+	if o.Verdict != model.Failed || o.Reason != "check failed: port 5432" {
 		t.Fatalf("got %+v", o)
 	}
 	names := map[string]bool{}
@@ -137,7 +137,7 @@ func TestEmptyProfileRequiresActive(t *testing.T) {
 	ex[enabledC] = out("cron.service enabled\n")
 	ex["systemctl is-active cron.service"] = out("inactive\n")
 	o := run(ex, config.Checks{})
-	if o.Verdict != model.Failed || o.Reason != "check failed: cron:services:cron.service" {
+	if o.Verdict != model.Failed || o.Reason != "check failed: cron (service cron.service)" {
 		t.Fatalf("got %+v", o)
 	}
 }
@@ -406,7 +406,7 @@ func TestCheckTimesOut(t *testing.T) {
 		{Match: config.GuestMatch{VMID: 7}, CheckSet: config.CheckSet{Commands: []string{"hang-cmd", "ok-cmd"}}},
 	}}
 	o := probe.Run(context.Background(), hanging(ex, "sh -c hang-cmd"), probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 7}})
-	if o.Verdict != model.Failed || o.Reason != "check timed out: guest:commands:hang-cmd" {
+	if o.Verdict != model.Failed || o.Reason != "check timed out: command hang-cmd" {
 		t.Fatalf("got %+v", o)
 	}
 	want := []model.CheckResult{
@@ -596,7 +596,7 @@ func TestBaseCommandTimesOut(t *testing.T) {
 		findmnt:      "root filesystem",
 		failedC:      "failed units",
 		enabledC:     "enabled units",
-		ssC:          "nginx:ports:80,443",
+		ssC:          "nginx (ports 80,443)",
 		autoRestartC: "crash-looping services",
 	} {
 		o := probe.Run(context.Background(), hanging(healthy(), cmd), probe.Input{OS: probe.Linux, Checks: ck})
@@ -658,7 +658,7 @@ func TestGuestCheckMatchByVMIDAndName(t *testing.T) {
 		ex["sh -c probe-me"] = probe.ExecResult{ExitCode: 1}
 		ck := config.Checks{Guests: []config.GuestChecks{{Match: tc.match, CheckSet: cs}}}
 		o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: tc.guest})
-		if ran := o.Verdict == model.Failed && o.Reason == "check failed: guest:commands:probe-me"; ran != tc.runs {
+		if ran := o.Verdict == model.Failed && o.Reason == "check failed: command probe-me"; ran != tc.runs {
 			t.Errorf("%s: ran=%v, got %v %q", name, ran, o.Verdict, o.Reason)
 		}
 	}
@@ -901,7 +901,7 @@ func TestOpenRCRootAndGuestChecks(t *testing.T) {
 		"rc-service nginx status":           {ExitCode: 3, Stdout: " * status: stopped\n"},
 		"sh -c test -f /etc/alpine-release": out(""),
 	}, ck)
-	if o.Verdict != model.Failed || o.Reason != "check failed: guest:services:nginx" {
+	if o.Verdict != model.Failed || o.Reason != "check failed: service nginx" {
 		t.Fatalf("per-guest checks: got %v %q, want nginx failed", o.Verdict, o.Reason)
 	}
 	if len(o.Checks) != 3 {

@@ -85,6 +85,29 @@ type checker struct {
 	notCovered map[string]bool
 }
 
+// checkLabel is a check's name for a reason (issue #73): "postgresql
+// (command pg_isready -q)" or "nginx (ports 80,443)" for "postgresql:commands:pg_isready -q", and
+// "port 5432" for a per-guest check ("guest:ports:5432"). A step name
+// without that form ("openrc services") is kept as it is.
+func checkLabel(name string) string {
+	profile, rest, ok := strings.Cut(name, ":")
+	if !ok {
+		return name
+	}
+	kind, target, ok := strings.Cut(rest, ":")
+	if !ok {
+		return name
+	}
+	if !strings.Contains(target, ",") {
+		kind = strings.TrimSuffix(kind, "s")
+	}
+	what := kind + " " + target
+	if profile == "guest" {
+		return what
+	}
+	return profile + " (" + what + ")"
+}
+
 func (c *checker) record(name string, ok bool, detail string) {
 	c.results = append(c.results, model.CheckResult{Name: clip(name, maxDetail), OK: ok, Detail: clip(detail, maxDetail)})
 }

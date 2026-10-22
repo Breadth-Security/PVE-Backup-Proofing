@@ -54,6 +54,14 @@ checks:
 
 A guest's root filesystem mounted read-only makes it `FAILED` (a damaged filesystem is often remounted read-only), unless a matching `checks.guests` entry sets `allow_readonly_root: true` for a system whose root is read-only by design.
 
+## VMs and the guest agent
+
+PBP looks inside a VM through the QEMU guest agent. A VM is `BOOTED`, never `PROVEN` or `FAILED`, when PBP cannot use it:
+
+- `guest agent not enabled for this VM`: the VM's options do not enable the agent (Options > QEMU Guest Agent, or `qm set <vmid> --agent 1`). Enable it, and install `qemu-guest-agent` inside the guest.
+- `guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?`: the agent is enabled, but nothing answered while the copy booted. Install or start `qemu-guest-agent` in the guest (Linux: `apt install qemu-guest-agent`, then enable its service; Windows: the VirtIO guest tools).
+- `the guest agent refuses to run commands`: the agent answers, but its policy disables `guest-exec`, so PBP cannot run its checks. Allow `guest-exec` in the agent's configuration.
+
 ## Containers without nesting
 
 In an unprivileged container without `features: nesting=1`, systemd 252 and later cannot set up the mount namespaces that sandboxed units use (`PrivateTmp=`, `ProtectSystem=` and similar). Those units fail with `226/NAMESPACE` ("Failed to set up mount namespacing … Permission denied"), and so do systemd's own mounts such as `tmp.mount` and `dev-mqueue.mount`. Proxmox warns about it when such a container starts: "Systemd 252 detected. You may need to enable nesting."

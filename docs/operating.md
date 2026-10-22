@@ -47,11 +47,14 @@ Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` h
 `run.log` is the run as a whole: preflight, discovery, one line per guest result and a closing summary. Each guest PBP works on also gets its own file, `VM<vmid>.log` or `CT<vmid>.log`, with one line per step: restore, start, checks, teardown. **When a guest failed, start with its own file.** When a PVE task fails (restore, start), the file holds the tail of the task's log; the reason in `run.log` and the notification is just the task's error line.
 
 ```
-2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.6.1 · node pve1
+2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.7.0 · node pve1
 02:00:02 VM102 started (VM102.log)
 02:01:31 VM102 FAILED · failed: sssd-nss.socket, sssd-pam.socket
-03:33:54 run finished in 1h33m · 13 proven, 9 failed, 4 booted, 9 skipped, 9 error · severity error
+03:33:54 run finished in 1h33m · ❌ severity error
+03:33:54 ✅ 13 proven · ☑️ 6 previously proven · ❌ 9 failed · ⚠️ 9 error · ⚠️ 4 booted · ⏭️ 3 skipped
 ```
+
+The markers are the same in the notification: ✅ proven, ☑️ previously proven (skipped because an earlier run proved the backup), ❌ `FAILED` (the backup has a problem), ⚠️ `ERROR` or `BOOTED` (not proven either way), ⏭️ skipped for any other reason. The notification's subject leads with the run's severity (✅, ⚠️ or ❌) and its body with the counts line.
 
 ```
 02:00:36 restore done in 33s

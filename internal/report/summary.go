@@ -11,7 +11,7 @@ import (
 
 // DataKeys are the keys of TemplateData, which the node helper accepts in a
 // notify payload and no others (code review 2.4).
-var DataKeys = []string{"node", "run-id", "headline", "summary", "logs", "run-error", "environment-errors",
+var DataKeys = []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs", "run-error", "environment-errors",
 	"failed", "errored", "booted", "skipped", "proven", "not-covered"}
 
 // TemplateData builds the data passed to the PVE notification templates.
@@ -69,6 +69,8 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		"run-id": s.ID,
 		"headline": fmt.Sprintf("PBP run on %s, %s (%s), %s", node,
 			s.Started.Format("Mon 2006-01-02 15:04 MST"), trigger, Dur(s.Ended.Sub(s.Started))),
+		"mark":    SeverityMark(s.Severity()),
+		"counts":  CountsLine(s),
 		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), problemSkips, len(proven)),
 		"logs":    logs,
 		// run-error and environment-errors are unchanged.
@@ -133,4 +135,64 @@ func subjectSummary(runError bool, failed, errored, booted, skipped, proven int)
 		return fmt.Sprintf("all %d proven", proven)
 	}
 	return "nothing to proof"
+}
+
+// Markers for the verdicts, so a summary reads at a glance: green for
+// proven, red for a backup with a problem, yellow for a guest PBP could
+// not prove either way.
+const (
+	MarkProven  = "✅"
+	MarkFailed  = "❌"
+	MarkWarn    = "⚠️"
+	MarkSkipped = "⏭️"
+	// MarkAlready is a backup proven by an earlier run.
+	MarkAlready = "☑️"
+)
+
+// SeverityMark is the marker for a run's severity: ✅ info, ⚠️ warning,
+// ❌ error.
+func SeverityMark(severity string) string {
+	switch severity {
+	case "error":
+		return MarkFailed
+	case "warning":
+		return MarkWarn
+	}
+	return MarkProven
+}
+
+// CountsLine is the run's verdict counts with their markers, the non-zero
+// ones only: "✅ 13 proven · ☑️ 20 previously proven · ❌ 1 failed · ⚠️ 2
+// error · ⚠️ 4 booted · ⏭️ 3 skipped"; "nothing proofed" when there are
+// none. A backup skipped as already proven has its own count, so "skipped"
+// holds only those not proofed for another reason.
+func CountsLine(s model.RunSummary) string {
+	c := s.Counts()
+	already := 0
+	for _, r := range s.Results {
+		if r.Verdict == model.Skipped && r.AlreadyProven {
+			already++
+		}
+	}
+	var parts []string
+	for _, v := range []struct {
+		n    int
+		mark string
+		word string
+	}{
+		{c[model.Proven], MarkProven, "proven"},
+		{already, MarkAlready, "previously proven"},
+		{c[model.Failed], MarkFailed, "failed"},
+		{c[model.Error], MarkWarn, "error"},
+		{c[model.Booted], MarkWarn, "booted"},
+		{c[model.Skipped] - already, MarkSkipped, "skipped"},
+	} {
+		if n := v.n; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d %s", v.mark, n, v.word))
+		}
+	}
+	if len(parts) == 0 {
+		return "nothing proofed"
+	}
+	return strings.Join(parts, " · ")
 }

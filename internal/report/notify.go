@@ -65,11 +65,12 @@ func shortened(data map[string]any, keep int) map[string]any {
 	return out
 }
 
-// essentials keeps the headline, summary, log path and node of data, a run
+// essentials keeps the headline, marker, summary, counts, log path and
+// node of data, a run
 // error cut to 4 KiB, and empty lists whose place says to read the run log.
 func essentials(data map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"node", "run-id", "headline", "summary", "logs"} {
+	for _, k := range []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs"} {
 		out[k] = data[k]
 	}
 	re, _ := data["run-error"].(string)
