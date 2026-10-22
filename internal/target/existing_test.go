@@ -1268,3 +1268,52 @@ func TestForeignDiskContainer(t *testing.T) {
 		t.Error("non-disk keys judged")
 	}
 }
+
+// VM137 on pve1: SeaBIOS with a leftover efidisk0 that vzdump does not back
+// up. PVE's restore keeps that line verbatim, naming the production volume.
+// Sanitize removes it (not covered by backup) instead of the copy ending
+// ERROR, and a drive missing from the map for another reason likewise
+// (issue #67). The copy then passes verification and starts.
+func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = "bios: seabios\nname: nextcloud-vm\nagent: 1\n" +
+		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\n" +
+		"scsi0: lvm:vm-137-disk-6,discard=on,size=72G\n" +
+		"scsi1: lvm:vm-137-disk-7,size=828M\n" +
+		"virtio2: iscsi:0.0.1.scsi-36001405abc,size=100G\n" +
+		"ide2: nfs:iso/debian.iso,media=cdrom\n" +
+		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n" +
+		"#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:lvm:raw:\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Configs[990000]["efidisk0"]; !strings.Contains(got, "vm-137-disk-8") {
+		t.Fatalf("fake restore did not keep the unmapped line as PVE does: %q", got)
+	}
+	s, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if err != nil {
+		t.Fatalf("Sanitize: %v", err)
+	}
+	removed := map[string]model.MissingPiece{}
+	for _, p := range s.Removed {
+		removed[p.Key] = p
+	}
+	for _, k := range []string{"efidisk0", "virtio2"} {
+		if p, ok := removed[k]; !ok || p.Kind != "excluded-disk" || p.Detail != "not in the backup" {
+			t.Errorf("%s: removed as %+v, want an excluded-disk not in the backup", k, p)
+		}
+		if _, still := f.Configs[990000][k]; still {
+			t.Errorf("%s still in the copy's config", k)
+		}
+	}
+	for _, k := range []string{"scsi0", "scsi1", "ide2"} {
+		if _, ok := removed[k]; ok {
+			t.Errorf("%s removed, but it is the copy's own volume or an ISO", k)
+		}
+	}
+	if err := n.Start(ctx, model.KindQEMU, 990000); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}

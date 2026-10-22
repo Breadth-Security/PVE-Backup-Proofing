@@ -301,9 +301,19 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	}
 	cfg := parseConfig(raw)
 	// Like PVE, the restore creates new volumes named after the new VMID.
+	// When the backup has #qmdump#map lines, only the drives they list are
+	// restored: a backup=0 drive is commented out, and any other drive
+	// line is kept as it is (PVE's restore_update_config_line).
+	mapped := qmdumpMap(raw)
 	for k, v := range cfg {
-		if reVolKey.MatchString(k) {
+		if !reVolKey.MatchString(k) {
+			continue
+		}
+		switch {
+		case mapped == nil || mapped[k]:
 			cfg[k] = reOwnVol.ReplaceAllString(v, fmt.Sprintf("${1}-%d-", vmid))
+		case strings.Contains(","+v+",", ",backup=0,"):
+			delete(cfg, k)
 		}
 	}
 	// Like PVE with the client's onboot=0 restore override.
@@ -322,6 +332,23 @@ var (
 	reVolKey = regexp.MustCompile(`^(scsi|virtio|sata|ide|efidisk|tpmstate|mp)\d+$|^rootfs$`)
 	reOwnVol = regexp.MustCompile(`\b(vm|subvol)-\d+-`)
 )
+
+// qmdumpMap returns the drive keys a VM backup's "#qmdump#map:<key>:…"
+// lines list, or nil when it has none (a container, or a hand-made test
+// config).
+func qmdumpMap(raw string) map[string]bool {
+	var m map[string]bool
+	for _, line := range strings.Split(raw, "\n") {
+		if rest, ok := strings.CutPrefix(line, "#qmdump#map:"); ok {
+			if m == nil {
+				m = map[string]bool{}
+			}
+			k, _, _ := strings.Cut(rest, ":")
+			m[k] = true
+		}
+	}
+	return m
+}
 
 // parseConfig reads "key: value" lines, skipping '#' comments and stopping at the first '[' section.
 func parseConfig(raw string) map[string]string {

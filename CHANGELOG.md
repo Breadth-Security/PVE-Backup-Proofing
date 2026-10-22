@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A drive the backup does not hold is removed from the copy, not left pointing at production** ([#67](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/67)). PVE's restore rewrites only the drives in the backup and keeps every other drive line as it is, so a restored copy could name a production volume: on pve1, VM137 (SeaBIOS with a leftover `efidisk0` that vzdump skips) pointed at its production EFI disk. 0.6.0's disk check refused to start such a copy, so VM137 ended `ERROR` every night. PBP now removes such a drive while making the copy safe and lists it under "not covered by backup" (`disk efidisk0, not in the backup`), so the proof goes on; the check stays as a backstop.
+
 ## v0.6.0
 
 This release carries the rest of the whole-codebase review (#21): the Minor findings in #50–#57, and the refusal to run as root (#63).

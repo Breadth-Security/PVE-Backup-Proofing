@@ -235,6 +235,7 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 	if len(plan.Unsafe) > 0 {
 		return Sanitized{}, fmt.Errorf("%w: %s", ErrUnsafe, strings.Join(plan.Unsafe, ", "))
 	}
+	removeNotInBackup(&plan, cfg, vmid)
 	if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, plan.Set, plan.Delete); err != nil {
 		return Sanitized{}, fmt.Errorf("sanitize config %d: %w", vmid, err)
 	}
@@ -584,4 +585,27 @@ func foreignDisk(k, v string, vmid int) string {
 		return fmt.Sprintf("%s is not a volume of guest %d (%s)", k, vmid, vol)
 	}
 	return ""
+}
+
+// removeNotInBackup adds to plan the drives of the restored config that are
+// not the copy's own: PVE's restore rewrites only the drives in the backup
+// and keeps every other line as it is, so such a line names a production
+// volume, such as a leftover efidisk0 on a SeaBIOS VM that vzdump does not
+// back up (issue #67). Each is removed and reported as not covered by the
+// backup, so the proof goes on without it. rootfs is never removed: a
+// container without its root is no proof, and verifySanitized refuses it.
+func removeNotInBackup(plan *sanitize.Plan, cfg map[string]string, vmid int) {
+	keys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		if k == "rootfs" || slices.Contains(plan.Delete, k) || foreignDisk(k, cfg[k], vmid) == "" {
+			continue
+		}
+		plan.Delete = append(plan.Delete, k)
+		plan.Removed = append(plan.Removed, model.MissingPiece{Kind: "excluded-disk", Key: k, Detail: "not in the backup"})
+	}
+	slices.Sort(plan.Delete)
 }
