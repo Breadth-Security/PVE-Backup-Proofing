@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.8.1
+
+Only the daemon changed: a 0.8.1 daemon works with the 0.8.0 node helper, so upgrading the PBP host is enough (upgrading the node too does no harm). Configs need no change. This is the first release published as a draft and made public only once signed, and its tag is the first signed one.
 
 - **Signed releases** ([#37](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/37)). Every release, from `v0.2.0-rc.1` on, now carries `SHA256SUMS.sig`, an SSH signature over `SHA256SUMS` by PBP's signing key (fingerprint `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8`), published in the repository's `allowed_signers` file. The node install line `pbp setup` prints now checks the signature, with the key built into PBP, before the checksum; the install and upgrade docs show the same check by hand ([Verifying a release](docs/install-deb.md#verifying-a-release)). New releases are published as drafts and made public only once signed. Tags and commits are signed with the same key from here on (not merges made in Gitea's web UI). Only the daemon changed.
 

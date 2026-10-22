@@ -4,10 +4,10 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
 ## Install
 
-1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.0`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/raw/branch/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
+1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.1`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/raw/branch/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
 
    ```
-   v=0.8.0; a=$(dpkg --print-architecture)
+   v=0.8.1; a=$(dpkg --print-architecture)
    base=https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v$v
    curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS" && curl -fsSLO "$base/SHA256SUMS.sig"
    ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
@@ -17,7 +17,7 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
    The first check must print `Good "pbp-release" signature for pbp-release with ED25519 key SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8`, the second `pbp_<version>_<arch>.deb: OK`. Stop if either fails.
 
-   Pre-releases are tagged like `v0.8.0-rc.2` and their files carry the Debian version `0.8.0~rc.2` (`pbp_0.8.0~rc.2_amd64.deb`), which sorts before `0.8.0`, so the final release installs over a pre-release as an upgrade.
+   Pre-releases are tagged like `v0.8.1-rc.2` and their files carry the Debian version `0.8.1~rc.2` (`pbp_0.8.1~rc.2_amd64.deb`), which sorts before `0.8.1`, so the final release installs over a pre-release as an upgrade.
 
 2. **Set it up.** Choose the VMID range and create the bridge first ([Setup](setup.md) steps 1 and 2), then run:
 
@@ -84,6 +84,6 @@ Each release's `SHA256SUMS` is signed with PBP's SSH signing key, so you can che
 - **The key** is in the repository's [`allowed_signers`](../allowed_signers) file, and its fingerprint is `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` (ED25519). Before trusting a downloaded copy, compare its fingerprint with one from a source an attacker who controls the release page would also have to change: an installed PBP's `pbp setup` install line (the key is built in), a clone of the repository you already trust, or the GitHub mirror once there is one. `grep '^pbp-release' allowed_signers | cut -d' ' -f3- | ssh-keygen -lf -` prints the fingerprint.
 - **Checking** needs only `ssh-keygen` (from `openssh-client`, present on every Proxmox node): `ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS`, then `sha256sum -c SHA256SUMS --ignore-missing` for the files you downloaded.
 - **The node install line** that `pbp setup` prints does both checks itself, with the key built into your PBP, so the key never comes from the page it verifies.
-- **Tags and commits** made after 2026-10-22 (the first signed tag is the release after `v0.8.0`) are signed with the same key as `tdiana@breadthanalytics.com`; merge commits made in Gitea's web UI are not. Check a tag with `git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v<version>`.
+- **Tags and commits** made after 2026-10-22 (the first signed tag is `v0.8.1`) are signed with the same key as `tdiana@breadthanalytics.com`; merge commits made in Gitea's web UI are not. Check a tag with `git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v<version>`.
 - **A new release is a draft** until it is signed: the release workflow publishes it as a draft, and the maintainer's signing step makes it public, so a release is never visible without `SHA256SUMS.sig`.
 
