@@ -52,7 +52,7 @@ go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --buil
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --build-tags nodee2e ./...
 
 # Trivy (vulnerabilities, secrets, misconfigurations)
-docker run --rm -v "$PWD":/src:ro -w /src aquasec/trivy:0.76.0 fs --exit-code 1 --ignore-unfixed \
+docker run --rm -v "$PWD":/src:ro -w /src aquasec/trivy:0.76.1 fs --exit-code 1 --ignore-unfixed \
   --scanners vuln,secret,misconfig --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
   --skip-dirs .superpowers --ignorefile .trivyignore.yaml .
 

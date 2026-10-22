@@ -24,14 +24,14 @@ jobs:
     env:
       GOTOOLCHAIN: local # use exactly the toolchain installed above; never switch
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Read pinned Go toolchain
         id: toolchain
         run: |
           v=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
           [ -n "$v" ] || { echo "go.mod has no toolchain line"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ steps.toolchain.outputs.version }}
       - name: Check toolchain matches go.mod and Dockerfile
