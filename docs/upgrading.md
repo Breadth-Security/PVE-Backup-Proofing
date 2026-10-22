@@ -6,7 +6,7 @@ Your `config.yaml`, secrets, `known_hosts`, state and logs are kept. A new relea
 
 1. **Upgrade the daemon.**
    - Docker: in the checkout, `git pull && docker compose build && docker compose up -d`.
-   - `.deb` host: download the new `.deb` and `SHA256SUMS` from the release, then `sha256sum -c SHA256SUMS --ignore-missing && sudo apt install ./pbp_<version>_<arch>.deb`. The service is restarted if it was running (see [Install from the .deb](install-deb.md)).
+   - `.deb` host: download the new `.deb`, `SHA256SUMS` and `SHA256SUMS.sig` from the release, check the signature and the checksum as in [Install from the .deb](install-deb.md#install), then `sudo apt install ./pbp_<version>_<arch>.deb`. The service is restarted if it was running (see [Install from the .deb](install-deb.md)).
 2. **Run `pbp setup` again**: the Docker one-shot from [Setup step 3](setup.md#3-run-pbp-setup-on-the-pbp-host), or `sudo pbp setup --deb`. With `config.yaml` in place it asks nothing. When the node's helper is older, the check fails and setup prints the node lines for the new version and waits for the reply.
 3. **On the node, as root, run both lines.** The install line installs the `.deb` of the daemon's exact version. `pbp node setup` then brings the node to what this version expects (for example new notification templates), shows a plan for anything that changed, and prints the reply block; on a node that is already right it prints `setup has already been completed`.
 4. **Paste the reply** into `pbp setup`. It runs the check and tells you when it passes.

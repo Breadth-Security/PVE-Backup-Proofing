@@ -1,7 +1,8 @@
-# gitleaks configuration: the default rules, plus an allowlist for the
+# gitleaks configuration: the default rules, plus allowlists for the
 # made-up token secrets used as test fixtures (UUID-shaped, never real
-# credentials). Matched by value, so the allowlist survives history rewrites.
-# Add a value here only for a fake secret in a test.
+# credentials) and for PBP's public signing-key fingerprint. Matched by
+# value, so the allowlists survive history rewrites. Add a value here only
+# for a fake secret in a test or a value that is public by design.
 
 [extend]
 useDefault = true
@@ -12,4 +13,10 @@ regexes = [
   '''^0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0$''', # cmd/pbp/setup_test.go
   '''^3f1c9a2e-5b7d-4e8f-a1b2-c3d4e5f60718$''', # cmd/pbp/nodesetup_test.go
   '''^0b5e3f6a-1d2c-4e8f-9a7b-3c2d1e0f9a8b$''', # internal/nodesetup/apply_test.go
+]
+
+[[allowlists]]
+description = "the public fingerprint of PBP's release signing key (allowed_signers, issue #37)"
+regexes = [
+  '''HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8''', # docs/install-deb.md, README.md, CHANGELOG.md
 ]

@@ -8,8 +8,18 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
 )
 
-// releaseURL is where a release's .deb files and SHA256SUMS are published.
+// releaseURL is where a release's .deb files, SHA256SUMS and its signature
+// are published.
 const releaseURL = "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/"
+
+// ReleaseSigner is the allowed_signers line for the key that signs each
+// release's SHA256SUMS (issue #37), the same as in the repository's
+// allowed_signers file. It is built into PBP so the install line it prints
+// does not trust a key fetched from the release page it verifies.
+const ReleaseSigner = `pbp-release namespaces="pbp-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86`
+
+// VerifyCommand checks SHA256SUMS.sig against the allowed_signers file.
+const VerifyCommand = "ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS"
 
 // SetupArgs are the `pbp node setup` arguments for cfg: the range, bridge and
 // pub key, the restore storage then the PBS storages (repeats dropped), and
@@ -39,11 +49,14 @@ func NodeLines(cfg config.Config, pub, version string, haveToken bool) string {
 	if v := version; v != "" && !strings.Contains(v, "dev") {
 		base := releaseURL + "v" + strings.ReplaceAll(v, "~", "-") + "/"
 		deb := "pbp_" + v + "_${a}.deb"
-		b.WriteString("1. Install pbp " + v + " (checksum verified):\n\n")
+		b.WriteString("1. Install pbp " + v + " (signature and checksum verified):\n\n")
 		// A subshell, so the admin's shell keeps its directory and the
-		// download dir is removed whatever happens.
+		// download dir is removed whatever happens. The signature over
+		// SHA256SUMS is checked with the key built into this PBP, then the
+		// .deb against SHA256SUMS.
 		b.WriteString(`(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base + deb +
-			`" && curl -fsSLO "` + base + `SHA256SUMS" && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./` + deb +
+			`" && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` + ReleaseSigner +
+			`' > allowed_signers && ` + VerifyCommand + ` && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./` + deb +
 			`"; rc=$?; rm -rf "$d"; exit $rc)` + "\n\n")
 	} else {
 		b.WriteString("1. Note: this PBP is a dev build: install a matching dev build of pbp on the node.\n\n")

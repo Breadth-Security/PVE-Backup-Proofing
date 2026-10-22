@@ -1,0 +1,10 @@
+# PBP's signing key: Tony Diana <tdiana@breadthanalytics.com>
+# Fingerprint: SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8 (ED25519)
+#
+# Release files (SHA256SUMS.sig, from v0.2.0-rc.1 on):
+#   ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
+# Signed tags and commits (made after 2026-10-22; not Gitea web-UI merges):
+#   git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v0.9.0
+# See docs/install-deb.md#verifying-a-release.
+pbp-release namespaces="pbp-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86
+tdiana@breadthanalytics.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86

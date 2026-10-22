@@ -96,7 +96,7 @@ Setup creates the SSH key pair (ed25519; an existing key is reused, never replac
 ```
 On the node, as root:
 
-1. Install pbp 0.8.0 (checksum verified):
+1. Install pbp 0.8.0 (signature and checksum verified):
 
 (a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v0.8.0/pbp_0.8.0_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
 
