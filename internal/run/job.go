@@ -92,7 +92,7 @@ func proofOne(ctx context.Context, d Deps, b model.Backup, vmid int, orig map[st
 		logged := string(res.Verdict) + " · " + res.Reason
 		j.teardown(&res)
 		res.Reason = oneLine(res.Reason)
-		if err := j.safely("notes", func() error { annotate(j.d, j.log, j.b, res); return nil }); err != nil {
+		if err := j.safely("notes", func() error { annotate(j.d, j.log, j.b, res, noteName(j.b.Key, j.orig)); return nil }); err != nil {
 			res.Verdict, res.Reason = model.Error, oneLine("internal error: "+err.Error())
 		}
 		if now := string(res.Verdict) + " · " + res.Reason; now != logged {
@@ -448,9 +448,19 @@ func (j *job) safely(step string, fn func() error) (err error) {
 	return fn()
 }
 
-// annotate writes res's verdict line into b's notes and, for PROVEN, records
-// the time in LastProven. SKIPPED is never written. Failures are logged only.
-func annotate(d Deps, log *slog.Logger, b model.Backup, res model.GuestResult) {
+// noteName is the guest's name for its notes line: the name in the backed-up
+// config (orig may be nil), or the label when it has none (issue #76).
+func noteName(key model.GuestKey, orig map[string]string) string {
+	if n := strings.TrimSpace(sanitize.GuestName(key.Kind, orig)); n != "" {
+		return n
+	}
+	return key.Label()
+}
+
+// annotate writes res's verdict line, after the guest's name, into b's
+// notes and, for PROVEN, records the time in LastProven. SKIPPED is never
+// written. Failures are logged only.
+func annotate(d Deps, log *slog.Logger, b model.Backup, res model.GuestResult, name string) {
 	if res.Verdict == model.Skipped {
 		return
 	}
@@ -463,8 +473,8 @@ func annotate(d Deps, log *slog.Logger, b model.Backup, res model.GuestResult) {
 	if full, err := d.API.VolumeNotes(ctx, node, b.Storage, b.VolID); err != nil {
 		log.Error("read backup notes failed; notes not written", "verdict", res.Verdict, "err", err)
 	} else {
-		line := notes.Line(res.Verdict, at, res.Reason)
-		text := notes.Merge(full, line)
+		line := notes.Line(name, res.Verdict, at, res.Reason)
+		text := notes.Merge(full, line, name)
 		if err := d.API.SetVolumeAttrs(ctx, node, b.Storage, b.VolID, &text, nil); err != nil {
 			log.Error("write backup notes failed", "verdict", res.Verdict, "err", err)
 		} else {

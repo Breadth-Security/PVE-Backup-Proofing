@@ -270,7 +270,7 @@ func TestHappyPath(t *testing.T) {
 	if _, ok := f.inFlight(); ok {
 		t.Error("InFlight entry not removed")
 	}
-	wantNotes := "PBP PROVEN 2026-10-19 02:14 · " + res.Reason + "\ndb01\nmonthly keep"
+	wantNotes := "db01 · PBP PROVEN 2026-10-19 02:14 · " + res.Reason + "\nmonthly keep"
 	if f.notes() != wantNotes {
 		t.Errorf("notes %q want %q", f.notes(), wantNotes)
 	}
@@ -376,7 +376,7 @@ func TestUnsafeNeverStarts(t *testing.T) {
 	if !strings.Contains(calls, "Destroy") {
 		t.Errorf("guest not destroyed:\n%s", calls)
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · unsafe copy: hostpci0\n") {
+	if !strings.HasPrefix(f.notes(), "db01 · PBP ERROR 2026-10-19 02:14 · unsafe copy: hostpci0\n") {
 		t.Errorf("notes %q", f.notes())
 	}
 }
@@ -388,7 +388,7 @@ func TestRestoreDecryptError(t *testing.T) {
 	if res.Verdict != model.Error {
 		t.Errorf("verdict %s", res.Verdict)
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · restore failed: ") {
+	if !strings.HasPrefix(f.notes(), "db01 · PBP ERROR 2026-10-19 02:14 · restore failed: ") {
 		t.Errorf("notes %q", f.notes())
 	}
 	if strings.Contains(strings.Join(f.rec.entries(), "\n"), "Sanitize") {
@@ -432,7 +432,7 @@ func TestProbeFailedNotes(t *testing.T) {
 	if res.BootLog != "boot log" || !slices.Equal(res.FailedUnits, []string{"postgresql.service"}) {
 		t.Errorf("result %+v", res)
 	}
-	want := "PBP FAILED 2026-10-19 02:14 · failed: postgresql.service\ndb01\nmonthly keep"
+	want := "db01 · PBP FAILED 2026-10-19 02:14 · failed: postgresql.service\nmonthly keep"
 	if f.notes() != want {
 		t.Errorf("notes %q", f.notes())
 	}
@@ -478,7 +478,7 @@ func TestDestroyFailure(t *testing.T) {
 			if f.protected() {
 				t.Error("backup left protected")
 			}
-			want := notes.Line(tc.verdict, now, tc.reason)
+			want := notes.Line("db01", tc.verdict, now, tc.reason)
 			if !strings.HasPrefix(f.notes(), want+"\n") {
 				t.Errorf("notes %q", f.notes())
 			}
@@ -533,7 +533,7 @@ func TestDestroyPanicStillCleansUp(t *testing.T) {
 	if j, ok := f.inFlight(); !ok || j.Stage != state.StageStarted {
 		t.Errorf("InFlight = %+v, %v", j, ok)
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · booted, but PBP could not remove its test copy (retried at the next run)\n") {
+	if !strings.HasPrefix(f.notes(), "db01 · PBP ERROR 2026-10-19 02:14 · booted, but PBP could not remove its test copy (retried at the next run)\n") {
 		t.Errorf("notes %q", f.notes())
 	}
 	if !strings.Contains(f.logBuf.String(), "destroy boom") || !strings.Contains(f.logBuf.String(), "stack=") {
@@ -714,7 +714,7 @@ func TestBootOutcomes(t *testing.T) {
 			if strings.Contains(strings.Join(f.tgt.CallLog(), "\n"), "Executor") {
 				t.Error("probe ran without a usable agent")
 			}
-			if !strings.HasPrefix(f.notes(), "PBP "+string(tc.verdict)+" ") {
+			if !strings.HasPrefix(f.notes(), "db01 · PBP "+string(tc.verdict)+" ") {
 				t.Errorf("notes %q", f.notes())
 			}
 		})
@@ -741,7 +741,7 @@ func TestCancelledMidJob(t *testing.T) {
 	if _, ok := f.inFlight(); ok {
 		t.Error("InFlight entry not removed")
 	}
-	if !strings.HasPrefix(f.notes(), "PBP ERROR 2026-10-19 02:14 · cancelled\n") {
+	if !strings.HasPrefix(f.notes(), "db01 · PBP ERROR 2026-10-19 02:14 · cancelled\n") {
 		t.Errorf("notes %q", f.notes())
 	}
 }
@@ -859,7 +859,7 @@ func TestNotesMergeIntoFullVolumeNotes(t *testing.T) {
 	f.api.Backups["pbs"][0].Notes = "PBP ERROR 2026-10-18 02:00 · old\ndb01\nmonthly keep"
 	f.b.Notes = "PBP ERROR 2026-10-18 02:00 · old" // what the listing shows
 	res := f.run(context.Background())
-	want := "PBP PROVEN 2026-10-19 02:14 · " + res.Reason + "\ndb01\nmonthly keep"
+	want := "db01 · PBP PROVEN 2026-10-19 02:14 · " + res.Reason + "\nmonthly keep"
 	if f.notes() != want {
 		t.Errorf("notes %q want %q", f.notes(), want)
 	}

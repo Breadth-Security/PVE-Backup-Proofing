@@ -110,7 +110,7 @@ func TestOrderSeveralNeverProven(t *testing.T) {
 }
 
 func TestAlreadyProven(t *testing.T) {
-	proven := model.Backup{Notes: notes.Merge("web", notes.Line(model.Proven, ref, "booted ok"))}
+	proven := model.Backup{Notes: notes.Merge("web", notes.Line("web", model.Proven, ref, "booted ok"), "web")}
 	if !AlreadyProven(proven, false) {
 		t.Error("proven, no reproof: want true")
 	}

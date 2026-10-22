@@ -213,7 +213,7 @@ func TestRunAndCheckHoldLock(t *testing.T) {
 
 func TestRunWiring(t *testing.T) {
 	e := newEnv(t)
-	e.backup(101, "PBP PROVEN 2026-10-18 02:14 · agent ok")
+	e.backup(101, "db · PBP PROVEN 2026-10-18 02:14 · agent ok")
 	e.backup(102, "")
 	if err := os.MkdirAll(e.logDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -334,7 +334,7 @@ func TestRunGuestExcludedRefuses(t *testing.T) {
 
 func TestRunWiringLogDirUnwritable(t *testing.T) {
 	e := newEnv(t)
-	e.backup(101, "PBP PROVEN 2026-10-18 02:14 · agent ok")
+	e.backup(101, "db · PBP PROVEN 2026-10-18 02:14 · agent ok")
 	if err := os.WriteFile(e.logDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}

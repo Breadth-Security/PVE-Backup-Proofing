@@ -199,7 +199,7 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 // execute discovers the backups to proof and proofs them. It returns the
 // results in priority order and any run-level errors.
 func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slog.Logger) ([]model.GuestResult, []string) {
-	queue, errs := discover(ctx, d, opt, log)
+	queue, old, errs := discover(ctx, d, opt, log)
 	if queue == nil {
 		return nil, errs
 	}
@@ -211,13 +211,15 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 	}
 	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
+	p.migrateNotes(ctx, old, start)
 	return results, append(errs, p.errs...)
 }
 
 // discover lists every source storage and returns the newest backup per
-// guest in proofing order. A storage that cannot be listed is reported and
+// guest in proofing order, and every backup whose notes are in the old PBP
+// format (migrateNotes). A storage that cannot be listed is reported and
 // skipped; if none can be listed the queue is nil.
-func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []string) {
+func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []model.Backup, []string) {
 	var all []model.Backup
 	var errs []string
 	listed := 0
@@ -232,7 +234,7 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 		all = append(all, bs...)
 	}
 	if listed == 0 {
-		return nil, errs
+		return nil, nil, errs
 	}
 	rng := d.Cfg.Target.VMIDRange
 	all, inRange := discovery.OutsideRange(all, rng[0], rng[1])
@@ -245,14 +247,18 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 			"guests", strings.Join(keys, ", "), "vmid_range", fmt.Sprintf("%d-%d", rng[0], rng[1]))
 	}
 	newest := discovery.NewestPerGuest(all)
+	old := oldNotes(all)
 	if opt.OnlyVMID != 0 {
-		var only []model.Backup
-		for _, b := range newest {
-			if b.Key.VMID == opt.OnlyVMID {
-				only = append(only, b)
+		only := func(bs []model.Backup) []model.Backup {
+			var out []model.Backup
+			for _, b := range bs {
+				if b.Key.VMID == opt.OnlyVMID {
+					out = append(out, b)
+				}
 			}
+			return out
 		}
-		newest = only
+		newest, old = only(newest), only(old)
 	}
 	lastProven := map[model.GuestKey]time.Time{}
 	snap := d.Store.Snapshot()
@@ -261,7 +267,7 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 			lastProven[b.Key] = t
 		}
 	}
-	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), errs
+	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), old, errs
 }
 
 // logDiscovery logs how many backups were found, on which storages, and how
@@ -501,7 +507,7 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 			glog.Info("notes left alone: the guest is gone and its unreadable backup config might exclude it by tag")
 			return l, res
 		}
-		annotate(d, glog, b, *res)
+		annotate(d, glog, b, *res, b.Key.Label())
 		return l, res
 	}
 	orig := sanitize.ParseConfigText(raw)
@@ -524,7 +530,7 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 	// backup's own condition: its notes record it.
 	if keys := sanitize.RawLXCKeys(orig); b.Key.Kind == model.KindLXC && len(keys) > 0 {
 		l, res := fail(model.Error, "PBP cannot restore containers with raw lxc settings ("+strings.Join(keys, ", ")+"): only root@pam can ("+docsToken+")")
-		annotate(d, glog, b, *res)
+		annotate(d, glog, b, *res, noteName(b.Key, orig))
 		return l, res
 	}
 	// PVE restores a privileged container only for a caller with Sys.Modify
@@ -539,7 +545,7 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 			glog.Info("cannot read PBP's privileges on /, restoring the privileged container anyway: " + oneLine(err.Error()))
 		case !privs["Sys.Modify"]:
 			l, res := fail(model.Error, reasonPrivileged)
-			annotate(d, glog, b, *res)
+			annotate(d, glog, b, *res, noteName(b.Key, orig))
 			return l, res
 		}
 	}
