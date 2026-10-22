@@ -14,6 +14,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/discovery"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
@@ -204,12 +205,12 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 		return nil, errs
 	}
 	logDiscovery(d, queue, log)
-	live, err := liveTags(ctx, d)
+	live, names, err := liveGuests(ctx, d, log)
 	if err != nil {
 		log.Error("read guest tags for selection.exclude.tags", "err", err)
 		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error())
 	}
-	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, stop: opt.Stop}
+	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, liveNames: names, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
 	p.migrateNotes(ctx, old, start)
 	return results, append(errs, p.errs...)
@@ -307,6 +308,9 @@ type pool struct {
 	// liveTags are the live guests' tags, read only when exclusion by
 	// tag is configured.
 	liveTags map[model.GuestKey][]string
+	// liveNames are the live guests' names, for the notification's lines
+	// of guests that are not restored (issue #77); nil if unreadable.
+	liveNames map[model.GuestKey]string
 	// stop closes when no further proofs may start (Options.Stop).
 	stop <-chan struct{}
 }
@@ -347,6 +351,10 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
 			results[i] = p.skip(glog, b, reasonAlreadyProven)
 			results[i].AlreadyProven = true
+			results[i].Name = p.liveNames[b.Key]
+			if results[i].Name == "" {
+				results[i].Name = notes.Name(b.Notes) // the guest is gone
+			}
 			p.logResult(results[i])
 			continue
 		}
@@ -431,22 +439,32 @@ func (p *pool) exclude(glog *slog.Logger, b model.Backup, rule string) model.Gue
 	return r
 }
 
-// liveTags reads the tags of every guest when selection.exclude.tags is
-// set, so a tag added in the Proxmox UI excludes the guest at the next
-// run; otherwise it reads nothing.
-func liveTags(ctx context.Context, d Deps) (map[model.GuestKey][]string, error) {
-	if len(d.Cfg.Selection.Exclude.Tags) == 0 {
-		return nil, nil
-	}
+// liveGuests reads every guest's tags and name. The tags are read only
+// when selection.exclude.tags is set (else nil), and failing to read them
+// then is an error; the names only label the notification's lines, so
+// without exclusion tags a failure is logged and the names are nil.
+func liveGuests(ctx context.Context, d Deps, log *slog.Logger) (map[model.GuestKey][]string, map[model.GuestKey]string, error) {
+	needTags := len(d.Cfg.Selection.Exclude.Tags) > 0
 	guests, err := d.API.Guests(ctx)
 	if err != nil {
-		return nil, err
+		if needTags {
+			return nil, nil, err
+		}
+		log.Info("guest names unavailable for the notification: " + oneLine(err.Error()))
+		return nil, nil, nil
 	}
-	tags := make(map[model.GuestKey][]string, len(guests))
+	var tags map[model.GuestKey][]string
+	if needTags {
+		tags = make(map[model.GuestKey][]string, len(guests))
+	}
+	names := make(map[model.GuestKey]string, len(guests))
 	for _, g := range guests {
-		tags[g.Key] = g.Tags
+		if needTags {
+			tags[g.Key] = g.Tags
+		}
+		names[g.Key] = g.Name
 	}
-	return tags, nil
+	return tags, names, nil
 }
 
 func (p *pool) addErr(msg string) {

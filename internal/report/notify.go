@@ -36,11 +36,11 @@ var _ Notifier = (*PVENotifier)(nil)
 const maxPayload = 1000 << 10
 
 // listKeys are the TemplateData lists shortened when the payload is too big.
-var listKeys = []string{"environment-errors", "failed", "errored", "booted", "skipped", "not-covered"}
+var listKeys = []string{"environment-errors", "failed", "errored", "booted", "skipped",
+	"previously-proven", "proven", "not-covered"}
 
 // shortened returns data with each list cut to keep lines plus a line saying
-// how many more the run log has, and the proven list cut to 4 KiB; keep < 0
-// returns data unchanged.
+// how many more the run log has; keep < 0 returns data unchanged.
 func shortened(data map[string]any, keep int) map[string]any {
 	if keep < 0 {
 		return data
@@ -55,19 +55,12 @@ func shortened(data map[string]any, keep int) map[string]any {
 			out[k] = append(l[:keep:keep], fmt.Sprintf("… and %d more; see the run log", len(l)-keep))
 		}
 	}
-	if p, _ := data["proven"].(string); len(p) > 4096 {
-		if cut := strings.LastIndex(p[:4096], ", "); cut > 0 {
-			out["proven"] = p[:cut] + ", … (see the run log)"
-		} else {
-			out["proven"] = "… (see the run log)"
-		}
-	}
 	return out
 }
 
 // essentials keeps the headline, marker, summary, counts, log path and
-// node of data, a run
-// error cut to 4 KiB, and empty lists whose place says to read the run log.
+// node of data, a run error cut to 4 KiB, and empty lists whose place says
+// to read the run log.
 func essentials(data map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs"} {
@@ -86,7 +79,6 @@ func essentials(data map[string]any) map[string]any {
 		out[k] = []string{}
 	}
 	out["environment-errors"] = []string{"the details are too long for a notification; see the run log"}
-	out["proven"] = ""
 	return out
 }
 

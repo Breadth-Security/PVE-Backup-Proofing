@@ -103,6 +103,18 @@ func isName(line, name string) bool {
 	return line == clean(name, maxName) || line == clean(name, len(name)+1)
 }
 
+// namedLine captures the guest's name in front of a PBP line.
+var namedLine = regexp.MustCompile(`^(.+?)` + regexp.QuoteMeta(sep) + linePrefix + `(?:PROVEN|FAILED|BOOTED|SKIPPED|ERROR) ` + timePattern + regexp.QuoteMeta(sep))
+
+// Name is the guest's name in front of the PBP line that starts notes, or ""
+// when the first line is not one in that form.
+func Name(notes string) string {
+	if m := namedLine.FindStringSubmatch(notes); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 // OldFormat reports whether notes start with a PBP line in the name-less
 // format 0.5 to 0.7 wrote, which hides the guest's name from the backup's
 // comment.
