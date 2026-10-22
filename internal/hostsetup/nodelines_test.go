@@ -1,6 +1,9 @@
 package hostsetup
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,7 +25,9 @@ func TestNodeLinesRelease(t *testing.T) {
 	got := NodeLines(lineCfg(), testPub, "0.3.0~rc.1", false)
 	base := "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v0.3.0-rc.1/"
 	install := `(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base +
-		`pbp_0.3.0~rc.1_${a}.deb" && curl -fsSLO "` + base + `SHA256SUMS" && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./pbp_0.3.0~rc.1_${a}.deb"; rc=$?; rm -rf "$d"; exit $rc)`
+		`pbp_0.3.0~rc.1_${a}.deb" && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` +
+		ReleaseSigner + `' > allowed_signers && ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS` +
+		` && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./pbp_0.3.0~rc.1_${a}.deb"; rc=$?; rm -rf "$d"; exit $rc)`
 	setup := "pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey '" + testPub +
 		"' --storages local-zfs,pbs-main,pbs-two --daemon-version '0.3.0~rc.1' --create-token"
 	for _, want := range []string{"On the node, as root:", "\n" + install + "\n", "\n" + setup + "\n"} {
@@ -48,5 +53,67 @@ func TestNodeLinesDev(t *testing.T) {
 	}
 	if !strings.Contains(got, "pbp node setup --vmid-range 990000-990049") {
 		t.Errorf("no setup line:\n%s", got)
+	}
+}
+
+// The key built into PBP is the one the repository publishes in
+// allowed_signers, for release files and for git.
+func TestReleaseSignerMatchesRepository(t *testing.T) {
+	b, err := os.ReadFile("../../allowed_signers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "\n"+ReleaseSigner+"\n") {
+		t.Errorf("allowed_signers lacks %q", ReleaseSigner)
+	}
+	key := strings.SplitN(ReleaseSigner, `" `, 2)[1]
+	if !strings.Contains(string(b), `namespaces="git" `+key) {
+		t.Error("allowed_signers lacks the git entry for the same key")
+	}
+}
+
+// The verify command the install line and the docs give accepts a
+// signature made the way packaging/sign-release.sh makes it, and rejects a
+// changed SHA256SUMS or another namespace.
+func TestVerifyCommand(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	dir := t.TempDir()
+	run := func(cmd string) error {
+		c := exec.Command("sh", "-c", cmd)
+		c.Dir = dir
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Logf("%s: %s", cmd, out)
+		}
+		return err
+	}
+	if err := run(`ssh-keygen -q -t ed25519 -N "" -f key && printf 'abc  pbp_1_amd64.deb\n' > SHA256SUMS`); err != nil {
+		t.Fatal(err)
+	}
+	pub, err := os.ReadFile(filepath.Join(dir, "key.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := strings.Fields(string(pub))
+	signer := strings.Replace(ReleaseSigner, strings.SplitN(ReleaseSigner, `" `, 2)[1], f[0]+" "+f[1], 1)
+	if err := os.WriteFile(filepath.Join(dir, "allowed_signers"), []byte(signer+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("ssh-keygen -q -Y sign -f key -n pbp-release SHA256SUMS && " + VerifyCommand); err != nil {
+		t.Fatalf("good signature rejected: %v", err)
+	}
+	if err := run("echo x >> SHA256SUMS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(VerifyCommand); err == nil {
+		t.Error("changed SHA256SUMS accepted")
+	}
+	if err := run("sed -i '$d' SHA256SUMS && rm SHA256SUMS.sig && ssh-keygen -q -Y sign -f key -n git SHA256SUMS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(VerifyCommand); err == nil {
+		t.Error("signature in the git namespace accepted")
 	}
 }

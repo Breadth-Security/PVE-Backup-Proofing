@@ -4,15 +4,18 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
 ## Install
 
-1. **Download and verify** the package and `SHA256SUMS` of a release (here `0.8.0`; use the version you want):
+1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.0`; use the version you want). You need the repository's [`allowed_signers`](../allowed_signers) file, which holds PBP's public signing key; check its fingerprint first ([Verifying a release](#verifying-a-release)):
 
    ```
    v=0.8.0; a=$(dpkg --print-architecture)
    base=https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v$v
-   curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS"
+   curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS" && curl -fsSLO "$base/SHA256SUMS.sig"
+   ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
    sha256sum -c SHA256SUMS --ignore-missing
    sudo apt install "./pbp_${v}_${a}.deb"
    ```
+
+   The first check must print `Good "pbp-release" signature for pbp-release with ED25519 key SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8`, the second `pbp_<version>_<arch>.deb: OK`. Stop if either fails.
 
    Pre-releases are tagged like `v0.8.0-rc.2` and their files carry the Debian version `0.8.0~rc.2` (`pbp_0.8.0~rc.2_amd64.deb`), which sorts before `0.8.0`, so the final release installs over a pre-release as an upgrade.
 
@@ -73,3 +76,13 @@ On the node, the package is the helper. Its install script creates the `pbp` use
 ## Remove
 
 `apt remove pbp` stops and disables the service but keeps `/etc/pbp`, `/var/lib/pbp`, `/var/log/pbp` and the `pbp` user. `apt purge pbp` deletes all three directories and the user. On a node, that deletes the `pbp` user and with it PBP's access (and `/var/lib/pbp/.ssh`), so do not purge a node you still use for proofs; to undo the node setup cleanly, use [`pbp node uninstall`](setup.md#removing-pbp-from-a-node). Purge also removes `/etc/sudoers.d/pbp` when it is exactly the rule setup wrote. The PVE user `pbp@pve`, its token and the `PBPProofer` role stay (removing the package says so): remove them with `pbp node uninstall --remove-token` before purging.
+
+## Verifying a release
+
+Each release's `SHA256SUMS` is signed with PBP's SSH signing key, so you can check that a release came from the maintainer and not just that the download is intact (`SHA256SUMS` alone cannot tell you that: it sits on the same release page as the packages). Every release from `v0.2.0-rc.1` on carries `SHA256SUMS.sig`.
+
+- **The key** is in the repository's [`allowed_signers`](../allowed_signers) file, and its fingerprint is `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` (ED25519). Check the fingerprint against a second source, such as the repository's README, before trusting the file: `ssh-keygen -lf allowed_signers` does not read that format, so compare the key itself: `grep '^pbp-release' allowed_signers | cut -d' ' -f3- | ssh-keygen -lf -`.
+- **Checking** needs only `ssh-keygen` (from `openssh-client`, present on every Proxmox node): `ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS`, then `sha256sum -c SHA256SUMS --ignore-missing` for the files you downloaded.
+- **The node install line** that `pbp setup` prints does both checks itself, with the key built into your PBP, so the key never comes from the page it verifies.
+- **Tags and commits** from `v0.8.1` on are signed with the same key (as `tdiana@breadthanalytics.com`); check a tag with `git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v<version>`.
+

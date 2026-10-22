@@ -14,6 +14,17 @@ The top-level `VERSION` file (`MAJOR.MINOR.PATCH`) is the version a Docker build
 
 `packaging/build.sh` needs Go, `envsubst` (gettext-base) and network access for the pinned nfpm. The `release` workflow runs it when a tag `v<version>` is pushed, runs lintian on the packages (errors fail the job) and creates the Gitea release with the packages, tarballs and `SHA256SUMS` attached. Run it by hand (workflow dispatch) for a dry run that builds but publishes nothing. It authenticates with the job's automatic token; if your Gitea refuses that (HTTP 401/403), create a token with the `write:repository` scope and store it as the repository secret `RELEASE_TOKEN`, which is used in preference when set.
 
+## Releasing
+
+1. Bump `VERSION`, move the CHANGELOG's `Unreleased` section to `v<version>`, and set the install examples in the docs to the new version (in the release's PR).
+2. After the merge, on `main`: `git tag -a v<version> -m "PBP v<version>"` and `git push GiteaMain v<version>`. With `tag.gpgsign` set, the tag is signed with your SSH signing key; check it with `git tag -v v<version>`.
+3. Wait for the `release` workflow to publish the release.
+4. **Sign it at once**, on your machine: `packaging/sign-release.sh v<version>`. It downloads every file of the release, checks them against `SHA256SUMS`, signs `SHA256SUMS` (namespace `pbp-release`), uploads `SHA256SUMS.sig` and checks that the published signature verifies with [`allowed_signers`](../allowed_signers). Until it has run, the node install line that `pbp setup` prints fails (it requires the signature), so do not leave a release unsigned. `--dry-run` checks the files without signing; `--all` covers every release, skipping (and re-verifying) those already signed; `--replace` re-signs.
+
+The signing key never goes to CI: it is the maintainer's SSH key `~/.ssh/pbp_signing` (`PBP_SIGNING_KEY` overrides the path), loaded into `ssh-agent` or unlocked with its passphrase when the script asks. Its public half is in `allowed_signers` and built into PBP (`internal/hostsetup.ReleaseSigner`; a test keeps the two equal). Commits and tags are signed with the same key under `gpg.format ssh`; merges made in Gitea's web UI are not (accepted: the signed tags and `SHA256SUMS.sig` carry the release's provenance).
+
+**Changing the key** (rotation, or after a compromise): generate a new key, replace both lines in `allowed_signers` and `ReleaseSigner`, register it on Gitea (and GitHub) as a signing key, re-sign the releases with `packaging/sign-release.sh --replace --all`, and say so in the CHANGELOG and the release notes with both fingerprints. A PBP built before the change verifies only signatures by the old key, so its printed install line fails for releases signed by the new one: install the new release by hand once, verifying with the new `allowed_signers`. Keep an offline backup of the private key and its passphrase.
+
 ## Tests
 
 - **Unit tests:** `go test -race ./...` (and `go vet` with the `integration` and `nodee2e` tags, which CI also runs).
