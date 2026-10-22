@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## v0.6.0
+
+This release carries the rest of the whole-codebase review (#21): the Minor findings in #50–#57, and the refusal to run as root (#63).
+
+**Upgrade both sides.** The daemon and the node helper must share major.minor, so a 0.5 helper does not work with a 0.6 daemon, and the helper itself changed (notify accepts only PBP's own fields; the audit log records more): follow [Upgrading](docs/upgrading.md). The notification templates are unchanged. Check before upgrading:
+
+- **TLS config:** a hand-edited `config.yaml` with both `target.api.tls_fingerprint` and `target.api.ca_file`, or a fingerprint that is not 64 hex digits, no longer loads (the daemon exits 78); configs `pbp setup` wrote are fine.
+- **Docker:** the binary moved to `/usr/local/bin/pbp` (on the `PATH`, so `docker compose exec pbp pbp …` now works). If your own compose file overrides the `healthcheck` or `entrypoint` with `/pbp`, change it.
+- **Run PBP commands as the service user.** `pbp check`, `pbp run` and `pbp daemon` refuse to run as root when the state or log directory belongs to `pbp`; use `sudo -u pbp …` as the docs show.
 
 - Tests ([#56](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/56)): the daemon's scheduling tests use an injected clock instead of real seconds; the VMID-sharing test makes jobs really overlap; the release workflow runs the package-script tests; the deb layout's key mode is pinned; the fake node helper fails requests it has no handler for; the node end-to-end test also tries remote and agent forwarding and `SetEnv`; every job, run and janitor test checks that only the proofed backup's attributes are written.
 - **The node helper accepts only what PBP sends** ([#51](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/51)). A notify request may carry only the `type` and `hostname` fields and the data keys PBP's templates use, so a stolen key can no longer shape notifications to hit other matchers. The audit log now records, for each guest command, its name, argument count, exit code and time taken (never its arguments), so a key compromise can be reconstructed. A notification too large even after shortening its lists is sent with the essentials and a pointer to the run log, never dropped.
