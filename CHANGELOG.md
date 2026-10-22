@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Maintenance: `golang.org/x/crypto` 0.58.0 and `golang.org/x/sys` 0.49.0; the Docker image is now built on `distroless/static-debian13` (Debian 13, was 12); CI uses `actions/checkout` and `actions/setup-go` v7 (Node 24, was Node 20) and Trivy 0.76.1.
+
 ## v0.6.1
 
 Only the daemon changed: a 0.6.1 daemon works with the 0.6.0 node helper, so upgrading the PBP host is enough (upgrading the node too does no harm). Configs need no change.

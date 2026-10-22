@@ -20,7 +20,7 @@ concurrency:
 # github.com using the job token, which on Gitea is a Gitea token that
 # GitHub rejects.
 env:
-  TRIVY_VERSION: "0.76.0"
+  TRIVY_VERSION: "0.76.1"
   TRIVY_SHA256: "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
 
 jobs:

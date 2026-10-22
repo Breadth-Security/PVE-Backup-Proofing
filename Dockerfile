@@ -20,7 +20,7 @@ RUN v="${VERSION:-$(packaging/versionfile.sh)}" \
 # named volumes mounted there inherit it.
 RUN mkdir -p /out/var/lib/pbp/state /out/var/log/pbp
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 # On the PATH, so `docker compose exec pbp pbp …` finds it (code review
 # 6.13: /pbp was not, and the documented commands failed).
 COPY --from=build /out/pbp /usr/local/bin/pbp
