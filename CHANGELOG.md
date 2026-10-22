@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Per-guest ignore lists** ([#68](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/68)). A `checks.guests` entry can now carry `ignore_units` and `windows_ignore_services`, which add to the global lists for the guests it matches (by VMID, name or tag) only: a unit that fails by design on one guest, such as a driver loader in a container, no longer has to be ignored on every guest. See [The ignore list](docs/checks.md#the-ignore-list).
+- **A drive the backup does not hold is removed from the copy, not left pointing at production** ([#67](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/67)). PVE's restore rewrites only the drives in the backup and keeps every other drive line as it is, so a restored copy could name a production volume: on pve1, VM137 (SeaBIOS with a leftover `efidisk0` that vzdump skips) pointed at its production EFI disk. 0.6.0's disk check refused to start such a copy, so VM137 ended `ERROR` every night. Removing a drive from the copy needs `VM.Config.Disk`, which PBP's role does not include, and 0.6.0's removal of raw host disks needed it too (it failed with a 403). PBP now checks its token's rights first: with `VM.Config.Disk` (granted on `/vms` to `pbp@pve` and its token by the admin, see [Security](docs/security.md#the-api-token)) it removes such drives (the guest's log lists them as not covered by the proof), so the proof goes on; without it the guest ends `ERROR` before anything changes, naming the drives and both fixes (remove them from the original guest, or grant the right). The default role is unchanged.
+
 ## v0.6.0
 
 This release carries the rest of the whole-codebase review (#21): the Minor findings in #50–#57, and the refusal to run as root (#63).

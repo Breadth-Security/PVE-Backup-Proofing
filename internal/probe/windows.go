@@ -167,7 +167,7 @@ func windowsServices(ctx context.Context, ex Executor, in Input) (out Outcome, r
 	}
 	var why []string
 	for _, s := range stoppedServices(res.Stdout) {
-		ignored := windowsIgnored(in.Checks.WindowsIgnoreServices, s.name)
+		ignored := windowsIgnored(in.windowsIgnore(), s.name)
 		if s.delayed && !s.failed() {
 			// Not started yet, or stopped cleanly after its work.
 			pending = pending || (s.exitCode == "1077" && !ignored)

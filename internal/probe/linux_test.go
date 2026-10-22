@@ -1015,3 +1015,21 @@ func TestProcFallbackTimeoutIsError(t *testing.T) {
 		t.Errorf("ports: got %v %q, want ERROR", o.Verdict, o.Reason)
 	}
 }
+
+// A checks.guests entry can ignore units for the guests it matches only:
+// sep5.service fails by design on CT114, and must still fail elsewhere
+// (issue #68).
+func TestPerGuestIgnoreUnits(t *testing.T) {
+	ex := healthy()
+	ex[sysState] = out("degraded\n")
+	ex[failedC] = out("sep5.service loaded failed failed sep5\n")
+	ck := config.Checks{Guests: []config.GuestChecks{{Match: config.GuestMatch{VMID: 114}, IgnoreUnits: []string{"sep5*"}}}}
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 114}})
+	if o.Verdict != model.Proven || !slices.Equal(o.IgnoredUnits, []string{"sep5.service"}) {
+		t.Errorf("CT114: got %v %q ignored %v", o.Verdict, o.Reason, o.IgnoredUnits)
+	}
+	o = probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 115}})
+	if o.Verdict != model.Failed || o.Reason != "failed: sep5.service" {
+		t.Errorf("another guest: got %v %q", o.Verdict, o.Reason)
+	}
+}

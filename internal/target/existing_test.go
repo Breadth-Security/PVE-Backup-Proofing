@@ -677,6 +677,7 @@ func TestSanitizeLXCBindMount(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
 	f.BackupConfigs[ctVol] = ctConf
+	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}} // removing mp0 needs it
 	n := newTarget(t, f, f, nil)
 	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
 	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
@@ -1266,5 +1267,113 @@ func TestForeignDiskContainer(t *testing.T) {
 	}
 	if foreignDisk("net0", "/whatever", 990000) != "" || foreignDisk("unused0", "local:vm-1-disk-0", 990000) != "" {
 		t.Error("non-disk keys judged")
+	}
+}
+
+// VM137 on pve1: SeaBIOS with a leftover efidisk0 that vzdump does not back
+// up. PVE's restore keeps that line verbatim, naming the production volume.
+// Sanitize removes it (not covered by backup) instead of the copy ending
+// ERROR, and a drive missing from the map for another reason likewise
+// (issue #67). The copy then passes verification and starts.
+func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = "bios: seabios\nname: nextcloud-vm\nagent: 1\n" +
+		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\n" +
+		"scsi0: lvm:vm-137-disk-6,discard=on,size=72G\n" +
+		"scsi1: lvm:vm-137-disk-7,size=828M\n" +
+		"virtio2: iscsi:0.0.1.scsi-36001405abc,size=100G\n" +
+		"ide2: nfs:iso/debian.iso,media=cdrom\n" +
+		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n" +
+		"#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:lvm:raw:\n"
+	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Configs[990000]["efidisk0"]; !strings.Contains(got, "vm-137-disk-8") {
+		t.Fatalf("fake restore did not keep the unmapped line as PVE does: %q", got)
+	}
+	s, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if err != nil {
+		t.Fatalf("Sanitize: %v", err)
+	}
+	removed := map[string]model.MissingPiece{}
+	for _, p := range s.Removed {
+		removed[p.Key] = p
+	}
+	for _, k := range []string{"efidisk0", "virtio2"} {
+		if p, ok := removed[k]; !ok || p.Kind != "excluded-disk" || p.Detail != "not in the backup" {
+			t.Errorf("%s: removed as %+v, want an excluded-disk not in the backup", k, p)
+		}
+		if _, still := f.Configs[990000][k]; still {
+			t.Errorf("%s still in the copy's config", k)
+		}
+	}
+	for _, k := range []string{"scsi0", "scsi1", "ide2"} {
+		if _, ok := removed[k]; ok {
+			t.Errorf("%s removed, but it is the copy's own volume or an ISO", k)
+		}
+	}
+	if err := n.Start(ctx, model.KindQEMU, 990000); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
+// Without VM.Config.Disk (PBP's default role) the drive cannot be removed:
+// the guest ends ERROR before any change, naming the drive and the fixes
+// (issue #67). This is what pve1's VM137 showed.
+func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = "bios: seabios\nname: nextcloud-vm\n" +
+		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\nscsi0: lvm:vm-137-disk-6,size=72G\n" +
+		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	f.ResetCalls()
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "efidisk0 (lvm:vm-137-disk-8)") || !strings.Contains(err.Error(), "VM.Config.Disk") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "SetGuestConfig") {
+			t.Errorf("config changed before refusing: %q", c)
+		}
+	}
+}
+
+// A drive in the boot order is never removed (the copy would fail to boot,
+// blaming the backup): the copy is refused instead. A host CD drive stays.
+// Removing a CD-ROM needs VM.Config.CDROM, not VM.Config.Disk (orphan-disk
+// review).
+func TestRemoveNotInBackupEdges(t *testing.T) {
+	plan := sanitize.Plan{}
+	cfg := map[string]string{
+		"boot":     "order=scsi0;net0",
+		"scsi0":    "weird:prod-boot-volume,size=32G",
+		"scsi1":    "lvm:vm-137-disk-7,size=1G",
+		"ide2":     "/dev/sr0,media=cdrom",
+		"ide3":     "lvm:vm-137-disk-9,media=cdrom",
+		"efidisk0": "lvm:vm-137-disk-8,efitype=4m",
+	}
+	removeNotInBackup(&plan, cfg, 990000)
+	if want := []string{"efidisk0", "ide3", "scsi1"}; !slices.Equal(plan.Delete, want) {
+		t.Fatalf("Delete = %v, want %v (boot disk and host CD drive kept)", plan.Delete, want)
+	}
+
+	ctx := context.Background()
+	f := healthyFake()
+	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
+	n := newTarget(t, f, f, nil)
+	err := n.mayRemoveDrives(ctx, plan, cfg, 990000)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "VM.Config.CDROM") || strings.Contains(err.Error(), "efidisk0") {
+		t.Errorf("CD-ROM without VM.Config.CDROM: %v", err)
+	}
+	f.Privs["/vms/990000"] = append(f.Privs["/vms/990000"], "VM.Config.CDROM")
+	if err := n.mayRemoveDrives(ctx, plan, cfg, 990000); err != nil {
+		t.Errorf("both privileges: %v", err)
 	}
 }

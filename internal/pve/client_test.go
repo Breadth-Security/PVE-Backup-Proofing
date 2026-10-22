@@ -472,3 +472,18 @@ func TestErrorMessageCappedAndNoRedirect(t *testing.T) {
 		t.Errorf("message %d bytes, valid %v", len(ae.Message), utf8.ValidString(ae.Message))
 	}
 }
+
+// /access/permissions answers with each privilege's propagate flag: a
+// privilege granted without propagation (0) is still held (review M3).
+func TestPrivilegesKeyPresence(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("path") != "/vms/990000" {
+			t.Errorf("path %q", r.URL.Query().Get("path"))
+		}
+		_, _ = w.Write([]byte(`{"data":{"/vms/990000":{"VM.Config.Disk":0,"VM.Audit":1},"/other":{"Sys.Modify":1}}}`))
+	}))
+	p, err := c.Privileges(context.Background(), "/vms/990000")
+	if err != nil || !p["VM.Config.Disk"] || !p["VM.Audit"] || p["Sys.Modify"] {
+		t.Errorf("privileges %v, %v", p, err)
+	}
+}

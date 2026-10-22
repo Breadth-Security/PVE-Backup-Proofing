@@ -102,7 +102,11 @@ type GuestChecks struct {
 	// Assistant OS, Fedora CoreOS), so a read-only root is not a failure
 	// (code review 5.10).
 	AllowReadOnlyRoot bool `yaml:"allow_readonly_root"`
-	CheckSet          `yaml:",inline"`
+	// IgnoreUnits and WindowsIgnoreServices add to the checks-wide lists
+	// for the matching guests only (issue #68).
+	IgnoreUnits           []string `yaml:"ignore_units"`
+	WindowsIgnoreServices []string `yaml:"windows_ignore_services"`
+	CheckSet              `yaml:",inline"`
 }
 
 type Notify struct {

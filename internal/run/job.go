@@ -290,7 +290,11 @@ func (j *job) logSanitized(s target.Sanitized) {
 	}
 	pieces := make([]string, len(s.Removed))
 	for i, p := range s.Removed {
-		pieces[i] = cmp.Or(p.Key, p.Path) + " (" + strings.TrimSpace(p.Kind+" "+p.Path) + ")"
+		what := strings.TrimSpace(p.Kind + " " + p.Path)
+		if p.Detail != "" {
+			what += ", " + p.Detail
+		}
+		pieces[i] = cmp.Or(p.Key, p.Path) + " (" + what + ")"
 	}
 	j.log.Info("not covered by the proof: " + strings.Join(pieces, ", "))
 }

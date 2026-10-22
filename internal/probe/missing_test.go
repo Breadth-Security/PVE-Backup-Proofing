@@ -336,3 +336,14 @@ func TestTestExitCodesOtherThanOneAreUntraced(t *testing.T) {
 		}
 	}
 }
+
+// An EFI or TPM state disk removed from the copy cannot explain a failed
+// mount of an absent device: it holds no filesystem (orphan-disk review).
+func TestEFIDiskDoesNotExplainMounts(t *testing.T) {
+	ex := failing(map[string]string{"data.mount": "Type=ext4\nWhat=/dev/disk/by-uuid/abc\nWhere=/data\n"})
+	ex["test -e /dev/disk/by-uuid/abc"] = probe.ExecResult{ExitCode: 1}
+	o := runMissing(ex, model.MissingPiece{Kind: "excluded-disk", Key: "efidisk0", Detail: "not in the backup"})
+	if o.Verdict != model.Failed || len(o.NotCovered) != 0 {
+		t.Fatalf("got %v %q, covered %v", o.Verdict, o.Reason, o.NotCovered)
+	}
+}

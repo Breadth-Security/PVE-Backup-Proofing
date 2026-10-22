@@ -2,6 +2,7 @@ package pve
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 )
@@ -84,4 +85,25 @@ func (c *Client) Nodes(ctx context.Context) ([]string, error) {
 		names = append(names, n.Node)
 	}
 	return names, nil
+}
+
+// Privileges returns the calling token's effective privileges on path,
+// from GET /access/permissions?path=… ({"<path>": {"<priv>": 1, …}}).
+func (c *Client) Privileges(ctx context.Context, path string) (map[string]bool, error) {
+	var r map[string]map[string]json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/access/permissions", url.Values{"path": {path}}, nil, &r); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for p, privs := range r {
+		if p != path {
+			continue
+		}
+		// The value is PVE's propagate flag, not whether it is granted:
+		// a key present means the privilege is held.
+		for name := range privs {
+			out[name] = true
+		}
+	}
+	return out, nil
 }
