@@ -80,6 +80,8 @@ func TestTemplateDataSections(t *testing.T) {
 		"headline": "PBP run on pve1, Wed 2026-10-21 02:00 EDT (scheduled), 1h34m",
 		"logs":     "/var/log/pbp/2026-10-21_02-00-00_schedule/",
 		"summary":  "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
+		"mark":     "❌",
+		"counts":   "✅ 2 proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 3 skipped",
 		"proven":   "VM108, CT109",
 		"failed":   []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
 		"errored":  []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
@@ -99,7 +101,7 @@ func TestTemplateDataSections(t *testing.T) {
 			t.Errorf("missing key %s", k)
 		}
 	}
-	if len(d) != 13 {
+	if len(d) != len(DataKeys) {
 		t.Errorf("%d keys: %v", len(d), d)
 	}
 	if _, err := json.Marshal(d); err != nil {
@@ -544,5 +546,19 @@ func TestSendFitsWithHugeRunError(t *testing.T) {
 	}
 	if in.Data["headline"] == "" || !strings.HasSuffix(in.Data["run-error"].(string), "…") {
 		t.Errorf("essentials missing: %v", in.Data["headline"])
+	}
+}
+
+func TestCountsLineAndMarks(t *testing.T) {
+	if got := CountsLine(nil); got != "nothing proofed" {
+		t.Errorf("empty = %q", got)
+	}
+	if got := CountsLine(map[model.Verdict]int{model.Proven: 13}); got != "✅ 13 proven" {
+		t.Errorf("proven only = %q", got)
+	}
+	for sev, want := range map[string]string{"info": "✅", "warning": "⚠️", "error": "❌"} {
+		if got := SeverityMark(sev); got != want {
+			t.Errorf("SeverityMark(%s) = %q, want %q", sev, got, want)
+		}
 	}
 }

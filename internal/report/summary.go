@@ -11,7 +11,7 @@ import (
 
 // DataKeys are the keys of TemplateData, which the node helper accepts in a
 // notify payload and no others (code review 2.4).
-var DataKeys = []string{"node", "run-id", "headline", "summary", "logs", "run-error", "environment-errors",
+var DataKeys = []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs", "run-error", "environment-errors",
 	"failed", "errored", "booted", "skipped", "proven", "not-covered"}
 
 // TemplateData builds the data passed to the PVE notification templates.
@@ -69,6 +69,8 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		"run-id": s.ID,
 		"headline": fmt.Sprintf("PBP run on %s, %s (%s), %s", node,
 			s.Started.Format("Mon 2006-01-02 15:04 MST"), trigger, Dur(s.Ended.Sub(s.Started))),
+		"mark":    SeverityMark(s.Severity()),
+		"counts":  CountsLine(s.Counts()),
 		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), problemSkips, len(proven)),
 		"logs":    logs,
 		// run-error and environment-errors are unchanged.
@@ -133,4 +135,52 @@ func subjectSummary(runError bool, failed, errored, booted, skipped, proven int)
 		return fmt.Sprintf("all %d proven", proven)
 	}
 	return "nothing to proof"
+}
+
+// Markers for the verdicts, so a summary reads at a glance: green for
+// proven, red for a backup with a problem, yellow for a guest PBP could
+// not prove either way.
+const (
+	MarkProven  = "✅"
+	MarkFailed  = "❌"
+	MarkWarn    = "⚠️"
+	MarkSkipped = "⏭️"
+)
+
+// SeverityMark is the marker for a run's severity: ✅ info, ⚠️ warning,
+// ❌ error.
+func SeverityMark(severity string) string {
+	switch severity {
+	case "error":
+		return MarkFailed
+	case "warning":
+		return MarkWarn
+	}
+	return MarkProven
+}
+
+// CountsLine is the run's verdict counts with their markers, the non-zero
+// ones only: "✅ 13 proven · ❌ 1 failed · ⚠️ 2 error · ⚠️ 4 booted · ⏭️ 9
+// skipped"; "nothing proofed" when there are none.
+func CountsLine(c map[model.Verdict]int) string {
+	var parts []string
+	for _, v := range []struct {
+		verdict model.Verdict
+		mark    string
+		word    string
+	}{
+		{model.Proven, MarkProven, "proven"},
+		{model.Failed, MarkFailed, "failed"},
+		{model.Error, MarkWarn, "error"},
+		{model.Booted, MarkWarn, "booted"},
+		{model.Skipped, MarkSkipped, "skipped"},
+	} {
+		if n := c[v.verdict]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d %s", v.mark, n, v.word))
+		}
+	}
+	if len(parts) == 0 {
+		return "nothing proofed"
+	}
+	return strings.Join(parts, " · ")
 }

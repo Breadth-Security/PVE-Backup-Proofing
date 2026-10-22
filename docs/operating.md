@@ -50,8 +50,11 @@ Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` h
 2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.6.1 · node pve1
 02:00:02 VM102 started (VM102.log)
 02:01:31 VM102 FAILED · failed: sssd-nss.socket, sssd-pam.socket
-03:33:54 run finished in 1h33m · 13 proven, 9 failed, 4 booted, 9 skipped, 9 error · severity error
+03:33:54 run finished in 1h33m · ❌ severity error
+03:33:54 ✅ 13 proven · ❌ 9 failed · ⚠️ 9 error · ⚠️ 4 booted · ⏭️ 9 skipped
 ```
+
+The markers are the same in the notification: ✅ proven, ❌ `FAILED` (the backup has a problem), ⚠️ `ERROR` or `BOOTED` (not proven either way), ⏭️ skipped. The notification's subject leads with the run's severity (✅, ⚠️ or ❌) and its body with the counts line.
 
 ```
 02:00:36 restore done in 33s

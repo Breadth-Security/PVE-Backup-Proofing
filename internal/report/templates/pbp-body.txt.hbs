@@ -1,4 +1,5 @@
 {{headline}}
+{{counts}}
 {{#if logs}}
 Logs: {{logs}}
 {{/if}}
@@ -15,35 +16,35 @@ Environment errors:
 {{/if}}
 {{#if failed}}
 
-FAILED: the backup has a problem
+❌ FAILED: the backup has a problem
 {{#each failed}}
   {{this}}
 {{/each}}
 {{/if}}
 {{#if errored}}
 
-ERROR: PBP could not finish; says nothing about the backup
+⚠️ ERROR: PBP could not finish; says nothing about the backup
 {{#each errored}}
   {{this}}
 {{/each}}
 {{/if}}
 {{#if booted}}
 
-BOOTED: started, not looked inside
+⚠️ BOOTED: started, not looked inside
 {{#each booted}}
   {{this}}
 {{/each}}
 {{/if}}
 {{#if skipped}}
 
-SKIPPED
+⏭️ SKIPPED
 {{#each skipped}}
   {{this}}
 {{/each}}
 {{/if}}
 {{#if proven}}
 
-PROVEN
+✅ PROVEN
   {{proven}}
 {{/if}}
 {{#if not-covered}}
