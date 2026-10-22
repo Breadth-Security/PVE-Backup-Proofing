@@ -110,7 +110,9 @@ jobs:
           }
           prerelease=false
           case "$TAG" in *-*) prerelease=true ;; esac
-          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" '{tag_name:$t,name:$t,prerelease:$p}')
+          # A draft: only the maintainer sees it until packaging/sign-release.sh
+          # has signed SHA256SUMS and publishes it (issue #37).
+          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" '{tag_name:$t,name:$t,prerelease:$p,draft:true}')
           code=$(curl -sS -o release.json -w '%{http_code}' -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$body")
           case "$code" in
@@ -129,6 +131,27 @@ jobs:
           esac
           id=$(jq -r '.id // empty' release.json)
           [ -n "$id" ] || { echo "no release id in the API response"; cat release.json; exit 1; }
+          # A re-run rebuilds SHA256SUMS, which voids an existing signature:
+          # drop it and hide the release again until it is re-signed.
+          sig=$(jq -r '.assets[]? | select(.name == "SHA256SUMS.sig") | .id' release.json)
+          for aid in $sig; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/releases/$id/assets/$aid" \
+              -H "Authorization: token $TOKEN")
+            case "$code" in
+              204) echo "deleted the old SHA256SUMS.sig: sign the release again" ;;
+              401|403) fail_auth "$code" ;;
+              *) echo "deleting the old SHA256SUMS.sig failed (HTTP $code)"; exit 1 ;;
+            esac
+          done
+          if [ "$(jq -r .draft release.json)" != true ]; then
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH "$API/releases/$id" \
+              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d '{"draft":true}')
+            case "$code" in
+              200) echo "release set back to draft until it is signed" ;;
+              401|403) fail_auth "$code" ;;
+              *) echo "setting the release to draft failed (HTTP $code)"; exit 1 ;;
+            esac
+          fi
           # Assets are named with the Debian version (1.2.0~rc1), not the tag.
           for f in dist/*; do
             name=$(basename "$f")
@@ -158,3 +181,4 @@ jobs:
               *) echo "uploading $name failed (HTTP $code)"; cat upload.json; exit 1 ;;
             esac
           done
+          echo "Published as a draft. Sign and publish it: packaging/sign-release.sh $TAG"

@@ -98,7 +98,8 @@ func TestVerifyCommand(t *testing.T) {
 	}
 	f := strings.Fields(string(pub))
 	signer := strings.Replace(ReleaseSigner, strings.SplitN(ReleaseSigner, `" `, 2)[1], f[0]+" "+f[1], 1)
-	if err := os.WriteFile(filepath.Join(dir, "allowed_signers"), []byte(signer+"\n"), 0o600); err != nil {
+	// Written exactly as the install line writes it.
+	if err := run("echo '" + signer + "' > allowed_signers"); err != nil {
 		t.Fatal(err)
 	}
 	if err := run("ssh-keygen -q -Y sign -f key -n pbp-release SHA256SUMS && " + VerifyCommand); err != nil {

@@ -11,7 +11,9 @@
 # key in namespace pbp-release, verifies the signature with the repository's
 # allowed_signers, uploads it, then downloads the published signature and
 # verifies that too. A release that already has SHA256SUMS.sig is only
-# verified, unless --replace is given. --dry-run stops before signing.
+# verified, unless --replace is given. --dry-run stops before signing. The
+# release workflow publishes a release as a draft; once its published
+# signature verifies, this publishes it (clears the draft flag).
 #
 # The key is $PBP_SIGNING_KEY (default ~/.ssh/pbp_signing). When ssh-agent
 # holds it, it signs through the agent; otherwise ssh-keygen asks for the
@@ -50,12 +52,14 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 chmod 700 "$tmp"
 
-# Credentials go to curl through a config file, never the command line.
+# Credentials go to curl through a config file, never the command line;
+# backslashes and double quotes are escaped for curl's quoted values.
 cred=$(printf 'protocol=https\nhost=%s\n\n' "$host" | git credential fill)
 user=$(printf '%s\n' "$cred" | sed -n 's/^username=//p')
 pass=$(printf '%s\n' "$cred" | sed -n 's/^password=//p')
 [ -n "$user" ] && [ -n "$pass" ] || { echo "no Gitea credentials from git credential fill" >&2; exit 1; }
-(umask 077; printf 'user = "%s:%s"\n' "$user" "$pass" > "$tmp/curlrc")
+esc() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
+(umask 077; printf 'user = "%s:%s"\n' "$(esc "$user")" "$(esc "$pass")" > "$tmp/curlrc")
 unset cred pass
 gitea() { curl -fsS -K "$tmp/curlrc" "$@"; }
 
@@ -69,8 +73,19 @@ verify() { # dir: SHA256SUMS.sig against SHA256SUMS
     (cd "$1" && ssh-keygen -Y verify -f "$signers" -I "$ns" -n "$ns" -s SHA256SUMS.sig < SHA256SUMS)
 }
 
+publish() { # release id: clear the draft flag
+    gitea -X PATCH -H 'Content-Type: application/json' -d '{"draft":false}' "$api/releases/$1" >/dev/null
+}
+
 if $all; then
-    tags=$(gitea "$api/releases?limit=100" | jq -r '.[].tag_name')
+    # Every page (Gitea caps a page at 50), drafts included.
+    page=1
+    while :; do
+        got=$(gitea "$api/releases?limit=50&page=$page" | jq -r '.[].tag_name')
+        [ -n "$got" ] || break
+        tags="$tags $got"
+        page=$((page + 1))
+    done
 fi
 
 failed=0
@@ -82,6 +97,7 @@ for tag in $tags; do
         echo "   no release for $tag" >&2; failed=1; continue
     fi
     id=$(jq -r .id "$dir.json")
+    draft=$(jq -r .draft "$dir.json")
     sig_id=$(jq -r '.assets[] | select(.name == "SHA256SUMS.sig") | .id' "$dir.json")
 
     jq -r '.assets[] | select(.name != "SHA256SUMS.sig") | "\(.name)\t\(.browser_download_url)"' "$dir.json" |
@@ -94,6 +110,9 @@ for tag in $tags; do
         gitea -o "$dir/SHA256SUMS.sig" "$(jq -r '.assets[] | select(.name == "SHA256SUMS.sig") | .browser_download_url' "$dir.json")"
         if verify "$dir" >/dev/null 2>&1; then
             echo "   already signed; signature good"
+            if [ "$draft" = true ] && ! $dry; then
+                publish "$id" && echo "   published (was a draft)"
+            fi
         else
             echo "   already signed, but the signature does NOT verify (use --replace)" >&2; failed=1
         fi
@@ -130,6 +149,9 @@ for tag in $tags; do
     gitea -o "$dir/SHA256SUMS.sig" "$url"
     if verify "$dir" >/dev/null 2>&1; then
         echo "   signed; published signature verifies"
+        if [ "$draft" = true ]; then
+            publish "$id" && echo "   published (was a draft)"
+        fi
     else
         echo "   uploaded signature does NOT verify" >&2; failed=1
     fi
