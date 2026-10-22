@@ -510,7 +510,7 @@ func (r *linuxRun) runOpenRC(ctx context.Context) Outcome {
 func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) {
 	var real []string
 	for _, u := range failed {
-		if matchAny(r.in.Checks.IgnoreUnits, u) {
+		if matchAny(r.in.ignoreUnits(), u) {
 			r.out.IgnoredUnits = append(r.out.IgnoredUnits, u)
 		} else {
 			real = append(real, u)

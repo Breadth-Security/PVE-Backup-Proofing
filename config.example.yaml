@@ -64,6 +64,8 @@ checks:
       services: [postgresql]
     # - match: { tag: haos }
     #   allow_readonly_root: true  # root is read-only by design (Home Assistant OS, Fedora CoreOS)
+    # - match: { vmid: 114 }
+    #   ignore_units: [sep5.service]  # adds to ignore_units for this guest only (windows_ignore_services likewise)
 
 notify:
   when: always                 # always | problems

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,29 @@ func guestMatches(m config.GuestMatch, g GuestInfo) bool {
 		}
 	}
 	return false
+}
+
+// ignoreUnits is the checks-wide unit ignore list plus those of the
+// checks.guests entries matching this guest (issue #68).
+func (in Input) ignoreUnits() []string {
+	out := in.Checks.IgnoreUnits
+	for _, g := range in.Checks.Guests {
+		if len(g.IgnoreUnits) > 0 && guestMatches(g.Match, in.Guest) {
+			out = append(slices.Clip(out), g.IgnoreUnits...)
+		}
+	}
+	return out
+}
+
+// windowsIgnore is ignoreUnits for Windows services.
+func (in Input) windowsIgnore() []string {
+	out := in.Checks.WindowsIgnoreServices
+	for _, g := range in.Checks.Guests {
+		if len(g.WindowsIgnoreServices) > 0 && guestMatches(g.Match, in.Guest) {
+			out = append(slices.Clip(out), g.WindowsIgnoreServices...)
+		}
+	}
+	return out
 }
 
 // checker runs check sets through an Executor and accumulates results. A

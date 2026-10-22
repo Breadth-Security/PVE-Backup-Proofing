@@ -338,3 +338,18 @@ func TestWindowsRealCapture(t *testing.T) {
 		t.Errorf("Bonjour ignored: got %v %q", o.Verdict, o.Reason)
 	}
 }
+
+// Per-guest windows_ignore_services, case ignored like the global list
+// (issue #68).
+func TestWindowsPerGuestIgnore(t *testing.T) {
+	ex := probetest.Scripted{winCmd: out("Bonjour Service\t1066\t1\t\t\tFalse\r\n")}
+	ck := config.Checks{Guests: []config.GuestChecks{{Match: config.GuestMatch{Name: "Alpha"}, WindowsIgnoreServices: []string{"bonjour*"}}}}
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Windows, Checks: ck, Guest: probe.GuestInfo{VMID: 115, Name: "Alpha"}})
+	if o.Verdict != model.Proven {
+		t.Errorf("matched: got %v %q", o.Verdict, o.Reason)
+	}
+	o = probe.Run(context.Background(), ex, probe.Input{OS: probe.Windows, Checks: ck, Guest: probe.GuestInfo{VMID: 116, Name: "beta"}})
+	if o.Verdict != model.Failed {
+		t.Errorf("not matched: got %v %q", o.Verdict, o.Reason)
+	}
+}
