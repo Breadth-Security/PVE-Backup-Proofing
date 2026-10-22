@@ -243,7 +243,7 @@ func (r *linuxRun) execErr(ctx context.Context, name string, err error) Outcome 
 	case errors.Is(err, errProbeEnded):
 		return r.errorOut(endedReason(err))
 	case errors.Is(err, errCommandTimeout):
-		return r.fail(ctx, "check timed out: "+name)
+		return r.fail(ctx, "check timed out: "+checkLabel(name))
 	case errors.Is(err, errProbeExit):
 		return r.fail(ctx, err.Error())
 	case errors.Is(err, errNoPortSource):
@@ -394,7 +394,7 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 		var failedChecks []string
 		for _, c := range r.out.Checks {
 			if !c.OK {
-				failedChecks = append(failedChecks, c.Name)
+				failedChecks = append(failedChecks, checkLabel(c.Name))
 			}
 		}
 		if len(failedChecks) > 0 {
@@ -404,10 +404,10 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
-			return r.fail(ctx, "check timed out: "+c.Name)
+			return r.fail(ctx, "check timed out: "+checkLabel(c.Name))
 		}
 		if !c.OK {
-			return r.fail(ctx, "check failed: "+c.Name)
+			return r.fail(ctx, "check failed: "+checkLabel(c.Name))
 		}
 	}
 	r.out.Verdict = model.Proven

@@ -109,7 +109,7 @@ func TestNoNestingNamesFailedChecks(t *testing.T) {
 	ex[ssC] = out("")
 	ex["cat /proc/net/tcp /proc/net/tcp6"] = out("  sl  local_address rem_address   st\n")
 	o := runNesting(ex, true)
-	if o.Verdict != model.Booted || !strings.HasSuffix(o.Reason, "; checks also failed: nginx:ports:80,443") {
+	if o.Verdict != model.Booted || !strings.HasSuffix(o.Reason, "; checks also failed: nginx (ports 80,443)") {
 		t.Fatalf("got %v %q", o.Verdict, o.Reason)
 	}
 }

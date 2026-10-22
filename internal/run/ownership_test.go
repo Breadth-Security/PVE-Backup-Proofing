@@ -64,7 +64,7 @@ func TestRestoreFailureLeavingGuestIsDestroyedViaState(t *testing.T) {
 
 	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
 
-	if res.Verdict != model.Failed || !strings.HasPrefix(res.Reason, "restore failed: ") || strings.Contains(res.Reason, "cleanup failed") {
+	if res.Verdict != model.Failed || !strings.HasPrefix(res.Reason, "restore failed: ") || strings.Contains(res.Reason, "test copy not removed") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	if f.exists(990000) || !f.destroyed(990000) {
@@ -90,7 +90,7 @@ func TestRestoreRefusedNeverDestroys(t *testing.T) {
 
 	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
 
-	if res.Verdict != model.Error || strings.Contains(res.Reason, "cleanup failed") {
+	if res.Verdict != model.Error || strings.Contains(res.Reason, "test copy not removed") {
 		t.Errorf("result %s %q", res.Verdict, res.Reason)
 	}
 	if !f.exists(990000) || f.destroyed(990000) || len(f.tgt.calls) != 0 {

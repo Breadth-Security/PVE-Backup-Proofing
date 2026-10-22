@@ -153,6 +153,7 @@ func (t *hookTarget) restores() []string {
 }
 
 type runFixture struct {
+	t      *testing.T
 	d      Deps
 	api    *hookAPI
 	tgt    *hookTarget
@@ -199,6 +200,7 @@ func newRunFixture(t *testing.T, lo, hi int) *runFixture {
 	clock := &fakeClock{t: now}
 	var logBuf bytes.Buffer
 	f := &runFixture{
+		t:      t,
 		api:    &hookAPI{Fake: pf},
 		tgt:    &hookTarget{Fake: tf, held: map[int]bool{}},
 		store:  store,
@@ -253,6 +255,9 @@ func (f *runFixture) add(storage string, kind model.GuestKind, vmid, memMiB int,
 	}
 	f.api.Backups[storage] = append(f.api.Backups[storage], b)
 	cfg := fmt.Sprintf("name: g%d\n", vmid)
+	if kind == model.KindLXC {
+		cfg += "unprivileged: 1\n"
+	}
 	if memMiB > 0 {
 		cfg += fmt.Sprintf("memory: %d\n", memMiB)
 	}
@@ -262,6 +267,9 @@ func (f *runFixture) add(storage string, kind model.GuestKind, vmid, memMiB int,
 
 func (f *runFixture) run(ctx context.Context, opt Options) model.RunSummary {
 	s := Run(ctx, f.d, opt)
+	for _, r := range s.Results {
+		assertPlainReason(f.t, r.Backup.Key.Label(), r.Reason)
+	}
 	for _, r := range s.Results {
 		if r.Verdict != model.Skipped {
 			f.allow(r.Backup.VolID)
@@ -466,7 +474,7 @@ func TestRunNoFreeVMIDWithTwoWorkers(t *testing.T) {
 
 	r := byVMID(t, s)
 	wantResult(t, r[101], model.Proven, "")
-	wantResult(t, r[102], model.Skipped, "no free VMID")
+	wantResult(t, r[102], model.Skipped, reasonNoVMID)
 	for _, c := range f.tgt.restores() {
 		if c != "Restore 990000 "+r[101].Backup.VolID {
 			t.Errorf("restore outside range: %s", c)
@@ -728,14 +736,14 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
 	r := byVMID(t, s)[101]
-	if r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read backup config: ") {
+	if r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read the backup's config from PBS") {
 		t.Errorf("got %s %q", r.Verdict, r.Reason)
 	}
 	if len(f.tgt.restores()) != 0 {
 		t.Errorf("restored: %q", f.tgt.restores())
 	}
 	// The failure is this backup's own: its notes say so.
-	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read backup config: ") {
+	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read the backup's config from PBS") {
 		t.Errorf("notes = %q", got)
 	}
 }
@@ -757,7 +765,7 @@ func TestRunOriginalConfigFailureWithTagExclusion(t *testing.T) {
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
 	for _, id := range []int{101, 102} {
-		if r := byVMID(t, s)[id]; r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read backup config: ") {
+		if r := byVMID(t, s)[id]; r.Verdict != model.Error || !strings.HasPrefix(r.Reason, "cannot read the backup's config from PBS") {
 			t.Errorf("%d: got %s %q", id, r.Verdict, r.Reason)
 		}
 	}
@@ -871,7 +879,7 @@ func TestRunRawLXCConfigIsError(t *testing.T) {
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
-	const want = "raw lxc config (lxc.apparmor.profile) needs root@pam to restore"
+	const want = "PBP cannot restore containers with raw lxc settings (lxc.apparmor.profile): only root@pam can (" + docsToken + ")"
 	if r := byVMID(t, s)[101]; r.Verdict != model.Error || r.Reason != want {
 		t.Errorf("got %s %q, want ERROR %q", r.Verdict, r.Reason, want)
 	}
@@ -880,6 +888,55 @@ func TestRunRawLXCConfigIsError(t *testing.T) {
 	}
 	if got := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(got, " · "+want) {
 		t.Errorf("notes = %q", got)
+	}
+}
+
+// A privileged container restores only for a token with Sys.Modify on /
+// (issue #73, CT123): without it the result says so plainly, before any
+// restore, and names no temporary VMID. With it, or when the privileges
+// cannot be read, PBP restores as usual.
+func TestRunPrivilegedContainer(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(f *runFixture)
+		refused bool
+	}{
+		{"no Sys.Modify", func(f *runFixture) {}, true},
+		{"Sys.Modify granted", func(f *runFixture) { f.api.Privs = map[string][]string{"/": {"Sys.Modify"}} }, false},
+		{"privileges unreadable", func(f *runFixture) { f.api.Fail["Privileges"] = errors.New("api down") }, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			priv := f.add("pbs", model.KindLXC, 123, 1024, "")
+			f.api.BackupConfigs[priv.VolID] = strings.Replace(f.api.BackupConfigs[priv.VolID], "unprivileged: 1\n", "", 1)
+			f.add("pbs", model.KindLXC, 124, 1024, "")
+			tc.setup(f)
+
+			s := f.run(context.Background(), Options{Trigger: "manual"})
+
+			r := byVMID(t, s)[123]
+			restored := false
+			for _, rs := range f.tgt.restores() {
+				restored = restored || strings.Contains(rs, "/123/")
+			}
+			if tc.refused {
+				if r.Verdict != model.Error || r.Reason != reasonPrivileged {
+					t.Errorf("got %s %q, want ERROR %q", r.Verdict, r.Reason, reasonPrivileged)
+				}
+				if restored {
+					t.Error("privileged container restored")
+				}
+				if got := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(got, " · "+reasonPrivileged) {
+					t.Errorf("notes = %q", got)
+				}
+			} else if !restored || r.Reason == reasonPrivileged {
+				t.Errorf("got %s %q, restored=%v", r.Verdict, r.Reason, restored)
+			}
+			if r := byVMID(t, s)[124]; r.Reason == reasonPrivileged {
+				t.Errorf("unprivileged container refused: %q", r.Reason)
+			}
+		})
 	}
 }
 
@@ -1288,7 +1345,7 @@ func TestVerdictNowLoggedAfterTeardown(t *testing.T) {
 	f.run(context.Background(), Options{Trigger: "manual"})
 
 	wantInOrder(t, "VM101.log", readLog(t, dir, "VM101.log"),
-		"verdict PROVEN · ", "verdict now ERROR · cleanup failed: destroy (booted ok)")
+		"verdict PROVEN · ", "verdict now ERROR · booted, but PBP could not remove its test copy (retried at the next run)")
 }
 
 // multilineErrExec fails every command with an error spanning two lines,

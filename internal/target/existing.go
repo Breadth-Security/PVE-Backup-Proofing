@@ -315,7 +315,7 @@ func (n *ExistingNode) verifySanitized(ctx context.Context, kind model.GuestKind
 		bad = append(bad, k+" still present")
 	}
 	if len(bad) > 0 {
-		return fmt.Errorf("%w: guest %d failed verification: %s", ErrUnsafe, vmid, strings.Join(bad, "; "))
+		return fmt.Errorf("%w: %s", ErrUnsafe, strings.Join(bad, "; "))
 	}
 	return nil
 }
@@ -585,7 +585,7 @@ func foreignDisk(k, v string, vmid int) string {
 	name = name[strings.LastIndex(name, "/")+1:] // linked clone base, dir storage subdir
 	m := reVolOwner.FindStringSubmatch(name)
 	if m == nil || m[1] != strconv.Itoa(vmid) {
-		return fmt.Sprintf("%s is not a volume of guest %d (%s)", k, vmid, vol)
+		return fmt.Sprintf("%s is not the guest's own volume (%s)", k, vol)
 	}
 	return ""
 }
@@ -677,7 +677,7 @@ func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, 
 		return nil
 	}
 	m := strings.Join(missing, " and ")
-	return fmt.Errorf("%w: the copy has drives that are not its own: %s; removing them needs %s, which PBP's token lacks: "+
-		"remove them from the original guest's config, or grant %s on /vms to pbp@pve and its token (docs/security.md)",
-		ErrUnsafe, strings.Join(drives, ", "), m, m)
+	return fmt.Errorf("%w: drives not in the backup (%s); PBP's token lacks %s to remove them: "+
+		"remove them from the guest, or see docs/security.md#guests-pbp-cannot-proof",
+		ErrUnsafe, strings.Join(drives, ", "), m)
 }
