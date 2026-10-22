@@ -186,10 +186,9 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 			outcome = state.OutcomeError
 		}
 	}
-	c := s.Counts()
 	log.Info(fmt.Sprintf("run finished in %s · %s severity %s",
 		report.Dur(s.Ended.Sub(s.Started)), report.SeverityMark(sev), sev), "outcome", outcome)
-	log.Info(report.CountsLine(c))
+	log.Info(report.CountsLine(s))
 
 	rec.Outcome, rec.Ended, rec.Counts = outcome, s.Ended, s.Counts()
 	if err := d.Store.AppendRun(rec, d.Cfg.Logging.RetainRuns); err != nil {

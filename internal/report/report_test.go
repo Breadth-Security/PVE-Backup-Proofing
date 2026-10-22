@@ -81,7 +81,7 @@ func TestTemplateDataSections(t *testing.T) {
 		"logs":     "/var/log/pbp/2026-10-21_02-00-00_schedule/",
 		"summary":  "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
 		"mark":     "❌",
-		"counts":   "✅ 2 proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 3 skipped",
+		"counts":   "✅ 2 proven · ☑️ 1 previously proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 2 skipped",
 		"proven":   "VM108, CT109",
 		"failed":   []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
 		"errored":  []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
@@ -550,11 +550,15 @@ func TestSendFitsWithHugeRunError(t *testing.T) {
 }
 
 func TestCountsLineAndMarks(t *testing.T) {
-	if got := CountsLine(nil); got != "nothing proofed" {
+	if got := CountsLine(model.RunSummary{}); got != "nothing proofed" {
 		t.Errorf("empty = %q", got)
 	}
-	if got := CountsLine(map[model.Verdict]int{model.Proven: 13}); got != "✅ 13 proven" {
+	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{{Verdict: model.Proven}}}); got != "✅ 1 proven" {
 		t.Errorf("proven only = %q", got)
+	}
+	already := model.GuestResult{Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true}
+	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{already, already}}); got != "☑️ 2 previously proven" {
+		t.Errorf("already proven only = %q", got)
 	}
 	for sev, want := range map[string]string{"info": "✅", "warning": "⚠️", "error": "❌"} {
 		if got := SeverityMark(sev); got != want {

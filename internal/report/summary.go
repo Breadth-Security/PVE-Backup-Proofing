@@ -70,7 +70,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		"headline": fmt.Sprintf("PBP run on %s, %s (%s), %s", node,
 			s.Started.Format("Mon 2006-01-02 15:04 MST"), trigger, Dur(s.Ended.Sub(s.Started))),
 		"mark":    SeverityMark(s.Severity()),
-		"counts":  CountsLine(s.Counts()),
+		"counts":  CountsLine(s),
 		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), problemSkips, len(proven)),
 		"logs":    logs,
 		// run-error and environment-errors are unchanged.
@@ -145,6 +145,8 @@ const (
 	MarkFailed  = "❌"
 	MarkWarn    = "⚠️"
 	MarkSkipped = "⏭️"
+	// MarkAlready is a backup proven by an earlier run.
+	MarkAlready = "☑️"
 )
 
 // SeverityMark is the marker for a run's severity: ✅ info, ⚠️ warning,
@@ -160,22 +162,32 @@ func SeverityMark(severity string) string {
 }
 
 // CountsLine is the run's verdict counts with their markers, the non-zero
-// ones only: "✅ 13 proven · ❌ 1 failed · ⚠️ 2 error · ⚠️ 4 booted · ⏭️ 9
-// skipped"; "nothing proofed" when there are none.
-func CountsLine(c map[model.Verdict]int) string {
+// ones only: "✅ 13 proven · ☑️ 20 previously proven · ❌ 1 failed · ⚠️ 2
+// error · ⚠️ 4 booted · ⏭️ 3 skipped"; "nothing proofed" when there are
+// none. A backup skipped as already proven has its own count, so "skipped"
+// holds only those not proofed for another reason.
+func CountsLine(s model.RunSummary) string {
+	c := s.Counts()
+	already := 0
+	for _, r := range s.Results {
+		if r.Verdict == model.Skipped && r.AlreadyProven {
+			already++
+		}
+	}
 	var parts []string
 	for _, v := range []struct {
-		verdict model.Verdict
-		mark    string
-		word    string
+		n    int
+		mark string
+		word string
 	}{
-		{model.Proven, MarkProven, "proven"},
-		{model.Failed, MarkFailed, "failed"},
-		{model.Error, MarkWarn, "error"},
-		{model.Booted, MarkWarn, "booted"},
-		{model.Skipped, MarkSkipped, "skipped"},
+		{c[model.Proven], MarkProven, "proven"},
+		{already, MarkAlready, "previously proven"},
+		{c[model.Failed], MarkFailed, "failed"},
+		{c[model.Error], MarkWarn, "error"},
+		{c[model.Booted], MarkWarn, "booted"},
+		{c[model.Skipped] - already, MarkSkipped, "skipped"},
 	} {
-		if n := c[v.verdict]; n > 0 {
+		if n := v.n; n > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d %s", v.mark, n, v.word))
 		}
 	}
