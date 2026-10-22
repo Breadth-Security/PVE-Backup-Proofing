@@ -42,10 +42,19 @@ Environment errors:
   {{this}}
 {{/each}}
 {{/if}}
+{{#if previously-proven}}
+
+☑️ PREVIOUSLY PROVEN
+{{#each previously-proven}}
+  {{this}}
+{{/each}}
+{{/if}}
 {{#if proven}}
 
 ✅ PROVEN
-  {{proven}}
+{{#each proven}}
+  {{this}}
+{{/each}}
 {{/if}}
 {{#if not-covered}}
 

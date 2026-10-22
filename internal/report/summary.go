@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,7 +13,7 @@ import (
 // DataKeys are the keys of TemplateData, which the node helper accepts in a
 // notify payload and no others (code review 2.4).
 var DataKeys = []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs", "run-error", "environment-errors",
-	"failed", "errored", "booted", "skipped", "proven", "not-covered"}
+	"failed", "errored", "booted", "skipped", "previously-proven", "proven", "not-covered"}
 
 // TemplateData builds the data passed to the PVE notification templates.
 // The lists hold ready-made lines so the templates only print them (no key
@@ -31,7 +32,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 
 	failed, errored, booted := []string{}, []string{}, []string{}
 	notCovered := []string{}
-	var proven []string
+	var proven, previously []model.GuestResult
 	skipReasons := []string{} // reasons in the order they first occur
 	skipGuests := map[string][]string{}
 	problemSkips := 0
@@ -45,8 +46,12 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		case model.Booted:
 			booted = append(booted, guestLine(r, loc))
 		case model.Proven:
-			proven = append(proven, label)
+			proven = append(proven, r)
 		case model.Skipped:
+			if r.AlreadyProven {
+				previously = append(previously, r)
+				break
+			}
 			if _, ok := skipGuests[r.Reason]; !ok {
 				skipReasons = append(skipReasons, r.Reason)
 			}
@@ -80,9 +85,31 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		"errored":            errored,
 		"booted":             booted,
 		"skipped":            skipped,
-		"proven":             strings.Join(proven, ", "),
+		"previously-proven":  nameLines(previously),
+		"proven":             nameLines(proven),
 		"not-covered":        notCovered,
 	}
+}
+
+// nameLines lists guests one per line as "VM110: db01" ("VM110" without a
+// name), containers first, then by VMID (issue #77).
+func nameLines(rs []model.GuestResult) []string {
+	rs = slices.Clone(rs)
+	slices.SortFunc(rs, func(a, b model.GuestResult) int {
+		if c := strings.Compare(a.Backup.Key.Label()[:2], b.Backup.Key.Label()[:2]); c != 0 {
+			return c
+		}
+		return a.Backup.Key.VMID - b.Backup.Key.VMID
+	})
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		line := r.Backup.Key.Label()
+		if r.Name != "" {
+			line += ": " + r.Name
+		}
+		out = append(out, clipLine(line))
+	}
+	return out
 }
 
 // guestLine is one guest in a problem section:

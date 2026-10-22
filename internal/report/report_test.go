@@ -66,8 +66,10 @@ func sectionsSummary() model.RunSummary {
 			{Backup: bk(model.KindQEMU, 104), Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 105), Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 100), Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
-			{Backup: bk(model.KindQEMU, 108), Verdict: model.Proven},
+			{Backup: bk(model.KindQEMU, 108), Name: "app01", Verdict: model.Proven},
 			{Backup: bk(model.KindLXC, 109), Verdict: model.Proven},
+			{Backup: bk(model.KindQEMU, 99), Name: "fw01", Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
+			{Backup: bk(model.KindLXC, 120), Name: "dns02", Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
 		},
 	}
 }
@@ -75,18 +77,19 @@ func sectionsSummary() model.RunSummary {
 func TestTemplateDataSections(t *testing.T) {
 	d := TemplateData(sectionsSummary(), "pve1")
 	want := map[string]any{
-		"node":     "pve1",
-		"run-id":   "r1",
-		"headline": "PBP run on pve1, Wed 2026-10-21 02:00 EDT (scheduled), 1h34m",
-		"logs":     "/var/log/pbp/2026-10-21_02-00-00_schedule/",
-		"summary":  "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
-		"mark":     "❌",
-		"counts":   "✅ 2 proven · ☑️ 1 previously proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 2 skipped",
-		"proven":   "VM108, CT109",
-		"failed":   []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
-		"errored":  []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
-		"booted":   []string{"VM117 win01 · backup Oct 20 02:00 · guest agent missing"},
-		"skipped":  []string{"insufficient node memory: VM104, VM105", "already proven: VM100"},
+		"node":              "pve1",
+		"run-id":            "r1",
+		"headline":          "PBP run on pve1, Wed 2026-10-21 02:00 EDT (scheduled), 1h34m",
+		"logs":              "/var/log/pbp/2026-10-21_02-00-00_schedule/",
+		"summary":           "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
+		"mark":              "❌",
+		"counts":            "✅ 2 proven · ☑️ 3 previously proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 2 skipped",
+		"proven":            []string{"CT109", "VM108: app01"},
+		"previously-proven": []string{"CT120: dns02", "VM99: fw01", "VM100"},
+		"failed":            []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
+		"errored":           []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
+		"booted":            []string{"VM117 win01 · backup Oct 20 02:00 · guest agent missing"},
+		"skipped":           []string{"insufficient node memory: VM104, VM105"},
 	}
 	for k, v := range want {
 		if fmt.Sprint(d[k]) != fmt.Sprint(v) {
@@ -112,13 +115,13 @@ func TestTemplateDataSections(t *testing.T) {
 func TestTemplateDataNoProblemsNoLogs(t *testing.T) {
 	s := sectionsSummary()
 	s.LogDir = ""
-	s.Results = s.Results[6:]
+	s.Results = s.Results[6:8]
 	d := TemplateData(s, "pve1")
-	if d["logs"] != "" || d["summary"] != "all 2 proven" || d["proven"] != "VM108, CT109" {
+	if d["logs"] != "" || d["summary"] != "all 2 proven" || fmt.Sprint(d["proven"]) != "[CT109 VM108: app01]" {
 		t.Fatal(d)
 	}
 	s.Results = nil
-	if d := TemplateData(s, "pve1"); d["proven"] != "" {
+	if d := TemplateData(s, "pve1"); len(d["proven"].([]string)) != 0 {
 		t.Fatalf("proven = %q", d["proven"])
 	}
 }
@@ -432,6 +435,7 @@ func TestBodySectionsInOrder(t *testing.T) {
 		"{{#if errored}}", "ERROR: PBP could not finish; says nothing about the backup",
 		"{{#if booted}}", "BOOTED: started, not looked inside",
 		"{{#if skipped}}", "SKIPPED",
+		"{{#if previously-proven}}", "PREVIOUSLY PROVEN",
 		"{{#if proven}}", "PROVEN",
 		"{{#if not-covered}}", "Not covered by backup",
 	}

@@ -207,3 +207,16 @@ func TestMigrateCRLF(t *testing.T) {
 		t.Fatalf("got %q, %v", got, changed)
 	}
 }
+
+func TestName(t *testing.T) {
+	for in, want := range map[string]string{
+		pbp(model.Proven, 18, 2, 10, "ok") + "\nnote":                                        "db01",
+		Line("a · b", model.Failed, time.Date(2026, 10, 19, 2, 14, 0, 0, time.UTC), "x · y"): "a · b",
+		old(model.Proven, 18, 2, 10, "ok"):                                                   "",
+		"db01":                                                                               "",
+	} {
+		if got := Name(in); got != want {
+			t.Errorf("Name(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

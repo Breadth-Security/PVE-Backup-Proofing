@@ -1663,3 +1663,27 @@ func TestRunMigrateNotesUnreadableConfig(t *testing.T) {
 		})
 	}
 }
+
+// An already-proven guest is named in the notification (issue #77): by its
+// live name, or, when it is gone, by the name in front of its PBP line.
+// Without the live guest list the run still goes on.
+func TestRunAlreadyProvenNames(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "db01 · PBP PROVEN 2026-10-18 02:14 · ok")
+	f.add("pbs", model.KindQEMU, 102, 1024, "old-web · PBP PROVEN 2026-10-18 02:14 · ok")
+	f.api.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 101}, Node: "pve1", Name: "db01-live"}}
+
+	r := byVMID(t, f.run(context.Background(), Options{Trigger: "manual"}))
+
+	if r[101].Name != "db01-live" || r[102].Name != "old-web" {
+		t.Errorf("names = %q, %q", r[101].Name, r[102].Name)
+	}
+
+	f = newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "db01 · PBP PROVEN 2026-10-18 02:14 · ok")
+	f.api.Fail["Guests"] = errors.New("api down")
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if s.RunError != "" || byVMID(t, s)[101].Name != "db01" {
+		t.Errorf("run error %q, name %q", s.RunError, byVMID(t, s)[101].Name)
+	}
+}

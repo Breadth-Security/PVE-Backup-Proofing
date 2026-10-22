@@ -193,7 +193,7 @@ Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CO
 
 ## Notifications
 
-One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven, as a template or as excluded by config), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, or for an environment error (such as a `pbp`-tagged guest outside the VMID range), and `error` for any `FAILED` or a run-level failure.
+One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven, as a template or as excluded by config), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, or for an environment error (such as a `pbp`-tagged guest outside the VMID range), and `error` for any `FAILED` or a run-level failure. The body lists the problems first (`FAILED`, `ERROR`, `BOOTED`, then `SKIPPED` by reason), then ☑️ PREVIOUSLY PROVEN (guests whose newest backup an earlier run proved) and ✅ PROVEN, one guest per line with its name (`VM110: db01`), containers first, then by VMID.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 
