@@ -121,7 +121,7 @@ A run takes as long as the proofs it has to do, and the next one starts only whe
 
 ### The time zone
 
-The time zone decides when the schedule fires. It also sets the time in each backup's note (`PBP PROVEN 2026-10-19 02:14 · …`, shown without a zone) and in the daemon's log. Run IDs (`20261019T020000.000Z-schedule`) are always in UTC.
+The time zone decides when the schedule fires. It also sets the time in each backup's note (`db01 · PBP PROVEN 2026-10-19 02:14 · …`, shown without a zone) and in the daemon's log. Run IDs (`20261019T020000.000Z-schedule`) are always in UTC.
 
 Where PBP gets it:
 
@@ -205,12 +205,14 @@ If a target cannot be notified (for example a template fails to render), `PVE::N
 
 ## Backup notes
 
-PBP owns exactly one line in each backup's notes, placed first so it shows as the backup's comment in the Proxmox UI:
+PBP owns exactly one line in each backup's notes. It goes first, so it shows as the backup's comment in PVE and PBS, and it starts with the guest's name, so searching the backup lists by name still finds the backup:
 
 ```
-PBP <VERDICT> <YYYY-MM-DD HH:MM> · <short reason>
-PBP PROVEN 2026-10-19 02:14 · agent ok, 3 profiles ok
-PBP FAILED 2026-10-19 02:31 · failed: postgresql.service
+<name> · PBP <VERDICT> <YYYY-MM-DD HH:MM> · <short reason>
+db01 · PBP PROVEN 2026-10-19 02:14 · agent ok, 3 profiles ok
+db01 · PBP FAILED 2026-10-19 02:31 · failed: postgresql.service
 ```
 
-Your own notes are preserved below it. A previous PBP line is replaced, never stacked. A `SKIPPED` guest gets no line: its notes are left as they were. PBP only ever modifies the `notes` and `protected` attributes of a backup.
+The name comes from the backed-up config (`name` for a VM, `hostname` for a container), or is the label (`VM105`) when it has none. Your own notes are preserved below the line. When their first line is just the guest's name, as vzdump's default notes template (`{{guestname}}`) writes it, PBP's line takes its place instead of repeating it. Any other first line, such as a custom template's (`db01 (105) nightly`), moves to the second line. A previous PBP line is replaced, never stacked.
+
+PBP 0.5 to 0.7 wrote the line without the name, pushing the name out of the comment. Each run puts the name back in front of such a line, keeping its verdict, on every backup in `sources.storages` (not only the newest of each guest), except those of excluded guests. `run.log` counts them (`notes: added the guest name in front of the PBP line on N older backups`). A `SKIPPED` guest gets no line: its notes are left as they were. PBP only ever modifies the `notes` and `protected` attributes of a backup.

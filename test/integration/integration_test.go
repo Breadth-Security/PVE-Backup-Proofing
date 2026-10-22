@@ -42,8 +42,9 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
 )
 
-// pbpNotesLine is the PBP verdict line every proofed backup must start with.
-var pbpNotesLine = regexp.MustCompile(`^PBP (PROVEN|FAILED|BOOTED|SKIPPED|ERROR) \d{4}-\d{2}-\d{2} \d{2}:\d{2} · .+$`)
+// pbpNotesLine is the PBP verdict line every proofed backup must start with:
+// the guest's name, then the verdict (issue #76).
+var pbpNotesLine = regexp.MustCompile(`^(.+) · PBP (PROVEN|FAILED|BOOTED|SKIPPED|ERROR) \d{4}-\d{2}-\d{2} \d{2}:\d{2} · .+$`)
 
 // env holds what every test needs: the loaded config and live connections.
 type env struct {
@@ -367,9 +368,9 @@ func (e *env) assertUntouched(t *testing.T, ctx context.Context, cfg config.Conf
 }
 
 // userNotes is what PBP must preserve below its line: the notes without any
-// PBP line.
-func userNotes(n string) string {
-	m := notes.Merge(n, "X")
+// PBP line, and without a first line that is just the guest's name.
+func userNotes(n, name string) string {
+	m := notes.Merge(n, "X", name)
 	return strings.TrimPrefix(strings.TrimPrefix(m, "X"), "\n")
 }
 
@@ -431,10 +432,11 @@ func (e *env) proofCfg(t *testing.T, cfg config.Config, key model.GuestKey) mode
 		t.Errorf("protected = %v after the run, was %v", after.Protected, before.Protected)
 	}
 	lines := strings.Split(after.Notes, "\n")
-	if !pbpNotesLine.MatchString(lines[0]) || !strings.HasPrefix(lines[0], "PBP "+string(r.Verdict)+" ") {
-		t.Errorf("notes line 1 = %q, want a PBP %s line", lines[0], r.Verdict)
+	m := pbpNotesLine.FindStringSubmatch(lines[0])
+	if m == nil || m[2] != string(r.Verdict) {
+		t.Fatalf("notes line 1 = %q, want <name> · PBP %s …", lines[0], r.Verdict)
 	}
-	if got, want := strings.Join(lines[1:], "\n"), userNotes(before.Notes); got != want {
+	if got, want := strings.Join(lines[1:], "\n"), userNotes(before.Notes, m[1]); got != want {
 		t.Errorf("user notes below the PBP line = %q, want %q", got, want)
 	}
 	if st := d.Store.Snapshot(); len(st.InFlight) != 0 {

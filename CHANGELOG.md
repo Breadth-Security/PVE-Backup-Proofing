@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The backup's comment starts with the guest's name again** ([#76](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/76)). vzdump writes the guest's name as the first line of a backup's notes, which PVE and PBS show as the comment and search on. PBP put its verdict line first, pushing the name out of the comment, so a search by name no longer found proofed backups. The line now reads `db01 · PBP PROVEN 2026-10-19 02:14 · …`, with the name from the backed-up config (or `VM105` without one); a first line that was just the name is replaced by it instead of repeated. Each run rewrites lines PBP 0.5 to 0.7 wrote the same way, keeping their verdict, on every backup of a guest, not only the newest (excluded guests' notes are left alone). See [Backup notes](docs/operating.md#backup-notes). Only the daemon changed: upgrading the PBP host is enough.
+
 ## v0.7.0
 
 **Upgrade both sides, and reinstall the notification templates.** The notification carries two new data keys (the severity marker and the counts line), which a 0.6 node helper refuses; the daemon and the helper must share major.minor, so a 0.7 daemon's preflight refuses a 0.6 helper. Follow [Upgrading](docs/upgrading.md), then run the `pbp node setup` line again (or `pbp node install-templates` as root on the node); preflight says so if the templates are stale. Configs need no change.

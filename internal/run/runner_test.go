@@ -354,7 +354,7 @@ func TestRunDiscoveryAndAlreadyProven(t *testing.T) {
 	f.api.Backups["pbs-sync"][0].Time = old.Time.Add(-24 * time.Hour)
 	newest := f.add("pbs", model.KindQEMU, 101, 1024, "")
 	f.add("pbs-sync", model.KindLXC, 102, 512, "")
-	provenNotes := "PBP PROVEN 2026-10-18 02:14 · agent ok\nweb"
+	provenNotes := "g103 · PBP PROVEN 2026-10-18 02:14 · agent ok\nweb"
 	f.add("pbs", model.KindQEMU, 103, 1024, provenNotes)
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})
@@ -743,7 +743,7 @@ func TestRunOriginalConfigFailure(t *testing.T) {
 		t.Errorf("restored: %q", f.tgt.restores())
 	}
 	// The failure is this backup's own: its notes say so.
-	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "PBP ERROR 2026-10-19 02:14 · cannot read the backup's config from PBS") {
+	if got := f.api.Backups["pbs"][0].Notes; !strings.HasPrefix(got, "VM101 · PBP ERROR 2026-10-19 02:14 · cannot read the backup's config from PBS") {
 		t.Errorf("notes = %q", got)
 	}
 }
@@ -776,7 +776,7 @@ func TestRunOriginalConfigFailureWithTagExclusion(t *testing.T) {
 	if notes[gone.VolID] != "" {
 		t.Errorf("gone guest's notes written: %q", notes[gone.VolID])
 	}
-	if !strings.HasPrefix(notes[live.VolID], "PBP ERROR ") {
+	if !strings.HasPrefix(notes[live.VolID], "VM102 · PBP ERROR ") {
 		t.Errorf("live guest's notes = %q, want the ERROR line", notes[live.VolID])
 	}
 }
@@ -1146,7 +1146,7 @@ func TestRunDispatcherPanicWaitsForJobs(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
 	b := f.add("pbs", model.KindQEMU, 101, 1024, "")
 	f.allow(b.VolID) // proofed, but the panic leaves it out of the summary
-	f.add("pbs", model.KindQEMU, 102, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok")
+	f.add("pbs", model.KindQEMU, 102, 1024, "g102 · PBP PROVEN 2026-10-18 02:14 · agent ok")
 	f.d.Log = slog.New(panicOnSkip{slog.NewTextHandler(f.logBuf, nil)})
 	entered, release := make(chan struct{}), make(chan struct{})
 	f.tgt.onRestore = func(int) {
@@ -1250,7 +1250,7 @@ func TestRunLogsSteps(t *testing.T) {
 		"running after ",
 		"verdict PROVEN · ",
 		"teardown done in ",
-		"notes: PBP PROVEN ")
+		"notes: g101 · PBP PROVEN ")
 	if strings.Contains(stdout.String(), "started (VM101.log)") {
 		t.Errorf("stdout has the detail line:\n%s", stdout)
 	}
@@ -1487,7 +1487,7 @@ func (a unprotectFails) SetVolumeAttrs(ctx context.Context, node, storage, volid
 // reuse its VMID and overwrite it (code review I2, across runs).
 func TestUnfinishedRecordStopsRun(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
-	stuck := f.add("pbs", model.KindQEMU, 102, 1024, "PBP PROVEN 2026-10-18 02:14 · ok")
+	stuck := f.add("pbs", model.KindQEMU, 102, 1024, "g102 · PBP PROVEN 2026-10-18 02:14 · ok")
 	f.add("pbs", model.KindQEMU, 101, 1024, "")
 	f.d.API = unprotectFails{API: f.d.API, volid: stuck.VolID}
 	orig := false
@@ -1569,5 +1569,50 @@ func TestRunStopMidProofFinishesInFlight(t *testing.T) {
 	}
 	if rs := f.tgt.restores(); len(rs) != 1 {
 		t.Errorf("restores = %q, want only guest 101", rs)
+	}
+}
+
+// Notes in the format of 0.5 to 0.7 (the PBP line first, the guest's name
+// below it) get the name back in front, on every backup of a guest and not
+// only the one proofed or skipped as already proven, so a search by name
+// finds them (issue #76). An excluded guest's notes are left alone.
+func TestRunMigratesOldNotes(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "PBP PROVEN 2026-10-18 02:14 · agent ok\ng101")
+	older := model.Backup{
+		Storage: "pbs", Notes: "PBP FAILED 2026-10-11 02:14 · failed: x.service\nweekly",
+		VolID: "pbs:backup/qemu/101/2026-10-11T22:00:00Z", Size: gib,
+		Key:   model.GuestKey{Kind: model.KindQEMU, VMID: 101},
+		Time:  time.Date(2026, 10, 11, 22, 0, 0, 0, time.UTC),
+	}
+	f.api.Backups["pbs"] = append(f.api.Backups["pbs"], older)
+	f.api.BackupConfigs[older.VolID] = "name: g101\n"
+	excluded := f.add("pbs", model.KindQEMU, 104, 1024, "PBP PROVEN 2026-10-18 02:14 · ok\ng104")
+	f.api.BackupConfigs[excluded.VolID] += "tags: no-proof\n"
+	f.d.Cfg.Selection.Exclude.Tags = []string{"no-proof"}
+	for _, b := range f.api.Backups["pbs"][:2] {
+		f.allow(b.VolID)
+	}
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	if r := byVMID(t, s)[101]; r.Verdict != model.Skipped || !r.AlreadyProven {
+		t.Fatalf("101 = %s %q", r.Verdict, r.Reason)
+	}
+	got := map[string]string{}
+	for _, b := range f.api.Backups["pbs"] {
+		got[b.VolID] = b.Notes
+	}
+	for volid, want := range map[string]string{
+		f.api.Backups["pbs"][0].VolID: "g101 · PBP PROVEN 2026-10-18 02:14 · agent ok",
+		older.VolID:                   "g101 · PBP FAILED 2026-10-11 02:14 · failed: x.service\nweekly",
+		excluded.VolID:                "PBP PROVEN 2026-10-18 02:14 · ok\ng104",
+	} {
+		if got[volid] != want {
+			t.Errorf("%s notes = %q, want %q", volid, got[volid], want)
+		}
+	}
+	if !strings.Contains(f.logBuf.String(), "added the guest name in front of the PBP line on 2 older backups") {
+		t.Errorf("migration not logged:\n%s", f.logBuf.String())
 	}
 }
