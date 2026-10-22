@@ -641,6 +641,6 @@ func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, 
 		return nil
 	}
 	return fmt.Errorf("%w: the copy has drives that are not its own: %s; removing them needs %s, which PBP's token lacks: "+
-		"remove them from the original guest's config, or grant %s on /vms to PBP's token (docs/security.md)",
+		"remove them from the original guest's config, or grant %s on /vms to pbp@pve and its token (docs/security.md)",
 		ErrUnsafe, strings.Join(drives, ", "), privConfigDisk, privConfigDisk)
 }
