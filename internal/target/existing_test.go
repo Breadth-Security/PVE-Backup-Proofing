@@ -677,6 +677,7 @@ func TestSanitizeLXCBindMount(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
 	f.BackupConfigs[ctVol] = ctConf
+	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}} // removing mp0 needs it
 	n := newTarget(t, f, f, nil)
 	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
 	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
@@ -1285,6 +1286,7 @@ func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
 		"ide2: nfs:iso/debian.iso,media=cdrom\n" +
 		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n" +
 		"#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:lvm:raw:\n"
+	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
 	n := newTarget(t, f, f, nil)
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
@@ -1315,5 +1317,30 @@ func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
 	}
 	if err := n.Start(ctx, model.KindQEMU, 990000); err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+}
+
+// Without VM.Config.Disk (PBP's default role) the drive cannot be removed:
+// the guest ends ERROR before any change, naming the drive and the fixes
+// (issue #67). This is what pve1's VM137 showed.
+func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = "bios: seabios\nname: nextcloud-vm\n" +
+		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\nscsi0: lvm:vm-137-disk-6,size=72G\n" +
+		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n"
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	f.ResetCalls()
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "efidisk0 (lvm:vm-137-disk-8)") || !strings.Contains(err.Error(), "VM.Config.Disk") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "SetGuestConfig") {
+			t.Errorf("config changed before refusing: %q", c)
+		}
 	}
 }

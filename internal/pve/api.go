@@ -17,6 +17,9 @@ type API interface {
 	NodeMemory(ctx context.Context, node string) (NodeMemory, error)
 	NetIface(ctx context.Context, node, iface string) (NetIface, error)
 	WaitTask(ctx context.Context, node, upid string) error
+	// Privileges returns the caller's (the token's) effective privileges
+	// on an ACL path, such as "/vms/990000".
+	Privileges(ctx context.Context, path string) (map[string]bool, error)
 
 	Guests(ctx context.Context) ([]GuestRef, error)
 	Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (upid string, err error)

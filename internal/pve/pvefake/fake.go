@@ -39,6 +39,9 @@ type Fake struct {
 	// test can fail, say, only the second SetGuestConfig of one VMID. It
 	// runs with the fake locked: it must not call the fake.
 	FailOn func(method string, args []string) error
+	// Privs are the token's privileges by ACL path; a path not listed has
+	// none. Privileges answers from it.
+	Privs map[string][]string
 	// Node is the only node name the fake answers for, like a real
 	// cluster; "" means pve1. Calls naming another node fail.
 	Node string
@@ -558,4 +561,17 @@ func (f *Fake) AgentExecStatus(ctx context.Context, node string, vmid, pid int) 
 		return pve.AgentExecStatus{}, err
 	}
 	return pve.AgentExecStatus{Exited: true}, nil
+}
+
+func (f *Fake) Privileges(ctx context.Context, path string) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin("Privileges", path); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, p := range f.Privs[path] {
+		out[p] = true
+	}
+	return out, nil
 }

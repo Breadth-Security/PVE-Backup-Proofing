@@ -236,6 +236,9 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 		return Sanitized{}, fmt.Errorf("%w: %s", ErrUnsafe, strings.Join(plan.Unsafe, ", "))
 	}
 	removeNotInBackup(&plan, cfg, vmid)
+	if err := n.mayRemoveDrives(ctx, plan, cfg, vmid); err != nil {
+		return Sanitized{}, err
+	}
 	if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, plan.Set, plan.Delete); err != nil {
 		return Sanitized{}, fmt.Errorf("sanitize config %d: %w", vmid, err)
 	}
@@ -608,4 +611,36 @@ func removeNotInBackup(plan *sanitize.Plan, cfg map[string]string, vmid int) {
 		plan.Removed = append(plan.Removed, model.MissingPiece{Kind: "excluded-disk", Key: k, Detail: "not in the backup"})
 	}
 	slices.Sort(plan.Delete)
+}
+
+// privConfigDisk is the PVE privilege that removing a drive from a guest's
+// config needs. PBP's role does not grant it by default (issue #67).
+const privConfigDisk = "VM.Config.Disk"
+
+// mayRemoveDrives checks, when plan removes drives (a host disk, or one the
+// backup does not hold), that PBP's token may: it needs VM.Config.Disk on
+// the copy. Without it the copy cannot be made safe, so the guest ends
+// ERROR before anything changes, naming the drives and both fixes.
+func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, cfg map[string]string, vmid int) error {
+	var drives []string
+	for _, k := range plan.Delete {
+		if reVolKey.MatchString(k) {
+			vol, _, _ := strings.Cut(cfg[k], ",")
+			drives = append(drives, fmt.Sprintf("%s (%s)", k, vol))
+		}
+	}
+	if len(drives) == 0 {
+		return nil
+	}
+	path := "/vms/" + strconv.Itoa(vmid)
+	privs, err := n.api.Privileges(ctx, path)
+	if err != nil {
+		return fmt.Errorf("read the token's privileges on %s: %w", path, err)
+	}
+	if privs[privConfigDisk] {
+		return nil
+	}
+	return fmt.Errorf("%w: the copy has drives that are not its own: %s; removing them needs %s, which PBP's token lacks: "+
+		"remove them from the original guest's config, or grant %s on /vms to PBP's token (docs/security.md)",
+		ErrUnsafe, strings.Join(drives, ", "), privConfigDisk, privConfigDisk)
 }
