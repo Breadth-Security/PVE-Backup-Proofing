@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.8.0
 
 **Upgrade both sides, and reinstall the notification templates**: the notification has a new section, whose data key a 0.7 node helper refuses, so this is a minor release (0.8): the daemon and the helper must share major.minor, and a 0.8 daemon's preflight refuses a 0.7 helper instead of every notification failing. Run the `pbp node setup` line again after upgrading (or `pbp node install-templates`).
 
