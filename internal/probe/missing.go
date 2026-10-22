@@ -129,7 +129,9 @@ func traceMount(ctx context.Context, ex Executor, p unitProps, missing []model.M
 	}
 	var disks []model.MissingPiece
 	for _, m := range missing {
-		if m.Kind == "excluded-disk" {
+		// EFI and TPM state hold no filesystem: they cannot explain a mount
+		// (orphan-disk review).
+		if m.Kind == "excluded-disk" && !strings.HasPrefix(m.Key, "efidisk") && !strings.HasPrefix(m.Key, "tpmstate") {
 			disks = append(disks, m)
 		}
 	}

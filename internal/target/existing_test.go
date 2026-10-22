@@ -1344,3 +1344,36 @@ func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
 		}
 	}
 }
+
+// A drive in the boot order is never removed (the copy would fail to boot,
+// blaming the backup): the copy is refused instead. A host CD drive stays.
+// Removing a CD-ROM needs VM.Config.CDROM, not VM.Config.Disk (orphan-disk
+// review).
+func TestRemoveNotInBackupEdges(t *testing.T) {
+	plan := sanitize.Plan{}
+	cfg := map[string]string{
+		"boot":     "order=scsi0;net0",
+		"scsi0":    "weird:prod-boot-volume,size=32G",
+		"scsi1":    "lvm:vm-137-disk-7,size=1G",
+		"ide2":     "/dev/sr0,media=cdrom",
+		"ide3":     "lvm:vm-137-disk-9,media=cdrom",
+		"efidisk0": "lvm:vm-137-disk-8,efitype=4m",
+	}
+	removeNotInBackup(&plan, cfg, 990000)
+	if want := []string{"efidisk0", "ide3", "scsi1"}; !slices.Equal(plan.Delete, want) {
+		t.Fatalf("Delete = %v, want %v (boot disk and host CD drive kept)", plan.Delete, want)
+	}
+
+	ctx := context.Background()
+	f := healthyFake()
+	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
+	n := newTarget(t, f, f, nil)
+	err := n.mayRemoveDrives(ctx, plan, cfg, 990000)
+	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "VM.Config.CDROM") || strings.Contains(err.Error(), "efidisk0") {
+		t.Errorf("CD-ROM without VM.Config.CDROM: %v", err)
+	}
+	f.Privs["/vms/990000"] = append(f.Privs["/vms/990000"], "VM.Config.CDROM")
+	if err := n.mayRemoveDrives(ctx, plan, cfg, 990000); err != nil {
+		t.Errorf("both privileges: %v", err)
+	}
+}

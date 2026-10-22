@@ -11,7 +11,10 @@
 >
 >That's where PBP steps in. We are going to <i>trust</i> the backup existing verification, but we are going to <b><i>prove</i></b> that our backups will support our disaster recovery plans.
 
-PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy inside, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification.
+PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification. Deep options are provided for guest inclusion/exclusion, systemd/service ignore and health checks, per-guest checks, and many more options to help you ensure that your backup is valid. 
+
+  - If you are migrating from the VMWare ecosystem, this is akin to the functionality provided by Live Recovery. 
+  - This is also comparable to the backup validation functionality provided by XenServer / XCP-ng / XO
 
 ## How it works
 

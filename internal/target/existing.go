@@ -571,7 +571,7 @@ func foreignDisk(k, v string, vmid int) string {
 		// An ISO image or the host's drive is read-only media, not a
 		// disk; any other volume as a CD-ROM is judged like a disk
 		// (#50 review): a production volume must not be attached at all.
-		if _, name, ok := strings.Cut(vol, ":"); vol == "cdrom" || (ok && strings.HasPrefix(name, "iso/")) {
+		if _, name, ok := strings.Cut(vol, ":"); vol == "cdrom" || strings.HasPrefix(vol, "/dev/") || (ok && strings.HasPrefix(name, "iso/")) {
 			return ""
 		}
 	}
@@ -603,8 +603,11 @@ func removeNotInBackup(plan *sanitize.Plan, cfg map[string]string, vmid int) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
+	boot := bootDrives(cfg)
 	for _, k := range keys {
-		if k == "rootfs" || slices.Contains(plan.Delete, k) || foreignDisk(k, cfg[k], vmid) == "" {
+		// A boot disk is never removed: the copy would then fail to boot,
+		// blaming the backup; verifySanitized refuses it instead (ERROR).
+		if k == "rootfs" || boot[k] || slices.Contains(plan.Delete, k) || foreignDisk(k, cfg[k], vmid) == "" {
 			continue
 		}
 		plan.Delete = append(plan.Delete, k)
@@ -617,19 +620,44 @@ func removeNotInBackup(plan *sanitize.Plan, cfg map[string]string, vmid int) {
 // config needs. PBP's role does not grant it by default (issue #67).
 const privConfigDisk = "VM.Config.Disk"
 
+// privConfigCDROM is what removing a CD-ROM drive needs instead.
+const privConfigCDROM = "VM.Config.CDROM"
+
+// bootDrives returns the drive keys a VM boots from: those in "boot:
+// order=…" (or the legacy "bootdisk").
+func bootDrives(cfg map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(cfg["boot"], ",") {
+		if order, ok := strings.CutPrefix(strings.TrimSpace(part), "order="); ok {
+			for _, k := range strings.Split(order, ";") {
+				out[strings.TrimSpace(k)] = true
+			}
+		}
+	}
+	if d := cfg["bootdisk"]; d != "" {
+		out[d] = true
+	}
+	return out
+}
+
 // mayRemoveDrives checks, when plan removes drives (a host disk, or one the
 // backup does not hold), that PBP's token may: it needs VM.Config.Disk on
 // the copy. Without it the copy cannot be made safe, so the guest ends
 // ERROR before anything changes, naming the drives and both fixes.
 func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, cfg map[string]string, vmid int) error {
-	var drives []string
+	need := map[string][]string{} // privilege -> drives needing it
 	for _, k := range plan.Delete {
-		if reVolKey.MatchString(k) {
-			vol, _, _ := strings.Cut(cfg[k], ",")
-			drives = append(drives, fmt.Sprintf("%s (%s)", k, vol))
+		if !reVolKey.MatchString(k) {
+			continue
 		}
+		vol, opts, _ := strings.Cut(cfg[k], ",")
+		priv := privConfigDisk
+		if slices.Contains(strings.Split(opts, ","), "media=cdrom") {
+			priv = privConfigCDROM
+		}
+		need[priv] = append(need[priv], fmt.Sprintf("%s (%s)", k, vol))
 	}
-	if len(drives) == 0 {
+	if len(need) == 0 {
 		return nil
 	}
 	path := "/vms/" + strconv.Itoa(vmid)
@@ -637,10 +665,19 @@ func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, 
 	if err != nil {
 		return fmt.Errorf("read the token's privileges on %s: %w", path, err)
 	}
-	if privs[privConfigDisk] {
+	var missing []string
+	var drives []string
+	for _, priv := range []string{privConfigDisk, privConfigCDROM} {
+		if len(need[priv]) > 0 && !privs[priv] {
+			missing = append(missing, priv)
+			drives = append(drives, need[priv]...)
+		}
+	}
+	if len(missing) == 0 {
 		return nil
 	}
+	m := strings.Join(missing, " and ")
 	return fmt.Errorf("%w: the copy has drives that are not its own: %s; removing them needs %s, which PBP's token lacks: "+
 		"remove them from the original guest's config, or grant %s on /vms to pbp@pve and its token (docs/security.md)",
-		ErrUnsafe, strings.Join(drives, ", "), privConfigDisk, privConfigDisk)
+		ErrUnsafe, strings.Join(drives, ", "), m, m)
 }
