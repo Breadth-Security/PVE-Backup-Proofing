@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pbp
-Source: https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing
+Source: https://github.com/BreadthAnalytics/proxmox-backup-proofing
 
 Files: *
 Copyright: 2026 Anthony Diana

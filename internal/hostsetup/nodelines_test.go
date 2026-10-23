@@ -23,9 +23,11 @@ const testPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq5o5f7cJ9n8Kq3QmV0b1qHkCQ
 
 func TestNodeLinesRelease(t *testing.T) {
 	got := NodeLines(lineCfg(), testPub, "0.3.0~rc.1", false)
-	base := "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v0.3.0-rc.1/"
-	install := `(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base +
-		`pbp_0.3.0~rc.1_${a}.deb" && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` +
+	base := "https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases/download/v0.3.0-rc.1/"
+	// GitHub serves the pre-release's "~" as "."; the file is saved under
+	// the name SHA256SUMS signs.
+	install := `(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSL -o "pbp_0.3.0~rc.1_${a}.deb" "` + base +
+		`pbp_0.3.0.rc.1_${a}.deb" && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` +
 		ReleaseSigner + `' > allowed_signers && ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS` +
 		` && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./pbp_0.3.0~rc.1_${a}.deb"; rc=$?; rm -rf "$d"; exit $rc)`
 	setup := "pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey '" + testPub +
@@ -40,6 +42,15 @@ func TestNodeLinesRelease(t *testing.T) {
 	}
 	if strings.Contains(NodeLines(lineCfg(), testPub, "0.3.0", true), "--create-token") {
 		t.Error("--create-token with a token file present")
+	}
+}
+
+// A final release has no "~": its file is fetched under its own name.
+func TestNodeLinesFinalRelease(t *testing.T) {
+	got := NodeLines(lineCfg(), testPub, "0.8.1", true)
+	want := `curl -fsSLO "https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases/download/v0.8.1/pbp_0.8.1_${a}.deb" && `
+	if !strings.Contains(got, want) {
+		t.Errorf("missing %q in:\n%s", want, got)
 	}
 }
 
