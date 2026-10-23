@@ -8,7 +8,7 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
    ```
    v=0.8.1; a=$(dpkg --print-architecture)
-   base=https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases/download/v$v
+   base=https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases/download/v$(echo "$v" | tr '~' -)
    curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS" && curl -fsSLO "$base/SHA256SUMS.sig"
    ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
    sha256sum -c SHA256SUMS --ignore-missing

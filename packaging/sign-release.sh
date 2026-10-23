@@ -104,7 +104,8 @@ note() { # release id, release json: put the signature note in the description
          | (($p[0] + (if ($p | length) > 1 then ($p[1] | split("<!-- /pbp-signature -->")[1] // "") else "" end))
             | sub("\\s+$"; "")) as $rest
          | {body: (if $rest == "" then $n else $rest + "\n\n" + $n end)}' > "$tmp/body.json"
-    gitea -X PATCH -H 'Content-Type: application/json' -d @"$tmp/body.json" "$api/releases/$1" >/dev/null
+    gitea -X PATCH -H 'Content-Type: application/json' -d @"$tmp/body.json" "$api/releases/$1" >/dev/null ||
+        { echo "   writing the signature note FAILED" >&2; return 2; }
 }
 
 if $all; then
@@ -130,10 +131,13 @@ for tag in $tags; do
     draft=$(jq -r .draft "$dir.json")
     sig_id=$(jq -r '.assets[] | select(.name == "SHA256SUMS.sig") | .id' "$dir.json")
 
-    jq -r '.assets[] | select(.name != "SHA256SUMS.sig") | "\(.name)\t\(.browser_download_url)"' "$dir.json" |
+    # A failed download fails this release only, not the whole run.
+    if ! jq -r '.assets[] | select(.name != "SHA256SUMS.sig") | "\(.name)\t\(.browser_download_url)"' "$dir.json" |
         while IFS="$(printf '\t')" read -r name url; do
             gitea -o "$dir/$name" "$url"
-        done
+        done; then
+        echo "   downloading the release's files failed" >&2; failed=1; continue
+    fi
     [ -f "$dir/SHA256SUMS" ] || { echo "   release has no SHA256SUMS" >&2; failed=1; continue; }
 
     if [ -n "$sig_id" ] && ! $replace; then
@@ -141,7 +145,7 @@ for tag in $tags; do
         if verify "$dir" >/dev/null 2>&1; then
             echo "   already signed; signature good"
             if ! $dry; then
-                note "$id" "$dir.json" && echo "   signature note written to the description"
+                if note "$id" "$dir.json"; then echo "   signature note written to the description"; elif [ $? -eq 2 ]; then failed=1; fi
                 if [ "$draft" = true ]; then
                     publish "$id" && echo "   published (was a draft)"
                 fi
@@ -182,7 +186,7 @@ for tag in $tags; do
     gitea -o "$dir/SHA256SUMS.sig" "$url"
     if verify "$dir" >/dev/null 2>&1; then
         echo "   signed; published signature verifies"
-        note "$id" "$dir.json" && echo "   signature note written to the description"
+        if note "$id" "$dir.json"; then echo "   signature note written to the description"; elif [ $? -eq 2 ]; then failed=1; fi
         if [ "$draft" = true ]; then
             publish "$id" && echo "   published (was a draft)"
         fi

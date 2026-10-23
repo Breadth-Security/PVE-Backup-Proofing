@@ -4,8 +4,8 @@
 # LAN; GitHub is where everyone else downloads. Run it after
 # packaging/sign-release.sh, on the maintainer's machine.
 #
-# usage: packaging/mirror-release.sh [--dry-run] TAG...
-#        packaging/mirror-release.sh [--dry-run] --all
+# usage: packaging/mirror-release.sh [--dry-run] [--replace] TAG...
+#        packaging/mirror-release.sh [--dry-run] [--replace] --all
 #
 # For each release it downloads the Gitea release's files, requires a
 # SHA256SUMS.sig that verifies with the repository's allowed_signers and
@@ -13,7 +13,10 @@
 # with the same files and description, downloads them back from GitHub,
 # checks them the same way, and only then publishes it. A GitHub release
 # that already exists is only checked (and published if it is a draft whose
-# files verify). GitHub replaces "~" in file names with ".", so the files of
+# files verify); --replace deletes it (keeping the tag) and copies it again,
+# for when the Gitea release changed (re-signed after a key change, a new
+# description). Afterwards the newest final release is marked GitHub's
+# "latest", whatever order the copies were made in. GitHub replaces "~" in file names with ".", so the files of
 # a pre-release (pbp_0.3.0~rc.2_amd64.deb) are served as
 # pbp_0.3.0.rc.2_amd64.deb; they are renamed back before checking, since
 # the signed SHA256SUMS names them with "~". The push mirror must already have
@@ -33,11 +36,13 @@ api="https://$host/api/v1/repos/tdiana/Proxmox-Backup-Proofing"
 ns=pbp-release
 
 dry=false
+replace=false
 all=false
 tags=""
 for arg in "$@"; do
     case "$arg" in
         --dry-run) dry=true ;;
+        --replace) replace=true ;;
         --all) all=true ;;
         -*) echo "unknown option $arg" >&2; exit 2 ;;
         *) tags="$tags $arg" ;;
@@ -108,13 +113,17 @@ for tag in $tags; do
         echo "   tag not on GitHub yet: let the push mirror sync" >&2; failed=1; continue
     fi
 
+    if $replace && ! $dry && gh release view "$tag" -R "$gh_repo" >/dev/null 2>&1; then
+        gh release delete "$tag" -R "$gh_repo" --yes >/dev/null # the tag stays
+        echo "   deleted the GitHub release to copy it again"
+    fi
     if gh release view "$tag" -R "$gh_repo" >/dev/null 2>&1; then
         gh release download "$tag" -R "$gh_repo" -D "$dst" >/dev/null
         unmangle "$dst"
         if check "$dst"; then
             echo "   already on GitHub; signature and checksums good"
             if [ "$(gh release view "$tag" -R "$gh_repo" --json isDraft --jq .isDraft)" = true ] && ! $dry; then
-                gh release edit "$tag" -R "$gh_repo" --draft=false >/dev/null
+                gh release edit "$tag" -R "$gh_repo" --draft=false --latest=false >/dev/null
                 echo "   published (was a draft)"
             fi
         else
@@ -123,10 +132,13 @@ for tag in $tags; do
         continue
     fi
 
-    jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' "$tmp/$tag/release.json" |
+    # A failed download fails this release only, not the whole run.
+    if ! jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' "$tmp/$tag/release.json" |
         while IFS="$(printf '\t')" read -r name url; do
             gitea -o "$src/$name" "$url"
-        done
+        done; then
+        echo "   downloading the Gitea release's files failed" >&2; failed=1; continue
+    fi
     if [ ! -f "$src/SHA256SUMS.sig" ] || ! check "$src"; then
         echo "   Gitea release is not signed, or its files do not verify; not copied" >&2; failed=1; continue
     fi
@@ -139,17 +151,27 @@ for tag in $tags; do
     pre=""
     [ "$(jq -r .prerelease "$tmp/$tag/release.json")" = true ] && pre=--prerelease
     # shellcheck disable=SC2086 # $pre is empty or one flag
-    gh release create "$tag" -R "$gh_repo" --draft --verify-tag $pre --title "$tag" \
-        --notes-file "$tmp/$tag/notes.md" "$src"/* >/dev/null
+    if ! gh release create "$tag" -R "$gh_repo" --draft --verify-tag $pre --title "$tag" \
+        --notes-file "$tmp/$tag/notes.md" "$src"/* >/dev/null; then
+        echo "   creating the GitHub release failed (rerun with --replace)" >&2; failed=1; continue
+    fi
 
     # What users download from GitHub must verify too.
     gh release download "$tag" -R "$gh_repo" -D "$dst" >/dev/null
     unmangle "$dst"
     if check "$dst"; then
-        gh release edit "$tag" -R "$gh_repo" --draft=false >/dev/null
+        gh release edit "$tag" -R "$gh_repo" --draft=false --latest=false >/dev/null
         echo "   copied; GitHub files verify; published"
     else
         echo "   copied, but the GitHub files do NOT verify; left as a draft" >&2; failed=1
     fi
 done
+
+# GitHub's "latest" is the newest final release on Gitea, if it is copied.
+if ! $dry; then
+    newest=$(gitea "$api/releases?limit=50" | jq -r '[.[] | select((.draft or .prerelease) | not)][0].tag_name // empty')
+    if [ -n "$newest" ] && gh release view "$newest" -R "$gh_repo" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false; then
+        gh release edit "$newest" -R "$gh_repo" --latest >/dev/null
+    fi
+fi
 exit $failed
