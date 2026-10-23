@@ -2,7 +2,7 @@
 
 Thanks for your interest in PBP.
 
-If you would like to contribute, just let us know and you will be added to the Gitea source repo if it's deemed appropriate.
+If you would like to contribute, just let us know by opening an issue here, and you will be added to the Gitea source repo if it's deemed appropriate.
 
 ## Where development happens
 
