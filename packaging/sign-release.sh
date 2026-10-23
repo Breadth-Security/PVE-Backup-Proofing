@@ -13,7 +13,10 @@
 # verifies that too. A release that already has SHA256SUMS.sig is only
 # verified, unless --replace is given. --dry-run stops before signing. The
 # release workflow publishes a release as a draft; once its published
-# signature verifies, this publishes it (clears the draft flag).
+# signature verifies, this publishes it (clears the draft flag). Each
+# release with a good signature gets a "Signed release" note in its
+# description, with the key's fingerprint and the verify command: Gitea's
+# release page shows no signature status of its own.
 #
 # The key is $PBP_SIGNING_KEY (default ~/.ssh/pbp_signing). When ssh-agent
 # holds it, it signs through the agent; otherwise ssh-keygen asks for the
@@ -77,6 +80,32 @@ publish() { # release id: clear the draft flag
     gitea -X PATCH -H 'Content-Type: application/json' -d '{"draft":false}' "$api/releases/$1" >/dev/null
 }
 
+fingerprint=$(grep "^$ns " "$signers" | cut -d' ' -f3- | ssh-keygen -lf - | awk '{print $2}')
+signers_url="https://$host/tdiana/Proxmox-Backup-Proofing/raw/branch/main/allowed_signers"
+docs_url="https://$host/tdiana/Proxmox-Backup-Proofing/src/branch/main/docs/install-deb.md#verifying-a-release"
+note_text="<!-- pbp-signature -->
+**Signed release.** \`SHA256SUMS.sig\` is an SSH signature over \`SHA256SUMS\` by PBP's release signing key, fingerprint \`$fingerprint\` (ED25519), published in [\`allowed_signers\`]($signers_url). Verify the download before installing:
+
+\`\`\`
+curl -fsSLO $signers_url
+ssh-keygen -Y verify -f allowed_signers -I $ns -n $ns -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+\`\`\`
+
+See [Verifying a release]($docs_url).
+<!-- /pbp-signature -->"
+
+note() { # release id, release json: put the signature note in the description
+    body=$(jq -r '.body // ""' "$2")
+    case "$body" in *"$fingerprint"*"<!-- /pbp-signature -->"*) return 1 ;; esac
+    jq -n --arg b "$body" --arg n "$note_text" \
+        '($b | split("<!-- pbp-signature -->")) as $p
+         | (($p[0] + (if ($p | length) > 1 then ($p[1] | split("<!-- /pbp-signature -->")[1] // "") else "" end))
+            | sub("\\s+$"; "")) as $rest
+         | {body: (if $rest == "" then $n else $rest + "\n\n" + $n end)}' > "$tmp/body.json"
+    gitea -X PATCH -H 'Content-Type: application/json' -d @"$tmp/body.json" "$api/releases/$1" >/dev/null
+}
+
 if $all; then
     # Every page (Gitea caps a page at 50), drafts included.
     page=1
@@ -110,8 +139,11 @@ for tag in $tags; do
         gitea -o "$dir/SHA256SUMS.sig" "$(jq -r '.assets[] | select(.name == "SHA256SUMS.sig") | .browser_download_url' "$dir.json")"
         if verify "$dir" >/dev/null 2>&1; then
             echo "   already signed; signature good"
-            if [ "$draft" = true ] && ! $dry; then
-                publish "$id" && echo "   published (was a draft)"
+            if ! $dry; then
+                note "$id" "$dir.json" && echo "   signature note added to the description"
+                if [ "$draft" = true ]; then
+                    publish "$id" && echo "   published (was a draft)"
+                fi
             fi
         else
             echo "   already signed, but the signature does NOT verify (use --replace)" >&2; failed=1
@@ -149,6 +181,7 @@ for tag in $tags; do
     gitea -o "$dir/SHA256SUMS.sig" "$url"
     if verify "$dir" >/dev/null 2>&1; then
         echo "   signed; published signature verifies"
+        note "$id" "$dir.json" && echo "   signature note added to the description"
         if [ "$draft" = true ]; then
             publish "$id" && echo "   published (was a draft)"
         fi
