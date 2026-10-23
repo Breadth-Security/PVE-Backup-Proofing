@@ -2,6 +2,8 @@
 
 Thanks for your interest in PBP.
 
+If you would like to contribute, just let us know and you will be added to the Gitea source repo if it's deemed appropriate.
+
 ## Where development happens
 
 PBP is developed on a private Gitea instance. This GitHub repository is a **read-only mirror**: every push from Gitea overwrites it, and nothing done here flows back on its own.
