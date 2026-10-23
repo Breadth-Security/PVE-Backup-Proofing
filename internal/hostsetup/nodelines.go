@@ -9,8 +9,9 @@ import (
 )
 
 // releaseURL is where a release's .deb files, SHA256SUMS and its signature
-// are published.
-const releaseURL = "https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/"
+// are published: the public GitHub mirror (issue #83; development and the
+// release workflow stay on Gitea, which is reachable only from its LAN).
+const releaseURL = "https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases/download/"
 
 // ReleaseSigner is the allowed_signers line for the key that signs each
 // release's SHA256SUMS (issue #37), the same as in the repository's
@@ -49,13 +50,19 @@ func NodeLines(cfg config.Config, pub, version string, haveToken bool) string {
 	if v := version; v != "" && !strings.Contains(v, "dev") {
 		base := releaseURL + "v" + strings.ReplaceAll(v, "~", "-") + "/"
 		deb := "pbp_" + v + "_${a}.deb"
+		// GitHub serves a "~" in a file name as "." (pbp_0.3.0.rc.1_amd64.deb);
+		// save it under the name SHA256SUMS signs, so the checks match.
+		get := `curl -fsSLO "` + base + deb + `"`
+		if served := strings.ReplaceAll(deb, "~", "."); served != deb {
+			get = `curl -fsSL -o "` + deb + `" "` + base + served + `"`
+		}
 		b.WriteString("1. Install pbp " + v + " (signature and checksum verified):\n\n")
 		// A subshell, so the admin's shell keeps its directory and the
 		// download dir is removed whatever happens. The signature over
 		// SHA256SUMS is checked with the key built into this PBP, then the
 		// .deb against SHA256SUMS.
-		b.WriteString(`(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "` + base + deb +
-			`" && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` + ReleaseSigner +
+		b.WriteString(`(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && ` + get +
+			` && curl -fsSLO "` + base + `SHA256SUMS" && curl -fsSLO "` + base + `SHA256SUMS.sig" && echo '` + ReleaseSigner +
 			`' > allowed_signers && ` + VerifyCommand + ` && sha256sum -c --ignore-missing SHA256SUMS && apt install -y "./` + deb +
 			`"; rc=$?; rm -rf "$d"; exit $rc)` + "\n\n")
 	} else {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Releases are published on GitHub** ([#83](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/issues/83)). Development stays on Gitea, which is reachable only from its LAN; every release, from `v0.2.0-rc.1` on, is also on the GitHub mirror, [BreadthAnalytics/proxmox-backup-proofing](https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases), with the same files, `SHA256SUMS.sig` and "Signed release" note. The node install line `pbp setup` prints, the docs and the package's homepage now point there. GitHub serves a `~` in a file name as `.`, so the install line fetches a pre-release's package under that name and saves it under the signed one. Commits and tags signed with the release key show as Verified on GitHub. Only the daemon changed.
+
 ## v0.8.1
 
 Only the daemon changed: a 0.8.1 daemon works with the 0.8.0 node helper, so upgrading the PBP host is enough (upgrading the node too does no harm). Configs need no change. This is the first release published as a draft and made public only once signed, and its tag is the first signed one.

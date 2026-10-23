@@ -57,7 +57,7 @@ PBP never logs in to the node as root. It uses an API token with a narrow role, 
 
 ## Getting started
 
-1. **Get PBP** on the PBP host: clone this repository (Docker), or install the `.deb` from the [releases page](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases) ([Install from the .deb](docs/install-deb.md)). Releases are signed: check `SHA256SUMS.sig` with [`allowed_signers`](allowed_signers), key fingerprint `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` ([Verifying a release](docs/install-deb.md#verifying-a-release)).
+1. **Get PBP** on the PBP host: clone this repository (Docker), or install the `.deb` from the [releases page](https://github.com/BreadthAnalytics/proxmox-backup-proofing/releases) ([Install from the .deb](docs/install-deb.md)). Releases are signed: check `SHA256SUMS.sig` with [`allowed_signers`](allowed_signers), key fingerprint `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` ([Verifying a release](docs/install-deb.md#verifying-a-release)).
 2. **Choose a free VMID range and create the isolated bridge** on the node ([Setup](docs/setup.md) steps 1 and 2). PBP checks both, but you choose the range and create the bridge.
 3. **Run `pbp setup`** on the PBP host: the Docker one-shot command in [Setup step 3](docs/setup.md#3-run-pbp-setup-on-the-pbp-host), or `sudo pbp setup --deb`. It asks a few questions, writes `config.yaml` and the SSH key, and prints two lines to run on the node.
 4. **On the node, as root, run those two lines.** The first installs the matching `pbp` package; the second, `pbp node setup`, sets up the restricted helper and the API token, and prints a reply block.

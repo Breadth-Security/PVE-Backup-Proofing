@@ -81,8 +81,9 @@ publish() { # release id: clear the draft flag
 }
 
 fingerprint=$(grep "^$ns " "$signers" | cut -d' ' -f3- | ssh-keygen -lf - | awk '{print $2}')
-signers_url="https://$host/tdiana/Proxmox-Backup-Proofing/raw/branch/main/allowed_signers"
-docs_url="https://$host/tdiana/Proxmox-Backup-Proofing/src/branch/main/docs/install-deb.md#verifying-a-release"
+# The note's links are public: the GitHub mirror (Gitea is LAN-only).
+signers_url="https://raw.githubusercontent.com/BreadthAnalytics/proxmox-backup-proofing/main/allowed_signers"
+docs_url="https://github.com/BreadthAnalytics/proxmox-backup-proofing/blob/main/docs/install-deb.md#verifying-a-release"
 note_text="<!-- pbp-signature -->
 **Signed release.** \`SHA256SUMS.sig\` is an SSH signature over \`SHA256SUMS\` by PBP's release signing key, fingerprint \`$fingerprint\` (ED25519), published in [\`allowed_signers\`]($signers_url). Verify the download before installing:
 
@@ -97,7 +98,7 @@ See [Verifying a release]($docs_url).
 
 note() { # release id, release json: put the signature note in the description
     body=$(jq -r '.body // ""' "$2")
-    case "$body" in *"$fingerprint"*"<!-- /pbp-signature -->"*) return 1 ;; esac
+    case "$body" in *"$note_text"*) return 1 ;; esac # already current
     jq -n --arg b "$body" --arg n "$note_text" \
         '($b | split("<!-- pbp-signature -->")) as $p
          | (($p[0] + (if ($p | length) > 1 then ($p[1] | split("<!-- /pbp-signature -->")[1] // "") else "" end))
@@ -140,7 +141,7 @@ for tag in $tags; do
         if verify "$dir" >/dev/null 2>&1; then
             echo "   already signed; signature good"
             if ! $dry; then
-                note "$id" "$dir.json" && echo "   signature note added to the description"
+                note "$id" "$dir.json" && echo "   signature note written to the description"
                 if [ "$draft" = true ]; then
                     publish "$id" && echo "   published (was a draft)"
                 fi
@@ -181,7 +182,7 @@ for tag in $tags; do
     gitea -o "$dir/SHA256SUMS.sig" "$url"
     if verify "$dir" >/dev/null 2>&1; then
         echo "   signed; published signature verifies"
-        note "$id" "$dir.json" && echo "   signature note added to the description"
+        note "$id" "$dir.json" && echo "   signature note written to the description"
         if [ "$draft" = true ]; then
             publish "$id" && echo "   published (was a draft)"
         fi

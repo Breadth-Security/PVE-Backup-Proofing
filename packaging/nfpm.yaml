@@ -12,7 +12,7 @@ description: |
   Restores the newest backup of each guest into an isolated bridge on a
   Proxmox VE node, boots it, checks that it works, and tears it down again.
 vendor: Breadth Analytics
-homepage: https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing
+homepage: https://github.com/BreadthAnalytics/proxmox-backup-proofing
 license: Apache-2.0
 depends:
   - adduser
