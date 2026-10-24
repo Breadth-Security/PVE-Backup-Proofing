@@ -10,7 +10,7 @@ import (
 
 // releaseURL is where a release's .deb files, SHA256SUMS and its signature
 // are published: the public GitHub mirror (issue #83; development and the
-// release workflow stay on Gitea, which is reachable only from its LAN).
+// release workflow stay on a private Gitea instance).
 const releaseURL = "https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/"
 
 // ReleaseSigner is the allowed_signers line for the key that signs each

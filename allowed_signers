@@ -6,5 +6,8 @@
 # Signed tags and commits (made after 2026-10-22; not Gitea web-UI merges):
 #   git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v0.9.0
 # See docs/install-deb.md#verifying-a-release.
-pbp-release namespaces="pbp-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86
+# The git line comes first: git looks the key up and stops at the first line
+# that has it, so with the release line first `git tag -v` reports the key
+# "not permitted" in namespace git.
 tdiana@breadthanalytics.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86
+pbp-release namespaces="pbp-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdDxN4XOaHKQMSYXUFAWFRLES54peOduNiltN3U1a86
