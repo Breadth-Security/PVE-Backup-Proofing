@@ -1,7 +1,7 @@
 #!/bin/sh
 # Copy signed Gitea releases to the GitHub mirror (issue #83). Development
-# and the release workflow stay on Gitea, which is reachable only from the
-# LAN; GitHub is where everyone else downloads. Run it after
+# and the release workflow stay on a private Gitea instance; GitHub is where
+# everyone else downloads. Run it after
 # packaging/sign-release.sh, on the maintainer's machine.
 #
 # usage: packaging/mirror-release.sh [--dry-run] [--replace] TAG...
