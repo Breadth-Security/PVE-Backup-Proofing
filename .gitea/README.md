@@ -12,4 +12,15 @@ Change CI here, on Gitea.
 
 ## GitHub workflows
 
-`.github/workflows/` holds the workflows that run on the mirror's GitHub Actions (today the OSSF SLSA Go releaser, `go-ossf-slsa3-publish.yml`, with `.slsa-goreleaser.yml`). They are changed on GitHub, by pull request there, and synced back to Gitea by hand: fetch the mirror's `main` and open a Gitea pull request that fast-forwards Gitea's `main` to it (as [#87](https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/pulls/87) did). Sync them back before anything else lands on Gitea's `main`, or the next push from Gitea will overwrite them on GitHub.
+`.github/workflows/` holds the workflows that run on the mirror's GitHub Actions: today the OSSF SLSA Go releaser, `go-ossf-slsa3-publish.yml`, with its build configuration in `.slsa-goreleaser-*.yml` at the repository root. Gitea Actions does not run them: it uses `.gitea/workflows/` instead whenever that folder exists.
+
+**Change them here, on Gitea**, like any other file, and let the push mirror carry them to GitHub. Do not merge anything on GitHub: the mirror force-pushes Gitea's branches on every sync, so a change made only there is lost.
+
+To try a change before merging it, push its branch to Gitea, let the mirror sync it, and run the workflow on that branch on GitHub:
+
+```sh
+gh workflow run go-ossf-slsa3-publish.yml -R Breadth-Security/Proxmox-Backup-Proofing --ref <branch>
+gh run watch -R Breadth-Security/Proxmox-Backup-Proofing
+```
+
+The run uses the branch's version of the workflow, but GitHub dispatches only a workflow that is already on `main`, so a brand-new workflow has to land there first.
