@@ -25,4 +25,4 @@ Contributions are licensed under the [Apache License 2.0](LICENSE), like the res
 
 ## Workflows
 
-The CI workflows live in `.gitea/workflows/` and run on Gitea only; this mirror runs no Actions. See [.gitea/README.md](.gitea/README.md).
+The CI workflows live in `.gitea/workflows/` and run on Gitea only. The one workflow this mirror runs is the SLSA Go releaser in `.github/workflows/`, which builds pbp with signed provenance; it too is changed on Gitea. See [.gitea/README.md](.gitea/README.md).
