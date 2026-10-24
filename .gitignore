@@ -2,6 +2,9 @@
 /dist/
 *.test
 coverage.out
+# The SLSA Go builder runs `go mod vendor`; ignored, it leaves the tree clean
+# (vcs.modified=false in the binary's build info).
+/vendor/
 
 # Local deployment files: secrets and site config never belong in git.
 secrets/
