@@ -24,13 +24,13 @@
 # newest release.
 #
 # Needs gh logged in with access to $PBP_GITHUB_REPO (default
-# BreadthAnalytics/proxmox-backup-proofing); Gitea credentials come from
+# Breadth-Security/Proxmox-Backup-Proofing); Gitea credentials come from
 # `git credential fill`.
 set -eu
 
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 signers="$repo_dir/allowed_signers"
-gh_repo=${PBP_GITHUB_REPO:-BreadthAnalytics/proxmox-backup-proofing}
+gh_repo=${PBP_GITHUB_REPO:-Breadth-Security/Proxmox-Backup-Proofing}
 host=git.breadthanalytics.com
 api="https://$host/api/v1/repos/tdiana/Proxmox-Backup-Proofing"
 ns=pbp-release
