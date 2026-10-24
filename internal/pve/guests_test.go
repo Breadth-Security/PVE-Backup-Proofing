@@ -11,7 +11,7 @@ import (
 	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
 )
 
-const realGuestConfig = `{"data":{"agent":"1","boot":"order=scsi0;net0","cores":4,"cpu":"host","digest":"abc123","memory":"16500","name":"delta1","net0":"virtio=BC:24:11:ED:57:35,bridge=vmbr0,firewall=1,tag=2","onboot":1,"ostype":"l26","scsi0":"VMStorage_Local_M.2_LVMThin:vm-100-disk-0,discard=on,format=raw,iothread=1,size=33G,ssd=1","serial0":"socket","startup":"order=5","tags":"development"}}`
+const realGuestConfig = `{"data":{"agent":"1","boot":"order=scsi0;net0","cores":4,"cpu":"host","digest":"abc123","memory":"16500","name":"vm100","net0":"virtio=BC:24:11:00:00:03,bridge=vmbr0,firewall=1,tag=2","onboot":1,"ostype":"l26","scsi0":"local-lvm:vm-100-disk-0,discard=on,format=raw,iothread=1,size=33G,ssd=1","serial0":"socket","startup":"order=5","tags":"development"}}`
 
 type captured struct {
 	method, path, rawQuery string
@@ -32,8 +32,8 @@ func capture(t *testing.T, reply string) (*Client, *captured) {
 
 func TestGuests(t *testing.T) {
 	c, got := capture(t, `{"data":[
-		{"id":"qemu/100","type":"qemu","vmid":100,"node":"pve1","name":"delta1","status":"running","tags":"development;web"},
-		{"id":"lxc/101","type":"lxc","vmid":101,"node":"pve2","name":"kasm","status":"stopped"},
+		{"id":"qemu/100","type":"qemu","vmid":100,"node":"pve1","name":"vm100","status":"running","tags":"development;web"},
+		{"id":"lxc/101","type":"lxc","vmid":101,"node":"pve2","name":"web01","status":"stopped"},
 		{"id":"storage/pve1/local","type":"storage"}]}`)
 	g, err := c.Guests(context.Background())
 	if err != nil {
@@ -43,8 +43,8 @@ func TestGuests(t *testing.T) {
 		t.Errorf("request = %+v", got)
 	}
 	want := []GuestRef{
-		{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Node: "pve1", Name: "delta1", Status: "running", Tags: []string{"development", "web"}},
-		{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}, Node: "pve2", Name: "kasm", Status: "stopped"},
+		{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Node: "pve1", Name: "vm100", Status: "running", Tags: []string{"development", "web"}},
+		{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}, Node: "pve2", Name: "web01", Status: "stopped"},
 	}
 	if !reflect.DeepEqual(g, want) {
 		t.Errorf("got %+v\nwant %+v", g, want)
@@ -102,13 +102,13 @@ func TestGuestConfigReal(t *testing.T) {
 		t.Error("digest not dropped")
 	}
 	if len(cfg) != 13 || cfg["cores"] != "4" || cfg["onboot"] != "1" || cfg["boot"] != "order=scsi0;net0" ||
-		cfg["scsi0"] != "VMStorage_Local_M.2_LVMThin:vm-100-disk-0,discard=on,format=raw,iothread=1,size=33G,ssd=1" {
+		cfg["scsi0"] != "local-lvm:vm-100-disk-0,discard=on,format=raw,iothread=1,size=33G,ssd=1" {
 		t.Errorf("cfg = %v", cfg)
 	}
 }
 
 func TestGuestConfigLXCRawLines(t *testing.T) {
-	c, got := capture(t, `{"data":{"hostname":"kasm","lxc":[["lxc.cgroup2.devices.allow","c 195:* rwm"],["lxc.mount.entry","/dev/nvidia0 dev/nvidia0 none bind,optional,create=file"]]}}`)
+	c, got := capture(t, `{"data":{"hostname":"web01","lxc":[["lxc.cgroup2.devices.allow","c 195:* rwm"],["lxc.mount.entry","/dev/nvidia0 dev/nvidia0 none bind,optional,create=file"]]}}`)
 	cfg, err := c.GuestConfig(context.Background(), "pve1", model.KindLXC, 101)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestGuestConfigLXCRawLines(t *testing.T) {
 		t.Errorf("path = %q", got.path)
 	}
 	want := "lxc.cgroup2.devices.allow: c 195:* rwm\nlxc.mount.entry: /dev/nvidia0 dev/nvidia0 none bind,optional,create=file"
-	if cfg["lxc"] != want || cfg["hostname"] != "kasm" {
+	if cfg["lxc"] != want || cfg["hostname"] != "web01" {
 		t.Errorf("cfg = %q", cfg)
 	}
 }
@@ -166,9 +166,9 @@ func TestSetGuestConfigNoDelete(t *testing.T) {
 }
 
 func TestOriginalConfig(t *testing.T) {
-	c, got := capture(t, `{"data":"#note\nname: delta1\ncores: 4\n"}`)
+	c, got := capture(t, `{"data":"#note\nname: vm100\ncores: 4\n"}`)
 	s, err := c.OriginalConfig(context.Background(), "pve1", "PBS:backup/vm/100/2026-07-26T06:00:03Z")
-	if err != nil || s != "#note\nname: delta1\ncores: 4\n" {
+	if err != nil || s != "#note\nname: vm100\ncores: 4\n" {
 		t.Fatalf("s=%q err=%v", s, err)
 	}
 	if got.method != "GET" || got.path != "/api2/json/nodes/pve1/vzdump/extractconfig" ||

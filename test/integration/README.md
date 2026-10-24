@@ -17,8 +17,8 @@ PBP_IT_ADMIN_SSH_KEY=/path/to/it_admin_key \
 PBP_IT_ADMIN_KNOWN_HOSTS=/path/to/it_admin_known_hosts \
 PBP_IT_LXC=110 PBP_IT_VM_AGENT=100 PBP_IT_VM_NOAGENT=138 \
 PBP_IT_BROKEN_VMID=990009 \
-PBP_IT_BROKEN_TEMPLATE=NFS-iso:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
-PBP_IT_BROKEN_STORAGE=PBS-qemu \
+PBP_IT_BROKEN_TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
+PBP_IT_BROKEN_STORAGE=pbs-onsite \
 go test -tags integration ./test/integration/ -v -timeout 90m
 ```
 
@@ -65,8 +65,8 @@ PowerShell check is unit-tested against a real capture
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
-The values above are from the author's test node: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
-`delta1` (VM with a working agent, 33 GB), 138 `netbootTesting` (VM without
+The values above are from a test node: 110 `ct110` (unprivileged CT, 0.7 GB), 100
+`vm100` (VM with a working agent, 33 GB), 138 `vm138` (VM without
 `agent`). VM 125 has `agent: 1` but no agent running inside, so it gives
 `BOOTED` and is not a valid `PBP_IT_VM_AGENT`.
 

@@ -18,7 +18,7 @@ const volid = "PBS:backup/vm/100/2026-07-26T06:00:03Z"
 
 func seeded() *Fake {
 	f := New()
-	f.BackupConfigs[volid] = "#a note\nname: delta1\ncores: 4\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n\n[PENDING]\ncores: 8\n[snap1]\nname: other\n"
+	f.BackupConfigs[volid] = "#a note\nname: vm100\ncores: 4\nnet0: virtio=BC:24:11:00:00:03,bridge=vmbr0\n\n[PENDING]\ncores: 8\n[snap1]\nname: other\n"
 	return f
 }
 
@@ -34,12 +34,12 @@ func TestRestoreThenGuestConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// onboot=0 is the restore override the real client sends.
-	want := map[string]string{"name": "delta1", "cores": "4", "net0": "virtio=BC:24:11:ED:57:35,bridge=vmbr0", "onboot": "0"}
+	want := map[string]string{"name": "vm100", "cores": "4", "net0": "virtio=BC:24:11:00:00:03,bridge=vmbr0", "onboot": "0"}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("cfg = %v", cfg)
 	}
 	g, _ := f.Guests(ctx)
-	if len(g) != 1 || g[0].Node != "pve1" || g[0].Key.VMID != 9100 || g[0].Name != "delta1" {
+	if len(g) != 1 || g[0].Node != "pve1" || g[0].Key.VMID != 9100 || g[0].Name != "vm100" {
 		t.Errorf("guests = %+v", g)
 	}
 	if err := f.WaitTask(ctx, "pve1", upid); err != nil {

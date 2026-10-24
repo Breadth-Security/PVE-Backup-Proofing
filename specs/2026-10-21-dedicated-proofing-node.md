@@ -16,7 +16,7 @@ PBP points only at the proofing node: `target.node`, `target.api.url`, `target.s
 
 PBP never connects to PBS. It calls the proofing node's PVE API with its `pbp@pve` token, and the node talks to PBS with the credentials in its own storage definition (`username` in `storage.cfg`, the secret in `/etc/pve/priv`). Where PBP runs (Docker, another host, the node itself) does not change the PBS side.
 
-Today, on pve1, PBP proofs through the same storage (`PBS-qemu`, user `pbs@pbs`) that the backup jobs write through. That user owns the backup groups, so setting `protected` and writing notes are allowed. On a dedicated node, the admin chooses the credentials when adding the datastore; question 1 below is about that choice.
+Today, on pve1, PBP proofs through the same storage (`pbs-onsite`, user `pbs@pbs`) that the backup jobs write through. That user owns the backup groups, so setting `protected` and writing notes are allowed. On a dedicated node, the admin chooses the credentials when adding the datastore; question 1 below is about that choice.
 
 ## What the code already settles
 
@@ -35,24 +35,24 @@ Today, on pve1, PBP proofs through the same storage (`PBS-qemu`, user `pbs@pbs`)
 | 3 | Does a restore fail when the backed-up NIC's bridge or VLAN (`bridge=vmbr0,tag=2`) does not exist on the proofing node? | No: restore does not check bridges, and PBP moves every NIC to the isolated bridge before start. `SDN.Use` on `/sdn/zones/localnetwork` still applies. | Proof a guest whose backup uses a bridge name the proofing node does not have. |
 | 4 | Does a VM with `cpu: host` (or a CPU model the proofing node lacks) boot? | Usually yes with `host`; a named model newer than the proofing node's CPU fails to start (`ERROR · start failed`). | Proof a `cpu: host` VM and, if one exists, a VM with a recent named model. |
 | 5 | Machine type and PVE version differences | A pinned `machine:` newer than the proofing node's QEMU fails to start. The proofing node should run the same or a newer PVE. | Compare versions; proof a VM with a pinned machine type if one exists. |
-| 6 | Encrypted backups | Need the encryption key in the proofing node's storage config, otherwise the restore fails. | Proof an encrypted backup with and without the key (pve1's PBS-qemu prints "Using encryption key", so its backups are encrypted). |
+| 6 | Encrypted backups | Need the encryption key in the proofing node's storage config, otherwise the restore fails. | Proof an encrypted backup with and without the key (pve1's pbs-onsite prints "Using encryption key", so its backups are encrypted). |
 | 7 | Notifications | They go out through the proofing node's `PVE::Notify`, so its notification targets must be configured. | Run once and receive the summary. |
 | 8 | Template install and node setup | `pbp setup` / `pbp node setup` work unchanged against the proofing node. | Run the guided setup against it from the PBP host. |
 
 ## Results on pve2 (2026-10-21)
 
-The test setup: **pve2**, a standalone PVE 9.2.18 host on the same CPU model as pve1. Its `PBS-qemu` storage points at the same datastore, as `pbs@pbs` (the backups' owner), with the same encryption key. It has a new isolated bridge `vmbr99` and pbp 0.4.0 with node setup. The PBP host is **dev-scratch** (0.4.0 `.deb`, config written by the guided setup).
+The test setup: **pve2**, a standalone PVE 9.2.18 host on the same CPU model as pve1. Its `pbs-onsite` storage points at the same datastore, as `pbs@pbs` (the backups' owner), with the same encryption key. It has a new isolated bridge `vmbr99` and pbp 0.4.0 with node setup. The PBP host is **the build host** (0.4.0 `.deb`, config written by the guided setup).
 
 | # | Result |
 |---|--------|
-| 1 | **With the owner's credentials (`pbs@pbs`, `DatastorePowerUser`): works.** `protected` was set and cleared, and the notes were written (VM108, CT120, VM102). **With a separate read-only token** (`pbp-ro@pbs!pve2`, `DatastoreReader` only), in a second storage `PBS-qemu-ro` on pve2: listing and restore access work (444 backups listed), but PBS refuses `protected` and notes with `permission check failed - missing Datastore.Modify\|Datastore.Backup on /datastore/pbs_cic-nas`. The proof ends `ERROR` before anything is restored. **Bug found and fixed on this branch:** PBP then tried to undo the refused protect and left an in-flight job that the janitor would retry, and fail, on every run. Now a refusal (`pve.PermissionDenied`) leaves nothing to undo, and the reason says which rights the storage's PBS user lacks. |
+| 1 | **With the owner's credentials (`pbs@pbs`, `DatastorePowerUser`): works.** `protected` was set and cleared, and the notes were written (VM108, CT120, VM102). **With a separate read-only token** (`pbp-ro@pbs!pve2`, `DatastoreReader` only), in a second storage `pbs-onsite-ro` on pve2: listing and restore access work (444 backups listed), but PBS refuses `protected` and notes with `permission check failed - missing Datastore.Modify\|Datastore.Backup on /datastore/store1`. The proof ends `ERROR` before anything is restored. **Bug found and fixed on this branch:** PBP then tried to undo the refused protect and left an in-flight job that the janitor would retry, and fail, on every run. Now a refusal (`pve.PermissionDenied`) leaves nothing to undo, and the reason says which rights the storage's PBS user lacks. |
 | 2 | **Yes.** pve1's view of the same backups shows pve2's verdict lines, with `protected=0` afterwards. Both nodes share the notes, so another PBP instance treats a backup proven on pve2 as "already proven". |
 | 3 | Not testable with the current backups: they all use `vmbr0`, which pve2 also has (as an OVS bridge). |
 | 4 | **`cpu: host` works** (VM108 PROVEN). **A named model works** (VM102 `x86-64-v2-AES` booted; it FAILED on the same sssd units as on pve1, which is consistent). Both hosts have the same CPU model, so a CPU mismatch is not tested. |
 | 5 | **A pinned machine type works** when the proofing node runs the same PVE: VM115 (`machine: pc-q35-9.0`, Windows, 466 GiB) restored in 11m49s and was running after 43s. The proof ended `ERROR` for an unrelated reason: the Windows guest agent's `guest-exec-status` timed out 27s after boot. That is a Windows probe issue, filed separately. |
 | 6 | **Works with the key:** the backups are encrypted, and pve2's storage has the key. Without the key, the restore cannot decrypt; that case is not tested. |
 | 7 | **Works:** pve2's `mail-to-root` target sent each summary (the run outcome was not `error`). |
-| 8 | **Works:** `pbp setup --deb` on dev-scratch plus `pbp node setup` on pve2, unchanged. `pbp check` passes. One network issue was found and fixed: pve2 still had an unused corosync address (`10.10.0.2/24`) on a port without a link, so its replies to dev-scratch (`10.10.0.1`) went nowhere. Setup reported it clearly ("could not reach … the check below shows whether it works"). |
+| 8 | **Works:** `pbp setup --deb` on the build host plus `pbp node setup` on pve2, unchanged. `pbp check` passes. One network issue was found and fixed: pve2 still had an unused corosync address (`192.0.2.2/24`) on a port without a link, so its replies to the build host (`192.0.2.10`) went nowhere. Setup reported it clearly ("could not reach … the check below shows whether it works"). |
 
 ## Host requirements for the test
 

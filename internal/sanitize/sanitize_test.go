@@ -23,14 +23,14 @@ func contains(s []string, v string) bool {
 
 func TestSanitizeQEMUReferenceVM(t *testing.T) {
 	p := Sanitize(model.KindQEMU, map[string]string{
-		"net0":    "virtio=BC:24:11:ED:57:35,bridge=vmbr0,firewall=1,tag=2",
+		"net0":    "virtio=BC:24:11:00:00:03,bridge=vmbr0,firewall=1,tag=2",
 		"onboot":  "1",
 		"startup": "order=5",
 		"serial0": "socket",
 		"tags":    "prod;db",
 		"scsi0":   "local-zfs:vm-100-disk-0,size=32G",
 	}, br)
-	if got := p.Set["net0"]; got != "virtio=BC:24:11:ED:57:35,bridge=vmbr-pbp,firewall=1" {
+	if got := p.Set["net0"]; got != "virtio=BC:24:11:00:00:03,bridge=vmbr-pbp,firewall=1" {
 		t.Errorf("net0 = %q", got)
 	}
 	if p.Set["onboot"] != "0" || p.Set["tags"] != "prod;db;pbp" {
@@ -301,13 +301,13 @@ func TestSanitizeQEMURngHwrng(t *testing.T) {
 // bigger than bridge MTU '1500'", pve1 CT 110), so NICs lose their mtu.
 func TestSanitizeNetDropsMTU(t *testing.T) {
 	lxc := Sanitize(model.KindLXC, map[string]string{
-		"net0": "name=eth0,bridge=vmbr0,firewall=1,gw=192.168.0.1,hwaddr=BC:24:11:D1:D5:91,ip=192.168.0.252/24,mtu=9000,tag=1,type=veth",
+		"net0": "name=eth0,bridge=vmbr0,firewall=1,gw=192.0.2.1,hwaddr=BC:24:11:00:00:02,ip=192.0.2.52/24,mtu=9000,tag=1,type=veth",
 	}, "vmbr99")
-	if got, want := lxc.Set["net0"], "name=eth0,bridge=vmbr99,firewall=1,gw=192.168.0.1,hwaddr=BC:24:11:D1:D5:91,ip=192.168.0.252/24,type=veth"; got != want {
+	if got, want := lxc.Set["net0"], "name=eth0,bridge=vmbr99,firewall=1,gw=192.0.2.1,hwaddr=BC:24:11:00:00:02,ip=192.0.2.52/24,type=veth"; got != want {
 		t.Errorf("lxc net0 = %q, want %q", got, want)
 	}
-	vm := Sanitize(model.KindQEMU, map[string]string{"net0": "virtio=BC:24:11:27:C5:0A,bridge=vmbr0,firewall=1,mtu=1,tag=1"}, "vmbr99")
-	if got, want := vm.Set["net0"], "virtio=BC:24:11:27:C5:0A,bridge=vmbr99,firewall=1"; got != want {
+	vm := Sanitize(model.KindQEMU, map[string]string{"net0": "virtio=BC:24:11:00:00:04,bridge=vmbr0,firewall=1,mtu=1,tag=1"}, "vmbr99")
+	if got, want := vm.Set["net0"], "virtio=BC:24:11:00:00:04,bridge=vmbr99,firewall=1"; got != want {
 		t.Errorf("qemu net0 = %q, want %q", got, want)
 	}
 }

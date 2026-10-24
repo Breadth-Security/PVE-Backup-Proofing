@@ -365,7 +365,7 @@ up before removal. *(My calls; the owner saw these as guesses.)*
 
 - Unit tests for the planner (every item: already correct / create / differs),
   the reply encoding, the question validation, and the config writer.
-- `test/nodee2e` (dev-scratch): the image no longer replays README commands;
+- `test/nodee2e` (the build host): the image no longer replays README commands;
   it runs `pbp node setup … --yes` (with stubbed `pveum`/`pvesh`/`sshd -T`),
   then the existing ten tests must still pass unchanged. New cases: a second
   run prints `setup has already been completed` and changes nothing (mtimes);

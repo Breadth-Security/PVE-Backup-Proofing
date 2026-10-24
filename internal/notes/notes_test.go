@@ -39,7 +39,7 @@ func TestMerge(t *testing.T) {
 		"vzdump name absorbed": {"db01", l},
 		"name with spaces":     {"  db01 ", l},
 		"custom template":      {"db01 (105) nightly", l + "\ndb01 (105) nightly"},
-		"other first line":     {"kasm.cic.unifiedlab.lan", l + "\nkasm.cic.unifiedlab.lan"},
+		"other first line":     {"web01.example.lan", l + "\nweb01.example.lan"},
 		"multiline":            {"db01\nmonthly keep", l + "\nmonthly keep"},
 		"name not first":       {"pre-upgrade\ndb01", l + "\npre-upgrade\ndb01"},
 		"replace first":        {prev + "\nnote", l + "\nnote"},
