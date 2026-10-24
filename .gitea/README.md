@@ -14,7 +14,7 @@ Change CI here, on Gitea.
 
 `.github/workflows/` holds the workflows that run on the mirror's GitHub Actions: today the OSSF SLSA Go releaser, `go-ossf-slsa3-publish.yml`, with its build configuration in `.slsa-goreleaser-*.yml` at the repository root. Gitea Actions does not run them: it uses `.gitea/workflows/` instead whenever that folder exists.
 
-**Change them here, on Gitea**, like any other file, and let the push mirror carry them to GitHub. Do not merge anything on GitHub: the mirror force-pushes Gitea's branches on every sync, so a change made only there is lost.
+**Change them here, on Gitea**, like any other file, and let the push mirror carry them to GitHub. Do not merge anything on GitHub: the mirror force-pushes Gitea's branches on every sync, so a change made only there is lost. The mirror's GitHub token needs permission to change workflows (classic token: the `workflow` scope; fine-grained: Workflows read and write); without it GitHub rejects every push that touches `.github/workflows/`, and the mirror stops syncing.
 
 To try a change before merging it, push its branch to Gitea, let the mirror sync it, and run the workflow on that branch on GitHub:
 
