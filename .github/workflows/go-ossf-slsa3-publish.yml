@@ -72,5 +72,4 @@ jobs:
       config-file: .slsa-goreleaser-linux-${{ matrix.arch }}.yml
       go-version: ${{ needs.args.outputs.go-version }}
       upload-assets: false
-      private-repository: true # Drop once the mirror is public.
       evaluated-envs: "VERSION:${{ needs.args.outputs.version }}"
