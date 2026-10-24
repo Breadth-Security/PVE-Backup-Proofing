@@ -17,8 +17,8 @@ func bk(storage string, kind model.GuestKind, vmid int, t time.Time) model.Backu
 }
 
 func TestNewestPerGuestAcrossStorages(t *testing.T) {
-	older := bk("PBS-Baremetal", model.KindLXC, 101, ref.Add(-48*time.Hour))
-	newer := bk("PBS-qemu", model.KindLXC, 101, ref.Add(-24*time.Hour))
+	older := bk("pbs-offsite", model.KindLXC, 101, ref.Add(-48*time.Hour))
+	newer := bk("pbs-onsite", model.KindLXC, 101, ref.Add(-24*time.Hour))
 	got := NewestPerGuest([]model.Backup{older, newer})
 	if len(got) != 1 || got[0] != newer {
 		t.Fatalf("got %+v, want only %+v", got, newer)

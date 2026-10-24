@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Go toolchain `go1.26.10`; no new module dependencies.
-- Run tests, vet and lint on dev-scratch, not the workstation: `rsync -a --delete --exclude .git --exclude .superpowers --exclude .remember --exclude dist --exclude it ./ dev-scratch:/root/pbp/` then `ssh dev-scratch 'bash -lc "cd /root/pbp && go vet ./... && go test -race ./... && golangci-lint run ./..."'`. All must pass (lint: `0 issues.`) before each commit.
+- Run tests, vet and lint on the build host, not the workstation: `rsync -a --delete --exclude .git --exclude .superpowers --exclude .remember --exclude dist --exclude it ./ the build host:/root/pbp/` then `ssh the build host 'bash -lc "cd /root/pbp && go vet ./... && go test -race ./... && golangci-lint run ./..."'`. All must pass (lint: `0 issues.`) before each commit.
 - Guest labels: `VM<vmid>` for `qemu`, `CT<vmid>` for `lxc`. `GuestKey.String()` (`qemu/102`) stays unchanged for state and notes.
 - Run folder name: `<started in its own location, 2006-01-02_15-04-05>_<trigger>`, then `-2`, `-3`, … on collision.
 - Files: folders `0750`, files `0600` (unchanged from today's run logs).
@@ -69,13 +69,13 @@
     - `Dur`: `1800*time.Millisecond` → `1.8s`, `44s` → `44s`, `4m30s` → `4m30s`, `1h33m54s` → `1h34m`, `2h0m10s` → `2h0m`.
     - `Bytes`: `32<<30` → `32 GiB`, `4.4*(1<<30)` → `4.4 GiB`, `512<<20` → `512 MiB`.
     - `Age`: `20h` → `20h`, `45m` → `45m`, `76h` → `3d 4h`.
-- [ ] **Step 2: Run them on dev-scratch** (`go test ./internal/report ./internal/model`). Expected: build failures (undefined `NewRunLog`, `Label`, `PruneRuns`, `Dur`).
+- [ ] **Step 2: Run them on the build host** (`go test ./internal/report ./internal/model`). Expected: build failures (undefined `NewRunLog`, `Label`, `PruneRuns`, `Dur`).
 - [ ] **Step 3: Implement.**
   - A run folder name matches `^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[a-z]+(-\d+)?$`; only those folders and `run-*.log` files are pruning candidates. Sort by mod time, then name, newest first; `os.RemoveAll` a folder.
   - Create the folder with `os.MkdirAll(root)` then `os.Mkdir(leaf)`, looping on `os.IsExist` for the `-N` suffix.
   - One `slog.Handler` type (`lineHandler`) per file, sharing a `*fileSink{mu, f, lastDate}`; `WithAttrs`/`WithGroup` return copies (group names prefix keys `g.k`).
   - `Bytes`: one decimal below 10 units, none from 10 up.
-- [ ] **Step 4: Run** the full suite, vet and lint on dev-scratch (Global Constraints command). Expected: PASS, `0 issues.`
+- [ ] **Step 4: Run** the full suite, vet and lint on the build host (Global Constraints command). Expected: PASS, `0 issues.`
 - [ ] **Step 5: Commit**: `git commit -m "Write each run's logs to its own folder as readable text"`.
 
 ### Task 2: Readable task failures, sanitize changes, OS name
@@ -101,9 +101,9 @@
 
     Keys whose value does not change are not listed. A key set that was unset shows `(unset)` as its old value.
   - `TestWaitBootedOSName` (boot_test.go): agent `OSInfo{Name: "Rocky Linux"}` → `OSName == "Rocky Linux"`; a container with `ostype: debian` → `"debian"`.
-- [ ] **Step 2: Run** on dev-scratch (`go test ./internal/pve ./internal/target/...`). Expected: build failures.
+- [ ] **Step 2: Run** on the build host (`go test ./internal/pve ./internal/target/...`). Expected: build failures.
 - [ ] **Step 3: Implement.** `Changes` is computed in `ExistingNode.Sanitize` from the config it read and `plan.Set`/`plan.Delete`. The fake returns `Changes: nil`. Update `job.go` to use `.Removed` (step logging comes in Task 3).
-- [ ] **Step 4: Run** the full suite, vet and lint on dev-scratch. Expected: PASS, `0 issues.`
+- [ ] **Step 4: Run** the full suite, vet and lint on the build host. Expected: PASS, `0 issues.`
 - [ ] **Step 5: Commit**: `git commit -m "Report sanitize changes, the guest's OS name and a task's error line"`.
 
 ### Task 3: Log every step of a run and of each guest
@@ -162,12 +162,12 @@ Reasons:
   - `TestDestroyFailureForwarded`: Destroy fails → `run.log` has `VM101 destroy temporary guest failed; left for the janitor`.
   - `TestRunSummaryLogDir`: `Options{LogDir: "/x"}` → `s.LogDir == "/x"`.
   - Update `job_test.go`/`runner_test.go` callers of `Sanitize` and any test that asserted on `LogGuest` records.
-- [ ] **Step 2: Run** on dev-scratch (`go test ./internal/run`). Expected: FAIL / build failures.
+- [ ] **Step 2: Run** on the build host (`go test ./internal/run`). Expected: FAIL / build failures.
 - [ ] **Step 3: Implement.**
   - `pool.run` creates the guest logger once per backup (via `Deps.GuestLog`) and passes it to `admit`, `skip` and `proofOne`.
   - The run logger's `With("trigger",…).With("run",…)` attributes are dropped from `Run`: the folder already names the run.
   - Durations are measured with `d.Now()`.
-- [ ] **Step 4: Run** the full suite, vet and lint on dev-scratch. Expected: PASS, `0 issues.`
+- [ ] **Step 4: Run** the full suite, vet and lint on the build host. Expected: PASS, `0 issues.`
 - [ ] **Step 5: Commit**: `git commit -m "Log each step of a guest's proof to its own file"`.
 
 ### Task 4: Notification: problems first, short subject, log path
@@ -222,11 +222,11 @@ Formats (times in `s.Started.Location()`):
   - Update the template guards (`TestTemplatesUseOnlyProvidedKeys`, `TestTemplateGuardCatchesBadTags`, `TestTemplateDataKeysAreNotNotifyHelpers`) for list-of-string sections: the per-guest map is gone, so `templateProblems(body, d)` checks top-level keys and `this` only.
   - Replace `TestBodyBootedSection` with `TestBodySectionsInOrder`: the body contains `{{#if run-error}}`, `{{#if environment-errors}}`, `FAILED: the backup has a problem`, `ERROR: PBP could not finish; says nothing about the backup`, `BOOTED: started, not looked inside`, `SKIPPED`, `PROVEN`, `Not covered by backup` in that order, each section guarded by `{{#if <key>}}`.
   - Keep `TestBodyEnvironmentErrorsSection` unchanged.
-- [ ] **Step 2: Run** on dev-scratch (`go test ./internal/report`). Expected: FAIL.
+- [ ] **Step 2: Run** on the build host (`go test ./internal/report`). Expected: FAIL.
 - [ ] **Step 3: Implement** `TemplateData` and the two templates.
   - Subject: `PBP {{node}}: {{summary}}`.
   - Body: `{{headline}}`, then `{{#if logs}}Logs: {{logs}}{{/if}}` on its own line, then the sections in the order the test pins. Each list section is a blank line, its title, then `{{#each <key>}}\n  {{this}}\n{{/each}}`. `proven` is one indented line.
-- [ ] **Step 4: Run** the full suite, vet and lint on dev-scratch. Expected: PASS, `0 issues.`
+- [ ] **Step 4: Run** the full suite, vet and lint on the build host. Expected: PASS, `0 issues.`
 - [ ] **Step 5: Commit**: `git commit -m "Lead the notification with problems and name the log folder"`.
 
 ### Task 5: Wire it in, and document it
@@ -245,7 +245,7 @@ Formats (times in `s.Started.Location()`):
     - no `qemu/102` or `VM102` file or line exists;
     - stdout still contains `run 20261019T020005.000Z-manual: info; …`.
   - `TestRunWiringLogDirUnwritable`: `logging.dir` is a regular file → exit code unchanged from a normal run, stdout contains `open run log`, and the notifier's sent summary has `LogDir == ""`.
-- [ ] **Step 2: Run** on dev-scratch (`go test ./cmd/pbp`). Expected: FAIL.
+- [ ] **Step 2: Run** on the build host (`go test ./cmd/pbp`). Expected: FAIL.
 - [ ] **Step 3: Implement** `runOnce`:
   - `rl, err := report.OpenRunLog(cfg.Logging.Dir, a.now(), opt.Trigger, a.now)`;
   - on success, `log := rl.Logger(a.stdout)`, `d.GuestLog = rl.Guest`, `opt.LogDir = rl.Dir()`, `defer rl.Close()`, then `report.PruneRuns(cfg.Logging.Dir, cfg.Logging.RetainRuns, rl.Dir())` after the run;
@@ -253,7 +253,7 @@ Formats (times in `s.Started.Location()`):
   - `d.Version = version`.
 
   Then write the docs listed above.
-- [ ] **Step 4: Run** the full suite, vet and lint on dev-scratch (`go test -race ./...`, `golangci-lint run ./...`). Expected: all `ok`, `0 issues.`
+- [ ] **Step 4: Run** the full suite, vet and lint on the build host (`go test -race ./...`, `golangci-lint run ./...`). Expected: all `ok`, `0 issues.`
 - [ ] **Step 5: Commit**: `git commit -m "Write run logs to per-run folders and document them"` with `Closes #26` in the body.
 
 ### Acceptance (owner)

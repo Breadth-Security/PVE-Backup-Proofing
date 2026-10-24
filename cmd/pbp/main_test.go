@@ -1009,9 +1009,9 @@ func TestNodeUsageAndExtraArgs(t *testing.T) {
 // nothing after it runs.
 func TestCheckAPIIsARealRequest(t *testing.T) {
 	e := newEnv(t)
-	e.api.Fail = map[string]error{"Version": errors.New("dial tcp 10.10.0.1:8006: connection refused")}
+	e.api.Fail = map[string]error{"Version": errors.New("dial tcp 192.0.2.10:8006: connection refused")}
 	code := e.run("check")
-	if code != exitFail || !strings.Contains(e.out.String(), "pve api : FAIL: dial tcp 10.10.0.1:8006: connection refused") {
+	if code != exitFail || !strings.Contains(e.out.String(), "pve api : FAIL: dial tcp 192.0.2.10:8006: connection refused") {
 		t.Errorf("exit %d out %q", code, e.out)
 	}
 	if strings.Contains(e.out.String(), "preflight") {

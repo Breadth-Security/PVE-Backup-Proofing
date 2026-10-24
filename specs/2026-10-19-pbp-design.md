@@ -411,7 +411,7 @@ logging:
   (`httptest` for the API).
 - Integration test suite (build-tagged, opt-in) against a real PVE node with a small LXC and
   VM backup set, including a deliberately broken backup to prove FAILED is detected.
-- Build/run environment: `dev-scratch.cic.unifiedlab.lan` (SSH key access to be granted).
+- Build/run environment: a scratch build host (SSH key access to be granted).
 - Integration node: a **standalone** PVE 9 node lent by the owner. Creating the isolated bridge
   there is approved, and so is restoring deliberately broken backups for FAILED-path tests.
   HA/replication sanitization cannot be integration-tested on a standalone node and is

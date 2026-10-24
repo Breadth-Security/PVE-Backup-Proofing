@@ -33,7 +33,7 @@ func capture(t *testing.T, reply string) (*Client, *captured) {
 func TestGuests(t *testing.T) {
 	c, got := capture(t, `{"data":[
 		{"id":"qemu/100","type":"qemu","vmid":100,"node":"pve1","name":"delta1","status":"running","tags":"development;web"},
-		{"id":"lxc/101","type":"lxc","vmid":101,"node":"pve2","name":"kasm","status":"stopped"},
+		{"id":"lxc/101","type":"lxc","vmid":101,"node":"pve2","name":"web01","status":"stopped"},
 		{"id":"storage/pve1/local","type":"storage"}]}`)
 	g, err := c.Guests(context.Background())
 	if err != nil {
@@ -44,7 +44,7 @@ func TestGuests(t *testing.T) {
 	}
 	want := []GuestRef{
 		{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Node: "pve1", Name: "delta1", Status: "running", Tags: []string{"development", "web"}},
-		{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}, Node: "pve2", Name: "kasm", Status: "stopped"},
+		{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}, Node: "pve2", Name: "web01", Status: "stopped"},
 	}
 	if !reflect.DeepEqual(g, want) {
 		t.Errorf("got %+v\nwant %+v", g, want)
@@ -108,7 +108,7 @@ func TestGuestConfigReal(t *testing.T) {
 }
 
 func TestGuestConfigLXCRawLines(t *testing.T) {
-	c, got := capture(t, `{"data":{"hostname":"kasm","lxc":[["lxc.cgroup2.devices.allow","c 195:* rwm"],["lxc.mount.entry","/dev/nvidia0 dev/nvidia0 none bind,optional,create=file"]]}}`)
+	c, got := capture(t, `{"data":{"hostname":"web01","lxc":[["lxc.cgroup2.devices.allow","c 195:* rwm"],["lxc.mount.entry","/dev/nvidia0 dev/nvidia0 none bind,optional,create=file"]]}}`)
 	cfg, err := c.GuestConfig(context.Background(), "pve1", model.KindLXC, 101)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestGuestConfigLXCRawLines(t *testing.T) {
 		t.Errorf("path = %q", got.path)
 	}
 	want := "lxc.cgroup2.devices.allow: c 195:* rwm\nlxc.mount.entry: /dev/nvidia0 dev/nvidia0 none bind,optional,create=file"
-	if cfg["lxc"] != want || cfg["hostname"] != "kasm" {
+	if cfg["lxc"] != want || cfg["hostname"] != "web01" {
 		t.Errorf("cfg = %q", cfg)
 	}
 }

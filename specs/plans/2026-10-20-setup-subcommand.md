@@ -27,9 +27,9 @@
 - Apply order: `/etc/pbp` + `node.yaml` → shell → sudoers → templates → role/user/token/ACLs → `authorized_keys` last. Uninstall order: sudoers and `authorized_keys` first.
 - Node commands by absolute path with the helper's minimal env (`node.cmdEnv`): `/usr/bin/pvesh`, `/usr/sbin/pveum`, `/usr/sbin/visudo`, `/usr/sbin/usermod`, `/usr/sbin/sshd`, `/usr/bin/sudo`, `/usr/bin/env`.
 - No secret in argv, logs, the audit line, or echoed to the host terminal. The token secret appears only inside the reply block on the node's screen and in the host's token file.
-- Releases are public: `https://git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/releases/download/v<tag>/…`; tag = version with `~` → `-`.
+- Releases are public: the Gitea release download URL (`<gitea>/releases/download/v<tag>/…`); tag = version with `~` → `-`.
 - Release version 0.3.0 (`VERSION`), CHANGELOG `## v0.3.0`.
-- Tests that need Docker, root, PVE or SSH run on dev-scratch (`ssh dev-scratch`, Go via `bash -lc`), never the workstation. pve-node: only VMIDs 990000–990009; PBP's own setup there may be removed and changed; root's `authorized_keys`, sshd config, networking and other guests are off-limits.
+- Tests that need Docker, root, PVE or SSH run on the build host (`ssh <build-host>`, Go via `bash -lc`), never the workstation. pve-node: only VMIDs 990000–990009; PBP's own setup there may be removed and changed; root's `authorized_keys`, sshd config, networking and other guests are off-limits.
 
 ## Review Focus
 
@@ -237,7 +237,7 @@ Rules: refuse (error naming the items) if any item is Differs and `!o.Replace`; 
 - [ ] **Step 2–4:** FAIL → implement → `go test -race ./...` PASS.
 - [ ] **Step 5: Commit** "Add pbp setup".
 
-### Task 10: End-to-end on dev-scratch
+### Task 10: End-to-end on the build host
 
 **Files:**
 - Modify: `test/nodee2e/Dockerfile` (install the `.deb` and fixtures only; no README replay), `test/nodee2e/nodee2e_test.go`, `test/nodee2e/run.sh` if needed
@@ -249,7 +249,7 @@ Rules: refuse (error naming the items) if any item is Differs and `!o.Replace`; 
 - [ ] **Step 1:** In `TestMain`, after the container starts: run the host side in-process (`hostsetup` with a temp dir, scripted answers), then `docker exec -t <c> pbp node setup <line> --yes`, feed the printed reply back to `Finish`, and use the resulting key and `known_hosts` for the existing tests.
 - [ ] **Step 2:** The ten existing tests pass unchanged.
 - [ ] **Step 3: New tests:** `TestSetupRerunIsComplete` (output contains `setup has already been completed`; mtimes of every §5.3 file unchanged); `TestSetupDiffersStops` (rewrite sudoers with an extra line → setup exits non-zero naming it, file unchanged; with `--replace` a backup exists and the file is restored); `TestSetupRefusedOverSSHAndSudo` (via the PBP key: `pbp node setup` refused; via `docker exec` without `-t`: refused as non-terminal); `TestUninstallRemovesAccess` (last test: uninstall `--yes`, then every attacker case and a valid `version` request get nothing).
-- [ ] **Step 4: Run** `test/nodee2e/run.sh` on dev-scratch — all PASS. Also `go vet -tags nodee2e ./...` and golangci-lint for the `nodee2e` tag set.
+- [ ] **Step 4: Run** `test/nodee2e/run.sh` on the build host — all PASS. Also `go vet -tags nodee2e ./...` and golangci-lint for the `nodee2e` tag set.
 - [ ] **Step 5: Commit** "Drive the node e2e through pbp setup".
 
 ### Task 11: Docs, version, compose
@@ -261,14 +261,14 @@ Rules: refuse (error naming the items) if any item is Differs and `!o.Replace`; 
   `docker compose build && docker run --rm -it --user 0 -e TZ="$(timedatectl show -p Timezone --value)" -v "$PWD:/setup" --entrypoint /pbp pbp:latest setup --dir /setup`
   (adjust only if Task 9 proved it wrong), `sudo pbp setup --deb` for `.deb` hosts, the paste round trip, `docker compose up -d`. Keep VMID-range, bridge and privileges explanations. The current manual steps move under "Manual setup (what `pbp setup` does)" unchanged in substance; `TestDocsMatchState` keeps them honest. Document `pbp node uninstall`, `--rotate-token`, `--replace` backups.
 - [ ] **Step 2:** CHANGELOG `## v0.3.0` (guided setup; upgrade both sides together).
-- [ ] **Step 3: Run** `go test ./...` (docs test), gofmt, `go vet` (all three tag sets), staticcheck, golangci-lint (all three tag sets), gosec, Trivy and gitleaks on dev-scratch — clean.
+- [ ] **Step 3: Run** `go test ./...` (docs test), gofmt, `go vet` (all three tag sets), staticcheck, golangci-lint (all three tag sets), gosec, Trivy and gitleaks on the build host — clean.
 - [ ] **Step 4: Commit** "Document guided setup; v0.3.0".
 
 ### Task 12: Acceptance on pve-node (controller-run)
 
-- [ ] Build `0.3.0~rc.1` `.deb` on dev-scratch; install on pve-node (upgrades the 0.2 helper).
+- [ ] Build `0.3.0~rc.1` `.deb` on the build host; install on pve-node (upgrades the 0.2 helper).
 - [ ] `pbp node setup … --dry-run` then for real against the existing manual setup → `setup has already been completed`, no file changed (compare `stat` and `sha256sum` before/after for every §5.3 path).
 - [ ] `pbp node uninstall --yes`; the PBP key gets nothing (`id`, `version` request).
-- [ ] Fresh host dir on dev-scratch: `pbp setup` with pve-node's values (restore storage `pool_qemu`, PBS storage `PBS-qemu`, range 990000–990009, vmbr99), paste on pve-node with `--rotate-token` (the token exists), paste the reply back → check passes.
+- [ ] Fresh host dir on the build host: `pbp setup` with pve-node's values (restore storage `local-zfs`, PBS storage `pbs-onsite`, range 990000–990009, vmbr99), paste on pve-node with `--rotate-token` (the token exists), paste the reply back → check passes.
 - [ ] Live integration suite with the new files: all PASS; range 990000–990009 empty afterwards.
 - [ ] Root's `authorized_keys` on pve-node unchanged (line count and hash before/after).

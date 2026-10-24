@@ -32,7 +32,7 @@ The signing key never goes to CI: it is the maintainer's SSH key `~/.ssh/pbp_sig
 ## Tests
 
 - **Unit tests:** `go test -race ./...` (and `go vet` with the `integration` and `nodee2e` tags, which CI also runs).
-- **Node end-to-end test** (`test/nodee2e`): sets up a throwaway Debian container as a fake Proxmox node with the real `.deb`, `pbp setup` and `pbp node setup`, then attacks it over real SSH with PBP's key. It needs a Docker host with Go: `test/nodee2e/run.sh [ssh-host]` copies the checkout there and runs it. Never point it at a Proxmox node.
+- **Node end-to-end test** (`test/nodee2e`): sets up a throwaway Debian container as a fake Proxmox node with the real `.deb`, `pbp setup` and `pbp node setup`, then attacks it over real SSH with PBP's key. It needs a Docker host with Go: `test/nodee2e/run.sh <ssh-host>` (or `PBP_E2E_HOST`) copies the checkout there and runs it. Never point it at a Proxmox node.
 - **Integration suite** (`test/integration`): proofs real backups on a real PVE node. See [`test/integration/README.md`](../test/integration/README.md) for what it needs and what it touches.
 
 CI compiles and vets both suites but runs neither: one needs Docker, the other a real node. They are the only tests of the forced command, the sudo rule and real PVE behaviour, so run the node end-to-end test before merging anything that touches `internal/node`, `internal/nodesetup`, `packaging/` or the SSH options, and the integration suite before a release.

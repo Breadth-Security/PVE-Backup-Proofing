@@ -17,8 +17,8 @@ PBP_IT_ADMIN_SSH_KEY=/path/to/it_admin_key \
 PBP_IT_ADMIN_KNOWN_HOSTS=/path/to/it_admin_known_hosts \
 PBP_IT_LXC=110 PBP_IT_VM_AGENT=100 PBP_IT_VM_NOAGENT=138 \
 PBP_IT_BROKEN_VMID=990009 \
-PBP_IT_BROKEN_TEMPLATE=NFS-iso:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
-PBP_IT_BROKEN_STORAGE=PBS-qemu \
+PBP_IT_BROKEN_TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
+PBP_IT_BROKEN_STORAGE=pbs-onsite \
 go test -tags integration ./test/integration/ -v -timeout 90m
 ```
 

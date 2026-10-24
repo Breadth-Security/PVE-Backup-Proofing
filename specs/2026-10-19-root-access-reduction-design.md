@@ -166,7 +166,7 @@ request that prints the helper's range and bridge) and fails on any mismatch.
   LXC, injection attempts in argv and VMID, unknown subcommands, install-templates over SSH refused),
   with `pct`/`perl`/`ip` behind an interface faked in tests.
 - Daemon: executor/isolation/notifier tests against a fake helper.
-- Dev (on `dev-scratch`): a Debian 13 container with `sshd`, the `pbp` user, forced command and
+- Dev (on the build host): a Debian 13 container with `sshd`, the `pbp` user, forced command and
   sudo rule, and stub `pct`/`perl`/`ip` scripts — end-to-end over real SSH, including a stolen-key
   attempt to run `id` / `bash` / out-of-range exec (all refused).
 - Live (on `pve-node`, with owner approval at the time): set up the helper per README, remove root's

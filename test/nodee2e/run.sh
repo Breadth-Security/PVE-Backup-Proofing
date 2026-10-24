@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Runs the pbp node helper end-to-end test (build tag nodee2e) on a Docker
-# host, by default dev-scratch: rsyncs the repo to /root/pbp there, builds
+# host given as the argument or $PBP_E2E_HOST: rsyncs the repo to /root/pbp there, builds
 # the .deb with packaging/build.sh, and runs the test, which installs that
 # .deb in a throwaway Debian 13 container and talks to it over real SSH.
 #
-# usage: test/nodee2e/run.sh [ssh-host]     (default: dev-scratch)
+# usage: test/nodee2e/run.sh ssh-host     (or set PBP_E2E_HOST)
 # The host needs Docker, Go, rsync, an OpenSSH client and envsubst
 # (gettext-base). Never point it at a Proxmox node.
 set -euo pipefail
 
-host="${1:-dev-scratch}"
+host="${1:-${PBP_E2E_HOST:-}}"
+[ -n "$host" ] || { echo "usage: test/nodee2e/run.sh ssh-host (or set PBP_E2E_HOST)" >&2; exit 2; }
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # Never run this on a Proxmox node: it builds images, starts containers and

@@ -131,7 +131,7 @@ func TestMerge(t *testing.T) {
 	l := "PBP FAILED 2026-10-19 02:31 · failed: postgresql.service"
 	cases := map[string]struct{ in, want string }{
 		"empty":           {"", l},
-		"vzdump name":     {"kasm.cic.unifiedlab.lan", l + "\nkasm.cic.unifiedlab.lan"},
+		"vzdump name":     {"web01.example.lan", l + "\nweb01.example.lan"},
 		"multiline":       {"db01\nmonthly keep", l + "\ndb01\nmonthly keep"},
 		"replace first":   {"PBP PROVEN 2026-10-18 02:10 · ok\ndb01", l + "\ndb01"},
 		"replace middle":  {"db01\nPBP PROVEN 2026-10-18 02:10 · ok\nnote", l + "\ndb01\nnote"},
@@ -208,7 +208,7 @@ Validation errors (each a test case): missing `target.node`, `target.bridge`, `r
   - `func Order(bs []model.Backup, lastProven map[model.GuestKey]time.Time) []model.Backup` — never-proven first (by VMID asc), then oldest lastProven first
   - `func AlreadyProven(b model.Backup, reproof bool) bool` — `!reproof && notes.HasProven(b.Notes)`
 
-- [ ] **Step 1: Write failing tests:** two storages `PBS-Baremetal` and `PBS-qemu` both holding `lxc/101` at different times → one result, the newer; `qemu/100` and `lxc/100` are different guests (two results); `Order` with lastProven `{qemu/100: day-1, lxc/101: day-3}` and never-proven `lxc/109` → `[lxc/109, lxc/101, qemu/100]`; `AlreadyProven` true/false/reproof cases.
+- [ ] **Step 1: Write failing tests:** two storages `pbs-offsite` and `pbs-onsite` both holding `lxc/101` at different times → one result, the newer; `qemu/100` and `lxc/100` are different guests (two results); `Order` with lastProven `{qemu/100: day-1, lxc/101: day-3}` and never-proven `lxc/109` → `[lxc/109, lxc/101, qemu/100]`; `AlreadyProven` true/false/reproof cases.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `"Add backup discovery selection and ordering"`
 
@@ -231,7 +231,7 @@ Validation errors (each a test case): missing `target.node`, `target.bridge`, `r
   - `type NetIface struct{ Iface, Type, BridgePorts, OVSPorts, Address, CIDR, Address6, CIDR6 string }`; `func (c *Client) NetIface(ctx, node, iface string) (NetIface, error)`
   - `func (c *Client) WaitTask(ctx, node, upid string) error` — poll `GET /nodes/{node}/tasks/{upid}/status` every 2s until `status=="stopped"`; `exitstatus!="OK"` → `*TaskError{UPID, ExitStatus string; Log []string}` (last 20 lines from `/tasks/{upid}/log`)
 
-- [ ] **Step 1: Write failing tests** with `httptest.NewTLSServer`: auth header exact; fingerprint pin accepts the test server cert and rejects a wrong fingerprint; `ListBackups` parses `testdata/content_pbs.json` (copy the two real entries shown in the plan's header research: `PBS-Baremetal:backup/ct/101/2026-07-26T06:00:03Z`, encrypted, notes `kasm.cic.unifiedlab.lan`, size 43956736778, subtype lxc) into `model.Backup{Key: {lxc,101}, Encrypted: true, Protected: false, ...}`; `SetVolumeAttrs` sends PUT with form `notes=...&protected=1` to the escaped path; `WaitTask` returns `*TaskError` with log on `exitstatus: "command 'x' failed"`; non-2xx → `*APIError` with status.
+- [ ] **Step 1: Write failing tests** with `httptest.NewTLSServer`: auth header exact; fingerprint pin accepts the test server cert and rejects a wrong fingerprint; `ListBackups` parses `testdata/content_pbs.json` (copy the two real entries shown in the plan's header research: `pbs-offsite:backup/ct/101/2026-07-26T06:00:03Z`, encrypted, notes `web01.example.lan`, size 43956736778, subtype lxc) into `model.Backup{Key: {lxc,101}, Encrypted: true, Protected: false, ...}`; `SetVolumeAttrs` sends PUT with form `notes=...&protected=1` to the escaped path; `WaitTask` returns `*TaskError` with log on `exitstatus: "command 'x' failed"`; non-2xx → `*APIError` with status.
 - [ ] **Step 2: Run** `go test ./internal/pve/` — FAIL. **Step 3: Implement.** Request bodies are `application/x-www-form-urlencoded`; responses unwrap `{"data": ...}`.
 - [ ] **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `"Add PVE API client core and backup endpoints"`

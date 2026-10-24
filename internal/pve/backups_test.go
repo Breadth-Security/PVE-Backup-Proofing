@@ -17,13 +17,13 @@ func TestListBackups(t *testing.T) {
 	}
 	var gotQuery string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api2/json/nodes/pve1/storage/PBS-Baremetal/content" {
+		if r.URL.Path != "/api2/json/nodes/pve1/storage/pbs-offsite/content" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
 		gotQuery = r.URL.RawQuery
 		_, _ = w.Write(body)
 	}))
-	got, err := c.ListBackups(context.Background(), "pve1", "PBS-Baremetal")
+	got, err := c.ListBackups(context.Background(), "pve1", "pbs-offsite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +34,8 @@ func TestListBackups(t *testing.T) {
 		t.Fatalf("len = %d", len(got))
 	}
 	want0 := model.Backup{
-		Storage: "PBS-Baremetal", VolID: "PBS-Baremetal:backup/ct/101/2026-07-26T06:00:03Z",
-		Notes: "kasm.cic.unifiedlab.lan", Key: model.GuestKey{Kind: model.KindLXC, VMID: 101},
+		Storage: "pbs-offsite", VolID: "pbs-offsite:backup/ct/101/2026-07-26T06:00:03Z",
+		Notes: "web01.example.lan", Key: model.GuestKey{Kind: model.KindLXC, VMID: 101},
 		Time: time.Unix(1785045603, 0).UTC(), Size: 43956736778, Protected: false, Encrypted: true,
 	}
 	if got[0] != want0 {
@@ -82,14 +82,14 @@ func TestSetVolumeAttrs(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":null}`))
 	}))
 	notes, prot := "PBP PROVEN", true
-	err := c.SetVolumeAttrs(context.Background(), "pve1", "PBS-Baremetal", "PBS-Baremetal:backup/ct/101/2026-07-26T06:00:03Z", &notes, &prot)
+	err := c.SetVolumeAttrs(context.Background(), "pve1", "pbs-offsite", "pbs-offsite:backup/ct/101/2026-07-26T06:00:03Z", &notes, &prot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if method != "PUT" {
 		t.Errorf("method = %s", method)
 	}
-	if want := "/api2/json/nodes/pve1/storage/PBS-Baremetal/content/PBS-Baremetal:backup%2Fct%2F101%2F2026-07-26T06:00:03Z"; escPath != want {
+	if want := "/api2/json/nodes/pve1/storage/pbs-offsite/content/pbs-offsite:backup%2Fct%2F101%2F2026-07-26T06:00:03Z"; escPath != want {
 		t.Errorf("escaped path = %q", escPath)
 	}
 	if ctype != "application/x-www-form-urlencoded" {
@@ -122,7 +122,7 @@ func TestSetVolumeAttrsOmitsNil(t *testing.T) {
 // null; seen on pve1). They are not guests and must not become guest "/0".
 func TestListBackupsSkipsNonGuestBackups(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"content":"backup","ctime":1788809160,"format":"pbs-host","size":37398067560,"subtype":null,"vmid":null,"volid":"PBS-qemu:backup/host/cic-mobile/2026-09-07T19:26:00Z"},
+		_, _ = w.Write([]byte(`{"data":[{"content":"backup","ctime":1788809160,"format":"pbs-host","size":37398067560,"subtype":null,"vmid":null,"volid":"pbs-onsite:backup/host/laptop01/2026-09-07T19:26:00Z"},
 			{"volid":"s:backup/ct/110/x","vmid":110,"subtype":"lxc","ctime":100,"size":7}]}`))
 	}))
 	got, err := c.ListBackups(context.Background(), "pve1", "s")
@@ -142,14 +142,14 @@ func TestVolumeNotes(t *testing.T) {
 		method, escPath = r.Method, r.URL.EscapedPath()
 		_, _ = w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond","protected":false,"size":1}}`))
 	}))
-	got, err := c.VolumeNotes(context.Background(), "pve1", "PBS-Baremetal", "PBS-Baremetal:backup/ct/110/2026-10-19T06:24:17Z")
+	got, err := c.VolumeNotes(context.Background(), "pve1", "pbs-offsite", "pbs-offsite:backup/ct/110/2026-10-19T06:24:17Z")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond" {
 		t.Errorf("notes = %q", got)
 	}
-	if want := "/api2/json/nodes/pve1/storage/PBS-Baremetal/content/PBS-Baremetal:backup%2Fct%2F110%2F2026-10-19T06:24:17Z"; method != "GET" || escPath != want {
+	if want := "/api2/json/nodes/pve1/storage/pbs-offsite/content/pbs-offsite:backup%2Fct%2F110%2F2026-10-19T06:24:17Z"; method != "GET" || escPath != want {
 		t.Errorf("%s %s", method, escPath)
 	}
 }

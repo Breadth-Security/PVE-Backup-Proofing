@@ -21,7 +21,7 @@
 - **Versions:** daemon and helper must share major.minor, so `0.2.x` talks to `0.2.y`. A `dev` build is compatible only with `dev`, and the message says so.
 - **SSH user:** `target.ssh.user` defaults to `pbp`, and config validation rejects `root` with a pointer to README "Node setup".
 - **Release target `v0.2.0`.** This is a breaking change, and every document is updated (spec §9).
-- **Dev tests run on `dev-scratch`** (`ssh dev-scratch`, Go 1.26.9 at `/usr/local/go`, use `bash -lc`). Live `pve-node` work needs owner approval at the time.
+- **Dev tests run on the build host** (`ssh <build-host>`, Go 1.26.9 at `/usr/local/go`, use `bash -lc`). Live `pve-node` work needs owner approval at the time.
 
 ## Review Focus
 
@@ -47,7 +47,7 @@ internal/target/executors.go, isolation.go, boot.go   switch to Helper
 internal/report/notify.go            Send via helper; EnsureTemplates -> CheckTemplates (hash compare)
 internal/config/config.go            ssh.user default pbp, reject root
 cmd/pbp/main.go                      `node` subcommand; check steps; wiring
-test/nodee2e/                        dev-scratch end-to-end (sshd + forced command + sudo + stubs)
+test/nodee2e/                        the build host end-to-end (sshd + forced command + sudo + stubs)
 docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integration/README.md, packaging README section
 ```
 
@@ -212,7 +212,7 @@ docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integrat
 
 ---
 
-### Task 7: End-to-end over real SSH on dev-scratch (`test/nodee2e`)
+### Task 7: End-to-end over real SSH on the build host (`test/nodee2e`)
 
 **Files:** Create `test/nodee2e/Dockerfile` (debian:trixie with openssh-server, sudo, and the `pbp` user set up exactly per README "Node setup"); stub scripts `pct`, `ovs-vsctl` and `perl` that log their argv; `test/nodee2e/run.sh`; `test/nodee2e/nodee2e_test.go` (build tag `nodee2e`).
 
@@ -225,7 +225,7 @@ docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integrat
   - `sudo -l` as `pbp` shows only `/usr/bin/pbp node`.
   - `pbp node install-templates` over SSH is refused.
 - A deadline expiry kills a stub `pct exec` that sleeps for 60s within the deadline plus 5s (Review Focus 3).
-- [ ] **Step 1:** Write `run.sh`. It rsyncs the repo to `dev-scratch:/root/pbp`, builds the image there, and runs `go test -tags nodee2e ./test/nodee2e/ -v` with `bash -lc`.
+- [ ] **Step 1:** Write `run.sh`. It rsyncs the repo to `<build-host>:/root/pbp`, builds the image there, and runs `go test -tags nodee2e ./test/nodee2e/ -v` with `bash -lc`.
 - [ ] **Step 2:** Run it. Expect all PASS, and paste the output in the report.
 - [ ] **Step 3:** Commit `Add the node helper end-to-end test over real SSH`.
 
@@ -242,7 +242,7 @@ docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integrat
 - `test/integration/integration_test.go` and its README: the fixtures use `PBP_IT_ADMIN_SSH_KEY` and `PBP_IT_ADMIN_KNOWN_HOSTS` through the test's own SSH client; PBP under test uses `target.ssh.user: pbp`. Document adding the admin key to `pve-node` before a live run and removing it afterwards.
 - **No change to the `.deb` postinst** (nologin stays the default, per spec §5).
 - [ ] **Step 1:** Grep check: `grep -rnE 'user: root|root SSH|as root' README.md config.example.yaml docker-compose.yml packaging specs/2026-10-19-pbp-design.md` shows only the intended mentions (the admin key in the test README, and the `install-templates` and `visudo` steps run as root).
-- [ ] **Step 2:** `go vet -tags integration ./...` and `go test ./...` pass. The Docker build passes **on dev-scratch**.
+- [ ] **Step 2:** `go vet -tags integration ./...` and `go test ./...` pass. The Docker build passes **on the build host**.
 - [ ] **Step 3:** Commit `Document the pbp node setup and remove root SSH from the docs`.
 
 ---

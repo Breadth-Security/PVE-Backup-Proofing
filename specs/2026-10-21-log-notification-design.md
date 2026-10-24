@@ -27,7 +27,7 @@ Last night's run log on pve1 (`run-20261021T060000.100Z-schedule.log`) showed th
    ```
    2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.4.0 · node pve1
    02:00:02 preflight ok (1.8s)
-   02:00:02 discovery: 48 backups on PBS-qemu; 3 already proven, 45 to proof
+   02:00:02 discovery: 48 backups on pbs-onsite; 3 already proven, 45 to proof
    02:00:02 VM102 started (VM102.log)
    02:01:31 VM102 FAILED · failed: sssd-nss.socket, sssd-pam.socket
    02:01:43 VM104 SKIPPED · insufficient node memory
@@ -36,8 +36,8 @@ Last night's run log on pve1 (`run-20261021T060000.100Z-schedule.log`) showed th
 
    `VM102.log`, one line per step:
    ```
-   2026-10-21 02:00:02 EDT backup PBS-qemu:backup/vm/102/2026-10-20T06:00:02Z (taken 2026-10-20 02:00, 20h old, 32 GiB)
-   02:00:02 capacity ok: 32 GiB of 410 GiB free on pool_qemu; RAM 4.4 GiB of 21 GiB free
+   2026-10-21 02:00:02 EDT backup pbs-onsite:backup/vm/102/2026-10-20T06:00:02Z (taken 2026-10-20 02:00, 20h old, 32 GiB)
+   02:00:02 capacity ok: 32 GiB of 410 GiB free on local-zfs; RAM 4.4 GiB of 21 GiB free
    02:00:03 backup marked protected (was not)
    02:00:03 restore to 990001 …
    02:00:36 restore done in 33s
@@ -75,7 +75,7 @@ Last night's run log on pve1 (`run-20261021T060000.100Z-schedule.log`) showed th
      VM108, CT109, VM109, VM110, VM111, VM112, VM113, CT116, CT117, CT119, CT120, CT124, VM137
 
    Not covered by backup
-     VM102: Found nfs-home.mount depends on /nfs/home (network storage, //cic-nas/homes): not backed up, skipped
+     VM102: Found nfs-home.mount depends on /nfs/home (network storage, //nas/homes): not backed up, skipped
    ```
 
    - The subject drops zero counts; a clean night reads `PBP pve1: all 13 proven`.
