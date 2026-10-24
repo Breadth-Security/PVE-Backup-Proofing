@@ -21,7 +21,7 @@ Only the newest release gets security fixes. PBP's daemon and node helper must s
 
 ## What is in scope
 
-- the daemon (`pbp daemon`, `pbp run`, `pbp check`, `pbp setup`);
+- the daemon (`pbp daemon`, `pbp run`, `pbp check`, `pbp health`, `pbp setup`);
 - the node helper (`pbp node`), its SSH forced command, its sudo rule, and `pbp node setup` / `uninstall`;
 - the packages, the release files and their signatures, and the install line `pbp setup` prints.
 

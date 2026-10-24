@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **Releases are published on GitHub**. Development stays on Gitea, which is reachable only from its LAN; every release, from `v0.2.0-rc.1` on, is also on the GitHub mirror, [Breadth-Security/Proxmox-Backup-Proofing](https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases), with the same files, `SHA256SUMS.sig` and "Signed release" note. The node install line `pbp setup` prints, the docs and the package's homepage now point there. GitHub serves a `~` in a file name as `.`, so the install line fetches a pre-release's package under that name and saves it under the signed one. Commits and tags signed with the release key show as Verified on GitHub. Only the daemon changed.
+- **`git tag -v` verifies with `allowed_signers`.** The file listed the key for release files before the key for git, and git stops at the first line with the key, so checking a signed tag or commit failed with "key is not permitted for use in signature namespace git". The git line now comes first; checking release files is unchanged.
+- **Releases are published on GitHub**. Development stays on a private Gitea instance; every release, from `v0.2.0-rc.1` on, is also on the GitHub mirror, [Breadth-Security/Proxmox-Backup-Proofing](https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases), with the same files, `SHA256SUMS.sig` and "Signed release" note. The node install line `pbp setup` prints, the docs and the package's homepage now point there. GitHub serves a `~` in a file name as `.`, so the install line fetches a pre-release's package under that name and saves it under the signed one. Commits and tags signed with the release key show as Verified on GitHub. Only the daemon changed.
 
 ## v0.8.1
 
