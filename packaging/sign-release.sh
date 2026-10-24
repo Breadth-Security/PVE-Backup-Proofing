@@ -82,8 +82,8 @@ publish() { # release id: clear the draft flag
 
 fingerprint=$(grep "^$ns " "$signers" | cut -d' ' -f3- | ssh-keygen -lf - | awk '{print $2}')
 # The note's links are public: the GitHub mirror (Gitea is LAN-only).
-signers_url="https://raw.githubusercontent.com/BreadthAnalytics/proxmox-backup-proofing/main/allowed_signers"
-docs_url="https://github.com/BreadthAnalytics/proxmox-backup-proofing/blob/main/docs/install-deb.md#verifying-a-release"
+signers_url="https://raw.githubusercontent.com/Breadth-Security/Proxmox-Backup-Proofing/main/allowed_signers"
+docs_url="https://github.com/Breadth-Security/Proxmox-Backup-Proofing/blob/main/docs/install-deb.md#verifying-a-release"
 note_text="<!-- pbp-signature -->
 **Signed release.** \`SHA256SUMS.sig\` is an SSH signature over \`SHA256SUMS\` by PBP's release signing key, fingerprint \`$fingerprint\` (ED25519), published in [\`allowed_signers\`]($signers_url). Verify the download before installing:
 
