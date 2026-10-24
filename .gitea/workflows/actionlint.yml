@@ -1,0 +1,42 @@
+name: actionlint
+
+# Lints the workflow files: syntax, expressions, job and step wiring, and the
+# inputs of well-known actions. It covers .github/workflows/ too: those run
+# only on the GitHub mirror, so this is the one check they get on Gitea
+# before a branch reaches GitHub (see .gitea/README.md).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Change both together: the SHA-256 of actionlint_<version>_linux_amd64.tar.gz,
+  # from the release's actionlint_<version>_checksums.txt.
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install actionlint
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$tarball" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint || install -m 0755 actionlint /usr/local/bin/actionlint
+      - name: Run actionlint
+        # It also runs shellcheck on run: scripts when shellcheck is installed.
+        run: |
+          actionlint -no-color .gitea/workflows/*.yml .github/workflows/*.yml

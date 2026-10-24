@@ -43,6 +43,7 @@ Workflows in [`.gitea/workflows/`](../.gitea/workflows/) check every pull reques
 
 - **go-toolchain**: `go vet` (with no build tag, and with the `integration` and `nodee2e` tags) and `go test -race`. It first checks that it runs on exactly the Go `toolchain` pinned in `go.mod`, and that the Dockerfile builds with the same version.
 - **Scanners**: Trivy, govulncheck, gosec, staticcheck and golangci-lint check the code and dependencies. gitleaks checks the **whole git history** for committed secrets; Trivy only sees the current files. The scanners also run weekly (Monday 06:17 UTC), so newly published vulnerabilities are caught in code that hasn't changed.
+- **actionlint** checks the workflow files themselves, in `.gitea/workflows/` and in `.github/workflows/` (which run only on the GitHub mirror, so this is their one check on Gitea).
 
 The Docker build runs `go vet` and `go test -race` too, so an image can't be built from code that fails them. When you bump Go, change the `toolchain` line in `go.mod` and the `FROM golang:` tag in the `Dockerfile` together; the go-toolchain workflow fails if they differ. To block merging in Gitea, mark these workflows as required status checks in the branch protection for `main`.
 
@@ -73,6 +74,9 @@ docker run --rm -v "$PWD":/src:ro -w /src aquasec/trivy:0.76.1 fs --exit-code 1 
 
 # gitleaks (full git history)
 docker run --rm -v "$PWD":/repo:ro ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact /repo
+
+# actionlint (workflow files)
+docker run --rm -v "$PWD":/repo:ro -w /repo rhysd/actionlint:1.7.12 .gitea/workflows/*.yml .github/workflows/*.yml
 
 # vet and race tests
 go vet ./... && go vet -tags integration ./... && go vet -tags nodee2e ./... && go test -race ./...
