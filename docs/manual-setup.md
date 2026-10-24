@@ -99,7 +99,7 @@ Done once, as root on the PVE node. Step 1 is the install line `pbp setup` print
 7. **Point PBP at it.** In `config.yaml` use `target.ssh.user: pbp` (the default), with the key and `known_hosts` from [Create the SSH key](#create-the-ssh-key). `root` is rejected. Then run `pbp check`:
 
    ```
-   node helper version: ok (0.8.1)
+   node helper version: ok (0.8.2)
    node helper config: ok (range [990000, 990049], bridge vmbr99)
    node helper request_timeout: ok (15m0s)
    node helper refusal: ok (exec in 990050 refused)

@@ -96,13 +96,13 @@ Setup creates the SSH key pair (ed25519; an existing key is reused, never replac
 ```
 On the node, as root:
 
-1. Install pbp 0.8.1 (signature and checksum verified):
+1. Install pbp 0.8.2 (signature and checksum verified):
 
-(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/v0.8.1/pbp_0.8.1_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
+(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/v0.8.2/pbp_0.8.2_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
 
 2. Set up the node:
 
-pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey 'ssh-ed25519 AAAA... pbp' --storages local-zfs,pbs-main --daemon-version 0.8.1 --create-token
+pbp node setup --vmid-range 990000-990049 --bridge vmbr99 --pubkey 'ssh-ed25519 AAAA... pbp' --storages local-zfs,pbs-main --daemon-version 0.8.2 --create-token
 
 Paste the reply printed by pbp node setup, then press Enter:
 ```
