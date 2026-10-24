@@ -4,6 +4,7 @@ version: 1
 
 env:
   - CGO_ENABLED=0
+  - GOTOOLCHAIN=local # use exactly the toolchain installed; never switch
 
 flags:
   - -trimpath
@@ -13,6 +14,7 @@ goarch: arm64
 
 main: ./cmd/pbp
 
+# Also the run's artifact name: it must differ between the configs.
 binary: pbp-{{ .Os }}-{{ .Arch }}
 
 # VERSION comes from the workflow's evaluated-envs.
