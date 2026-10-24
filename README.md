@@ -11,6 +11,8 @@
 >
 >That's where PBP steps in. We are going to <i>trust</i> the backup existing verification, but we are going to <b><i>prove</i></b> that our backups will support our disaster recovery plans.
 
+PBP is built and maintained by [Breadth Security](https://breadthsecurity.com).
+
 PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification. Deep options are provided for guest inclusion/exclusion, systemd/service ignore and health checks, per-guest checks, and many more options to help you ensure that your backup is valid. 
 
   - <i>If you are migrating from the VMWare ecosystem, this is comparable to the functionality provided by Live Recovery. 
@@ -86,7 +88,11 @@ Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 
 
 `pbp setup` writes `config.yaml` for you; [`config.example.yaml`](config.example.yaml) documents every key, for anything you change afterwards. Secrets (the API token and SSH key) are always referenced by file path, never inline. TLS to the API is verified with either `tls_fingerprint` or `ca_file`; skipping verification is not supported.
 
-*Note that this repo is synced from a local Gitea repo, upon commits. This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
+## Development and use of AI
+
+This GitHub repository is a mirror of a private Gitea repository, where development happens; every push there is copied here. The workflows in `.github/workflows/` run here on GitHub (SLSA build provenance for each release); those in `.gitea/workflows/` run only on Gitea. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+PBP is written by traditionally trained software developers using modern AI-assisted practice: specification-driven generation with SpecKit and similar tooling.
 
 ## License
 
