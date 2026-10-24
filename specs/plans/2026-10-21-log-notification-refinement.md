@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Go toolchain `go1.26.10`; no new module dependencies.
-- Run tests, vet and lint on the build host, not the workstation: `rsync -a --delete --exclude .git --exclude .superpowers --exclude .remember --exclude dist --exclude it ./ the build host:/root/pbp/` then `ssh the build host 'bash -lc "cd /root/pbp && go vet ./... && go test -race ./... && golangci-lint run ./..."'`. All must pass (lint: `0 issues.`) before each commit.
+- Run tests, vet and lint on the build host, not the workstation: `rsync -a --delete --exclude .git --exclude .superpowers --exclude .remember --exclude dist --exclude it ./ <build-host>:/root/pbp/` then `ssh <build-host> 'bash -lc "cd /root/pbp && go vet ./... && go test -race ./... && golangci-lint run ./..."'`. All must pass (lint: `0 issues.`) before each commit.
 - Guest labels: `VM<vmid>` for `qemu`, `CT<vmid>` for `lxc`. `GuestKey.String()` (`qemu/102`) stays unchanged for state and notes.
 - Run folder name: `<started in its own location, 2006-01-02_15-04-05>_<trigger>`, then `-2`, `-3`, … on collision.
 - Files: folders `0750`, files `0600` (unchanged from today's run logs).

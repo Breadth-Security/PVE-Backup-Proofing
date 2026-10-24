@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs the pbp node helper end-to-end test (build tag nodee2e) on a Docker
-# host given as the argument or $PBP_E2E_HOST: rsyncs the repo to /root/pbp there, builds
-# the .deb with packaging/build.sh, and runs the test, which installs that
-# .deb in a throwaway Debian 13 container and talks to it over real SSH.
+# host given as the argument or $PBP_E2E_HOST: rsyncs the repo to /root/pbp
+# there, builds the .deb with packaging/build.sh, and runs the test, which
+# installs that .deb in a throwaway Debian 13 container and talks to it over
+# real SSH.
 #
 # usage: test/nodee2e/run.sh ssh-host     (or set PBP_E2E_HOST)
 # The host needs Docker, Go, rsync, an OpenSSH client and envsubst

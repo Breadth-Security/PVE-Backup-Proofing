@@ -429,7 +429,7 @@ func TestAllocateVMID(t *testing.T) {
 const (
 	vmVol  = "PBS:backup/vm/101/2026-07-26T06:00:03Z"
 	ctVol  = "PBS:backup/ct/201/2026-07-26T06:10:00Z"
-	vmConf = "name: delta1\nmemory: 2048\nagent: 1\nhostpci0: 0000:01:00.0\nscsi0: local-lvm:vm-101-disk-0,size=32G\nscsi1: tank:vm-101-disk-1,backup=0,size=1T\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0,tag=2\nonboot: 1\n"
+	vmConf = "name: vm100\nmemory: 2048\nagent: 1\nhostpci0: 0000:01:00.0\nscsi0: local-lvm:vm-101-disk-0,size=32G\nscsi1: tank:vm-101-disk-1,backup=0,size=1T\nnet0: virtio=BC:24:11:00:00:03,bridge=vmbr0,tag=2\nonboot: 1\n"
 	ctConf = "hostname: web\nostype: debian\nrootfs: local-lvm:subvol-201-disk-0,size=8G\nmp0: /srv/share,mp=/mnt/share\nnet0: name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=dhcp\n"
 )
 
@@ -659,7 +659,7 @@ func TestSanitize(t *testing.T) {
 	if _, ok := cfg["hostpci0"]; ok {
 		t.Error("hostpci0 still present")
 	}
-	if cfg["net0"] != "virtio=BC:24:11:ED:57:35,bridge="+bridge {
+	if cfg["net0"] != "virtio=BC:24:11:00:00:03,bridge="+bridge {
 		t.Errorf("net0 = %q", cfg["net0"])
 	}
 	if cfg["onboot"] != "0" || cfg["tags"] != "pbp" {
@@ -945,7 +945,7 @@ func TestDestroyRecorded(t *testing.T) {
 	}
 	t.Run("untagged stopped guest matching name destroyed", func(t *testing.T) {
 		f := healthyFake()
-		leftover(990003, "stopped", map[string]string{"name": "delta1", "protection": "1"})(f)
+		leftover(990003, "stopped", map[string]string{"name": "vm100", "protection": "1"})(f)
 		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec))
 	})
 	t.Run("untagged container matching hostname destroyed", func(t *testing.T) {
@@ -978,25 +978,25 @@ func TestDestroyRecorded(t *testing.T) {
 	t.Run("nameless leftover with the backup's MACs destroyed", func(t *testing.T) {
 		f := healthyFake()
 		leftover(990003, "stopped", map[string]string{
-			"net0": "virtio=BC:24:11:ED:57:35,bridge=vmbr0", "net1": "e1000=bc:24:11:00:00:02,bridge=vmbr1"})(f)
-		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0,tag=2\nnet1: e1000=BC:24:11:00:00:02,bridge=vmbr1\n"
+			"net0": "virtio=BC:24:11:00:00:03,bridge=vmbr0", "net1": "e1000=bc:24:11:00:00:02,bridge=vmbr1"})(f)
+		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:00:00:03,bridge=vmbr0,tag=2\nnet1: e1000=BC:24:11:00:00:02,bridge=vmbr1\n"
 		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec))
 	})
 	t.Run("nameless leftover with other MACs refused", func(t *testing.T) {
 		f := healthyFake()
 		leftover(990003, "stopped", map[string]string{"net0": "virtio=BC:24:11:AA:AA:AA,bridge=vmbr0"})(f)
-		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n"
+		f.BackupConfigs[vmVol] = "memory: 512\nnet0: virtio=BC:24:11:00:00:03,bridge=vmbr0\n"
 		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "MAC")
 	})
 	t.Run("unreadable original config refused", func(t *testing.T) {
 		f := healthyFake()
-		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		leftover(990003, "stopped", map[string]string{"name": "vm100"})(f)
 		f.Fail["OriginalConfig"] = errors.New("pbs unreachable")
 		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "cannot be read")
 	})
 	t.Run("untagged running guest refused", func(t *testing.T) {
 		f := healthyFake()
-		leftover(990003, "running", map[string]string{"name": "delta1"})(f)
+		leftover(990003, "running", map[string]string{"name": "vm100"})(f)
 		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, rec), "running")
 	})
 	t.Run("tagged running guest destroyed", func(t *testing.T) {
@@ -1038,16 +1038,16 @@ func TestDestroyRecorded(t *testing.T) {
 	// Destroy does not read the config again.
 	t.Run("caller's name matching destroyed without reading the backup", func(t *testing.T) {
 		f := healthyFake()
-		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		leftover(990003, "stopped", map[string]string{"name": "vm100"})(f)
 		f.Fail["OriginalConfig"] = errors.New("must not be read")
-		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{VolID: vmVol, Name: "delta1"}))
+		destroyed(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{VolID: vmVol, Name: "vm100"}))
 		if slices.ContainsFunc(f.CallLog(), func(c string) bool { return strings.HasPrefix(c, "OriginalConfig") }) {
 			t.Errorf("original config read: %q", f.CallLog())
 		}
 	})
 	t.Run("caller's name not matching refused", func(t *testing.T) {
 		f := healthyFake()
-		leftover(990003, "stopped", map[string]string{"name": "delta1"})(f)
+		leftover(990003, "stopped", map[string]string{"name": "vm100"})(f)
 		refused(t, f, newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{VolID: vmVol, Name: "web"}), "does not match")
 	})
 	t.Run("container compared by hostname, not name", func(t *testing.T) {
@@ -1161,7 +1161,7 @@ func TestStrayTagged(t *testing.T) {
 func TestSanitizeReportsChanges(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
-	f.BackupConfigs[vmVol] = "name: delta1\nmemory: 2048\nagent: 1\nscsi0: local-lvm:vm-101-disk-0,size=32G\nnet0: virtio=AA:BB,bridge=vmbr0,tag=2\nonboot: 1\nusb0: host=1-1\n"
+	f.BackupConfigs[vmVol] = "name: vm100\nmemory: 2048\nagent: 1\nscsi0: local-lvm:vm-101-disk-0,size=32G\nnet0: virtio=AA:BB,bridge=vmbr0,tag=2\nonboot: 1\nusb0: host=1-1\n"
 	n := newTarget(t, f, f, nil)
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
@@ -1284,7 +1284,7 @@ func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
 		"scsi1: lvm:vm-137-disk-7,size=828M\n" +
 		"virtio2: iscsi:0.0.1.scsi-36001405abc,size=100G\n" +
 		"ide2: nfs:iso/debian.iso,media=cdrom\n" +
-		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n" +
+		"net0: virtio=BC:24:11:00:00:03,bridge=vmbr0\n" +
 		"#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:lvm:raw:\n"
 	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
 	n := newTarget(t, f, f, nil)
@@ -1328,7 +1328,7 @@ func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = "bios: seabios\nname: nextcloud-vm\n" +
 		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\nscsi0: lvm:vm-137-disk-6,size=72G\n" +
-		"net0: virtio=BC:24:11:ED:57:35,bridge=vmbr0\n#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n"
+		"net0: virtio=BC:24:11:00:00:03,bridge=vmbr0\n#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n"
 	n := newTarget(t, f, f, nil)
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)

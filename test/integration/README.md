@@ -65,8 +65,8 @@ PowerShell check is unit-tested against a real capture
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
-The values above are from the author's test node: 110 `dnstest` (unprivileged CT, 0.7 GB), 100
-`delta1` (VM with a working agent, 33 GB), 138 `netbootTesting` (VM without
+The values above are from a test node: 110 `ct110` (unprivileged CT, 0.7 GB), 100
+`vm100` (VM with a working agent, 33 GB), 138 `vm138` (VM without
 `agent`). VM 125 has `agent: 1` but no agent running inside, so it gives
 `BOOTED` and is not a valid `PBP_IT_VM_AGENT`.
 

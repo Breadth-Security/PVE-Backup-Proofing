@@ -140,13 +140,13 @@ func TestVolumeNotes(t *testing.T) {
 	var method, escPath string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, escPath = r.Method, r.URL.EscapedPath()
-		_, _ = w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond","protected":false,"size":1}}`))
+		_, _ = w.Write([]byte(`{"data":{"notes":"PBP ERROR 2026-10-19 11:18 · x\nct110\nsecond","protected":false,"size":1}}`))
 	}))
 	got, err := c.VolumeNotes(context.Background(), "pve1", "pbs-offsite", "pbs-offsite:backup/ct/110/2026-10-19T06:24:17Z")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "PBP ERROR 2026-10-19 11:18 · x\ndnstest\nsecond" {
+	if got != "PBP ERROR 2026-10-19 11:18 · x\nct110\nsecond" {
 		t.Errorf("notes = %q", got)
 	}
 	if want := "/api2/json/nodes/pve1/storage/pbs-offsite/content/pbs-offsite:backup%2Fct%2F110%2F2026-10-19T06:24:17Z"; method != "GET" || escPath != want {

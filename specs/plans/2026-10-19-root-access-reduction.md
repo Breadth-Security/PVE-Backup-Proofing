@@ -47,7 +47,7 @@ internal/target/executors.go, isolation.go, boot.go   switch to Helper
 internal/report/notify.go            Send via helper; EnsureTemplates -> CheckTemplates (hash compare)
 internal/config/config.go            ssh.user default pbp, reject root
 cmd/pbp/main.go                      `node` subcommand; check steps; wiring
-test/nodee2e/                        the build host end-to-end (sshd + forced command + sudo + stubs)
+test/nodee2e/                        end-to-end on the build host (sshd + forced command + sudo + stubs)
 docs: README.md, config.example.yaml, docker-compose.yml, specs/*, test/integration/README.md, packaging README section
 ```
 
