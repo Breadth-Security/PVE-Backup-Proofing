@@ -88,7 +88,9 @@ Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 
 
 `pbp setup` writes `config.yaml` for you; [`config.example.yaml`](config.example.yaml) documents every key, for anything you change afterwards. Secrets (the API token and SSH key) are always referenced by file path, never inline. TLS to the API is verified with either `tls_fingerprint` or `ca_file`; skipping verification is not supported.
 
-*Note that this repo is synced from a local Gitea repo, upon commits. This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
+## Use of AI in this product
+
+*Note that this repo is synced from a local Gitea repo, upon PR's. Some workflows are setup here on GitHub for software supply chain and such, others in the gitea folder will never run here.  This work is being done by traditionally trained software developers using modern assisted coding practice (AI specification-driven generation, through SpecKit and similar tooling)*
 
 ## License
 
