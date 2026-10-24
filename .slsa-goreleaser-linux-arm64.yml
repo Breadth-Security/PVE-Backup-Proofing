@@ -1,0 +1,22 @@
+# SLSA Go builder configuration for .github/workflows/go-ossf-slsa3-publish.yml
+# (linux/arm64). Keep it the same build as packaging/build.sh.
+version: 1
+
+env:
+  - CGO_ENABLED=0
+
+flags:
+  - -trimpath
+
+goos: linux
+goarch: arm64
+
+main: ./cmd/pbp
+
+binary: pbp-{{ .Os }}-{{ .Arch }}
+
+# VERSION comes from the workflow's evaluated-envs.
+ldflags:
+  - "-s"
+  - "-w"
+  - "-X main.version={{ .Env.VERSION }}"

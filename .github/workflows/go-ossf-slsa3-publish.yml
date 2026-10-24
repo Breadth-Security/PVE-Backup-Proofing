@@ -10,6 +10,15 @@
 # https://github.com/slsa-framework/slsa-github-generator.
 # The provenance file can be verified using https://github.com/slsa-framework/slsa-verifier.
 # For more information about SLSA and how it improves the supply-chain, visit slsa.dev.
+#
+# It runs on the GitHub mirror only (Gitea Actions uses .gitea/workflows/).
+# Edit it on Gitea; see .gitea/README.md for trying a change on GitHub.
+#
+# It builds pbp the way packaging/build.sh does, for linux/amd64 and
+# linux/arm64, with the Go toolchain pinned in go.mod. The binaries and their
+# provenance stay on the workflow run as artifacts: they are not uploaded to
+# the GitHub release, whose files come from Gitea through
+# packaging/mirror-release.sh and must match its signed SHA256SUMS.
 
 name: SLSA go releaser
 on:
@@ -21,38 +30,46 @@ on:
 permissions: read-all
 
 jobs:
-  # Generate ldflags dynamically.
-  # Optional: only needed for ldflags.
   args:
     runs-on: ubuntu-latest
     outputs:
-      commit-date: ${{ steps.ldflags.outputs.commit-date }}
-      commit: ${{ steps.ldflags.outputs.commit }}
-      version: ${{ steps.ldflags.outputs.version }}
-      tree-state: ${{ steps.ldflags.outputs.tree-state }}
+      go-version: ${{ steps.args.outputs.go-version }}
+      version: ${{ steps.args.outputs.version }}
     steps:
       - id: checkout
-        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579 # tag=v2.3.4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          private-repository: true
           fetch-depth: 0
-      - id: ldflags
+          persist-credentials: false
+      - id: args
         run: |
-          echo "commit-date=$(git log --date=iso8601-strict -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
-          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          echo "version=$(git describe --tags --always --dirty | cut -c2-)" >> "$GITHUB_OUTPUT"
-          echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> "$GITHUB_OUTPUT"
+          # The same toolchain the Gitea workflows read from go.mod.
+          go=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
+          [ -n "$go" ] || { echo "go.mod has no toolchain line"; exit 1; }
+          echo "go-version=$go" >> "$GITHUB_OUTPUT"
+          # A tag push gets the release's version, as the Gitea release
+          # workflow does; a dispatch gets a describe of the commit.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v=$(packaging/debversion.sh "$GITHUB_REF_NAME")
+          else
+            v=$(git describe --tags --always --dirty | sed 's/^v//')
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
   # Trusted builder.
   build:
     permissions:
       id-token: write # To sign the provenance.
-      contents: write # To upload assets to release.
+      contents: write # Requested by the builder's release upload job, which upload-assets: false skips.
       actions: read # To read the workflow path.
     needs: args
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
-      private-repository: true
-      go-version: 1.17
-      # Optional: only needed if using ldflags.
-      evaluated-envs: "COMMIT_DATE:${{needs.args.outputs.commit-date}}, COMMIT:${{needs.args.outputs.commit}}, VERSION:${{needs.args.outputs.version}}, TREE_STATE:${{needs.args.outputs.tree-state}}"
+      config-file: .slsa-goreleaser-linux-${{ matrix.arch }}.yml
+      go-version: ${{ needs.args.outputs.go-version }}
+      upload-assets: false
+      private-repository: true # Drop once the mirror is public.
+      evaluated-envs: "VERSION:${{ needs.args.outputs.version }}"
