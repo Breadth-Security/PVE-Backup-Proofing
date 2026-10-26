@@ -4,10 +4,10 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
 ## Install
 
-1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.2`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://raw.githubusercontent.com/Breadth-Security/PVE-Backup-Proofing/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
+1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.3`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://raw.githubusercontent.com/Breadth-Security/PVE-Backup-Proofing/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
 
    ```
-   v=0.8.2; a=$(dpkg --print-architecture)
+   v=0.8.3; a=$(dpkg --print-architecture)
    base=https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download/v$(echo "$v" | tr '~' -)
    curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS" && curl -fsSLO "$base/SHA256SUMS.sig"
    ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
@@ -17,7 +17,7 @@ As an alternative to Docker, each release ships Debian packages (`amd64` and `ar
 
    The first check must print `Good "pbp-release" signature for pbp-release with ED25519 key SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8`, the second `pbp_<version>_<arch>.deb: OK`. Stop if either fails.
 
-   Pre-releases are tagged like `v0.8.2-rc.2` and their files carry the Debian version `0.8.2~rc.2` (`pbp_0.8.2~rc.2_amd64.deb`), which sorts before `0.8.2`, so the final release installs over a pre-release as an upgrade. GitHub serves a `~` in a file name as `.`, so download a pre-release's package as `pbp_0.8.2.rc.2_${a}.deb` and save it under the name `SHA256SUMS` lists: `curl -fsSL -o "pbp_${v}_${a}.deb" "$base/pbp_$(echo "$v" | tr '~' .)_${a}.deb"`.
+   Pre-releases are tagged like `v0.8.3-rc.2` and their files carry the Debian version `0.8.3~rc.2` (`pbp_0.8.3~rc.2_amd64.deb`), which sorts before `0.8.3`, so the final release installs over a pre-release as an upgrade. GitHub serves a `~` in a file name as `.`, so download a pre-release's package as `pbp_0.8.3.rc.2_${a}.deb` and save it under the name `SHA256SUMS` lists: `curl -fsSL -o "pbp_${v}_${a}.deb" "$base/pbp_$(echo "$v" | tr '~' .)_${a}.deb"`.
 
 2. **Set it up.** Choose the VMID range and create the bridge first ([Setup](setup.md) steps 1 and 2), then run:
 
