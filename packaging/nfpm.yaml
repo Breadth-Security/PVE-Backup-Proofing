@@ -8,11 +8,11 @@ section: admin
 priority: optional
 maintainer: Tony D <tony.diana@gmail.com>
 description: |
-  Proxmox Backup Proofing
+  PVE Backup Proofing
   Restores the newest backup of each guest into an isolated bridge on a
   Proxmox VE node, boots it, checks that it works, and tears it down again.
 vendor: Breadth Analytics
-homepage: https://github.com/Breadth-Security/Proxmox-Backup-Proofing
+homepage: https://github.com/Breadth-Security/PVE-Backup-Proofing
 license: Apache-2.0
 depends:
   - adduser

@@ -2,7 +2,7 @@
 
 The workflows in `workflows/` belong to PBP's source repository on its Gitea instance (`git.breadthanalytics.com`), where development, pull requests and releases happen. They run on that instance's Actions runners.
 
-**Do not use them on the GitHub mirror** ([Breadth-Security/Proxmox-Backup-Proofing](https://github.com/Breadth-Security/Proxmox-Backup-Proofing)). Gitea pushes to the mirror; the mirror does not push back. In particular:
+**Do not use them on the GitHub mirror** ([Breadth-Security/PVE-Backup-Proofing](https://github.com/Breadth-Security/PVE-Backup-Proofing)). Gitea pushes to the mirror; the mirror does not push back. In particular:
 
 - **Do not copy them to `.github/workflows/`.** GitHub Actions runs only workflows in `.github/workflows/` and ignores this folder; copied there, they would run against the mirror.
 - **`release.yml` in particular** talks to the Gitea API (`RELEASE_TOKEN`, `/api/v1/...`) and creates draft releases on Gitea. Releases reach GitHub only through `packaging/mirror-release.sh`, after they are signed on Gitea; see [Releasing](../docs/development.md#releasing).
@@ -19,8 +19,8 @@ Change CI here, on Gitea.
 To try a change before merging it, push its branch to Gitea, let the mirror sync it, and run the workflow on that branch on GitHub:
 
 ```sh
-gh workflow run go-ossf-slsa3-publish.yml -R Breadth-Security/Proxmox-Backup-Proofing --ref <branch>
-gh run watch -R Breadth-Security/Proxmox-Backup-Proofing
+gh workflow run go-ossf-slsa3-publish.yml -R Breadth-Security/PVE-Backup-Proofing --ref <branch>
+gh run watch -R Breadth-Security/PVE-Backup-Proofing
 ```
 
 The run uses the branch's version of the workflow, but GitHub dispatches only a workflow that is already on `main`, so a brand-new workflow has to land there first.

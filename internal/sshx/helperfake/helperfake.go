@@ -10,8 +10,8 @@ import (
 	"slices"
 	"sync"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
 )
 
 // Fake is a mutex-safe sshx.Runner that speaks the helper protocol.

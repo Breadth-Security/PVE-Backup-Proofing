@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/notes"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // oldNotes are the listed backups whose notes start with a PBP line in the

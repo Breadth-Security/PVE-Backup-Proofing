@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 // Reasons go into the notes and the notification: they name the guest by

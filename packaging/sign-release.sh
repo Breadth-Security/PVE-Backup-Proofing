@@ -27,7 +27,7 @@ repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 signers="$repo_dir/allowed_signers"
 key=${PBP_SIGNING_KEY:-$HOME/.ssh/pbp_signing}
 host=git.breadthanalytics.com
-api="https://$host/api/v1/repos/tdiana/Proxmox-Backup-Proofing"
+api="https://$host/api/v1/repos/tdiana/PVE-Backup-Proofing"
 ns=pbp-release
 
 replace=false
@@ -82,8 +82,8 @@ publish() { # release id: clear the draft flag
 
 fingerprint=$(grep "^$ns " "$signers" | cut -d' ' -f3- | ssh-keygen -lf - | awk '{print $2}')
 # The note's links are public: the GitHub mirror (Gitea is LAN-only).
-signers_url="https://raw.githubusercontent.com/Breadth-Security/Proxmox-Backup-Proofing/main/allowed_signers"
-docs_url="https://github.com/Breadth-Security/Proxmox-Backup-Proofing/blob/main/docs/install-deb.md#verifying-a-release"
+signers_url="https://raw.githubusercontent.com/Breadth-Security/PVE-Backup-Proofing/main/allowed_signers"
+docs_url="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/install-deb.md#verifying-a-release"
 note_text="<!-- pbp-signature -->
 **Signed release.** \`SHA256SUMS.sig\` is an SSH signature over \`SHA256SUMS\` by PBP's release signing key, fingerprint \`$fingerprint\` (ED25519), published in [\`allowed_signers\`]($signers_url). Verify the download before installing:
 

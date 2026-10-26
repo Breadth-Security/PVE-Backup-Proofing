@@ -5,7 +5,7 @@ import (
 	"context"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
 )
 
 // Scripted is an Executor keyed by strings.Join(argv, " "). Unknown commands

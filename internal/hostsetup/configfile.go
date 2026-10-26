@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	pbp "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	pbp "git.breadthanalytics.com/tdiana/PVE-Backup-Proofing"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 )
 
 // TokenID is the API token setup creates on the node.

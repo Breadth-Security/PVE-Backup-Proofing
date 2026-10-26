@@ -1,4 +1,4 @@
-module git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing
+module git.breadthanalytics.com/tdiana/PVE-Backup-Proofing
 
 go 1.26.0
 

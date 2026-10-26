@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 )
 
 // Layout says where setup writes (spec §4.1). Docker (Deb false) writes under

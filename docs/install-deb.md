@@ -1,14 +1,14 @@
 # Install from the .deb
 
-As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs on the [releases page](https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases). The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same package is also the node helper: `pbp setup` prints the line that installs it on the Proxmox node.
+As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs on the [releases page](https://github.com/Breadth-Security/PVE-Backup-Proofing/releases). The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same package is also the node helper: `pbp setup` prints the line that installs it on the Proxmox node.
 
 ## Install
 
-1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.2`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://raw.githubusercontent.com/Breadth-Security/Proxmox-Backup-Proofing/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
+1. **Download and verify** the package, `SHA256SUMS` and its signature `SHA256SUMS.sig` (here `0.8.2`; use the version you want). You need PBP's public signing key, in the repository's [`allowed_signers`](../allowed_signers) file (`curl -fsSLO https://raw.githubusercontent.com/Breadth-Security/PVE-Backup-Proofing/main/allowed_signers`); check its fingerprint first ([Verifying a release](#verifying-a-release)):
 
    ```
    v=0.8.2; a=$(dpkg --print-architecture)
-   base=https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/v$(echo "$v" | tr '~' -)
+   base=https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download/v$(echo "$v" | tr '~' -)
    curl -fsSLO "$base/pbp_${v}_${a}.deb" && curl -fsSLO "$base/SHA256SUMS" && curl -fsSLO "$base/SHA256SUMS.sig"
    ssh-keygen -Y verify -f allowed_signers -I pbp-release -n pbp-release -s SHA256SUMS.sig < SHA256SUMS
    sha256sum -c SHA256SUMS --ignore-missing

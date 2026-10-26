@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // WindowsServicesScript lists the automatic-start services that are not

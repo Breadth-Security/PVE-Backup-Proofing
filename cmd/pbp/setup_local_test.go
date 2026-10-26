@@ -9,9 +9,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/hostsetup"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/hostsetup"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodesetup"
 )
 
 // localRig is `sudo pbp setup --deb` in a root terminal on a (fake) Proxmox

@@ -1,5 +1,5 @@
 [Unit]
-Description=PBP - Proxmox Backup Proofing daemon
+Description=PBP - PVE Backup Proofing daemon
 Documentation=file:///usr/share/doc/pbp/README.md
 After=network-online.target
 Wants=network-online.target

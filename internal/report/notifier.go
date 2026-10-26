@@ -5,7 +5,7 @@ package report
 import (
 	"context"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // Notifier checks PBP's notification templates on the node and sends run

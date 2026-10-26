@@ -3,7 +3,7 @@ package pve
 import (
 	"context"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // API is the subset of the Proxmox VE REST API that PBP uses.

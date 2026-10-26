@@ -1,4 +1,4 @@
-# PBP - Proxmox Backup Proofing
+# PBP - PVE Backup Proofing
 
 > "Trust, but verify"
 --Ronald Reagan
@@ -13,7 +13,7 @@
 
 PBP is built and maintained by [Breadth Security](https://breadthsecurity.com).
 
-PBP (Proxmox Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification. Deep options are provided for guest inclusion/exclusion, systemd/service ignore and health checks, per-guest checks, and many more options to help you ensure that your backup is valid. 
+PBP (PVE Backup Proofing) is a small daemon that runs in a container or directly on a Debian host. On a schedule it takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it, checks that it is healthy, destroys the temporary guest, and writes the verdict into the backup's notes and into a notification. Deep options are provided for guest inclusion/exclusion, systemd/service ignore and health checks, per-guest checks, and many more options to help you ensure that your backup is valid. 
 
   - <i>If you are migrating from the VMWare ecosystem, this is comparable to the functionality provided by Live Recovery. 
   - This is also comparable to the backup validation functionality provided by XenServer / XCP-ng / XO</i>
@@ -59,7 +59,7 @@ PBP never logs in to the node as root. It uses an API token with a narrow role, 
 
 ## Getting started
 
-1. **Get PBP** on the PBP host: clone this repository (Docker), or install the `.deb` from the [releases page](https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases) ([Install from the .deb](docs/install-deb.md)). Releases are signed: check `SHA256SUMS.sig` with [`allowed_signers`](allowed_signers), key fingerprint `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` ([Verifying a release](docs/install-deb.md#verifying-a-release)).
+1. **Get PBP** on the PBP host: clone this repository (Docker), or install the `.deb` from the [releases page](https://github.com/Breadth-Security/PVE-Backup-Proofing/releases) ([Install from the .deb](docs/install-deb.md)). Releases are signed: check `SHA256SUMS.sig` with [`allowed_signers`](allowed_signers), key fingerprint `SHA256:HzEvo7r8x719x/XzBa5JDQFsFdsw79kNXIdaUt2a7a8` ([Verifying a release](docs/install-deb.md#verifying-a-release)).
 2. **Choose a free VMID range and create the isolated bridge** on the node ([Setup](docs/setup.md) steps 1 and 2). PBP checks both, but you choose the range and create the bridge.
 3. **Run `pbp setup`** on the PBP host: the Docker one-shot command in [Setup step 3](docs/setup.md#3-run-pbp-setup-on-the-pbp-host), or `sudo pbp setup --deb`. It asks a few questions, writes `config.yaml` and the SSH key, and prints two lines to run on the node.
 4. **On the node, as root, run those two lines.** The first installs the matching `pbp` package; the second, `pbp node setup`, sets up the restricted helper and the API token, and prints a reply block.
