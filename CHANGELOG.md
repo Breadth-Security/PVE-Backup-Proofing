@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.8.3
+
+Only the daemon changed: a 0.8.3 daemon works with the 0.8.0, 0.8.1 or 0.8.2 node helper, so upgrading the PBP host is enough (upgrading the node too does no harm). Configs need no change. The node install line `pbp setup` prints now names the renamed repository.
 
 - **Renamed to PVE Backup Proofing** (still PBP, binary `pbp`). The GitHub repository is now [Breadth-Security/PVE-Backup-Proofing](https://github.com/Breadth-Security/PVE-Backup-Proofing), and the Go module path `git.breadthanalytics.com/tdiana/PVE-Backup-Proofing`. GitHub redirects the old repository's links and downloads, so the install line 0.8.2 prints keeps working; this release prints the new location. Package name, paths, config and the node helper are unchanged.
 
