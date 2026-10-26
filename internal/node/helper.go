@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // ownerTag marks the containers PBP created (same tag the daemon checks).

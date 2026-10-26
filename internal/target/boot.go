@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
 )
 
 // postPingGrace bounds the OS-info and test-exec calls made after the agent

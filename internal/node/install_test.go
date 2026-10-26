@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
 )
 
 func TestInstallTemplates(t *testing.T) {

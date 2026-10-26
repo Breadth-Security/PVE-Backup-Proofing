@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
 )
 
 const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl pbp"

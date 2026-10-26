@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 // probeFake answers the self-test's sudo probes; other commands go to pve.

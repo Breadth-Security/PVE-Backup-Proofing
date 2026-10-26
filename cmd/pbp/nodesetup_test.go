@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodesetup"
 )
 
 const fakeSecret = "3f1c9a2e-5b7d-4e8f-a1b2-c3d4e5f60718"

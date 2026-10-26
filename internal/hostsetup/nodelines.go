@@ -4,14 +4,14 @@ import (
 	"slices"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 // releaseURL is where a release's .deb files, SHA256SUMS and its signature
 // are published: the public GitHub mirror (issue #83; development and the
 // release workflow stay on a private Gitea instance).
-const releaseURL = "https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/"
+const releaseURL = "https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download/"
 
 // ReleaseSigner is the allowed_signers line for the key that signs each
 // release's SHA256SUMS (issue #37), the same as in the repository's

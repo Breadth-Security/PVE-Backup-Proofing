@@ -11,10 +11,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodesetup"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodesetup"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 const (

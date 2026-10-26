@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
 )
 
 // setupHint ends every node helper failure.

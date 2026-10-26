@@ -15,16 +15,16 @@ import (
 	"testing"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe/probetest"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target/targetfake"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe/probetest"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target/targetfake"
 )
 
 const (

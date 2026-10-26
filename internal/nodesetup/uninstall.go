@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 // NoLogin is the shell uninstall gives pbp (the .deb's default).

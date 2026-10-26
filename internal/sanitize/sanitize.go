@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // Plan is the set of config changes that make a restored guest safe.

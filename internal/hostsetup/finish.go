@@ -15,8 +15,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 	"gopkg.in/yaml.v3"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 var (

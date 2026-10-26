@@ -3,8 +3,8 @@ package probe_test
 import (
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 func TestUserProfileOverridesBuiltin(t *testing.T) {

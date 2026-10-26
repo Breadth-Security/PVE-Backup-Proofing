@@ -30,16 +30,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/discovery"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/run"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/discovery"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/notes"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/run"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
 )
 
 // pbpNotesLine is the PBP verdict line every proofed backup must start with:
@@ -739,7 +739,7 @@ func (e *env) crashAt(t *testing.T, stage string) {
 	}
 
 	bin := filepath.Join(dir, "pbp")
-	build := exec.Command("go", "build", "-ldflags", "-X main.version="+e.version, "-o", bin, "git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/cmd/pbp")
+	build := exec.Command("go", "build", "-ldflags", "-X main.version="+e.version, "-o", bin, "git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/cmd/pbp")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}

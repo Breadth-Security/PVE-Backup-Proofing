@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 // reGuestPort matches the interfaces PVE plugs into a bridge for a guest:

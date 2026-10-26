@@ -14,8 +14,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 )
 
 // Answers are the values setup asks for (spec §4.2).

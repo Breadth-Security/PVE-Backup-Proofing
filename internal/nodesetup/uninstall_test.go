@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
 	"golang.org/x/crypto/ssh"
 )
 

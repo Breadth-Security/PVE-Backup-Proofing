@@ -6,9 +6,9 @@ package bridgetest
 import (
 	"encoding/json"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx/helperfake"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx/helperfake"
 )
 
 // State is the helper's bridge reply for an isolated Linux bridge: IPv6

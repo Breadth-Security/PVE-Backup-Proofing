@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve/pvefake"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sshx"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve/pvefake"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
 )
 
 // A command the node never answered (no session) reaches the probe as

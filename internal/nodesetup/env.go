@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 )
 
 // Env is every outside effect, so tests run unprivileged on a temp root.

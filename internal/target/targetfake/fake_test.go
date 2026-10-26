@@ -6,11 +6,11 @@ import (
 	"slices"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe/probetest"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe/probetest"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
 )
 
 func TestScriptedLifecycle(t *testing.T) {

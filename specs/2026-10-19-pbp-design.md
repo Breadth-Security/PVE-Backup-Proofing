@@ -1,4 +1,4 @@
-# PBP — Proxmox Backup Proofing: Design
+# PBP — PVE Backup Proofing: Design
 
 Date: 2026-10-19
 Status: draft for approval
@@ -20,7 +20,7 @@ PVE/PBS UI and in a notification from their own PVE node, whether last night's
 newest backup of every guest really boots and runs its services, and the operator
 trusts that answer because PBP does not cry wolf.
 
-The product name is **PBP (Proxmox Backup Proofing)**. "Validation"/"PBV" naming is
+The product name is **PBP (PVE Backup Proofing)**. "Validation"/"PBV" naming is
 retired everywhere (README, binary, image, docs).
 
 ## 2. Goals, non-goals, anti-goals

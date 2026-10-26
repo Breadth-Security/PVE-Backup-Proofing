@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 const testSecret = "0b5e3f6a-1d2c-4e8f-9a7b-3c2d1e0f9a8b"

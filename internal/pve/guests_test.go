@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 const realGuestConfig = `{"data":{"agent":"1","boot":"order=scsi0;net0","cores":4,"cpu":"host","digest":"abc123","memory":"16500","name":"vm100","net0":"virtio=BC:24:11:00:00:03,bridge=vmbr0,firewall=1,tag=2","onboot":1,"ostype":"l26","scsi0":"local-lvm:vm-100-disk-0,discard=on,format=raw,iothread=1,size=33G,ssd=1","serial0":"socket","startup":"order=5","tags":"development"}}`

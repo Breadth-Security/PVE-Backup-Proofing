@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 const testNonce = "0123456789abcdef"

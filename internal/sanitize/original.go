@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 var reDisk = regexp.MustCompile(`^(scsi|virtio|sata|ide)\d+$`)

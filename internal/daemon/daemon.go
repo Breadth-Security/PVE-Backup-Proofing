@@ -14,7 +14,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 )
 
 // DefaultStateDir holds the state store, the run lock and the daemon start

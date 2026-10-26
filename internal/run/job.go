@@ -15,15 +15,15 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/notes"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/probe"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/pve"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/sanitize"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/state"
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/target"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/notes"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/state"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
 )
 
 // reasonPBSRefused explains a protect that PBS refused: the PVE storage

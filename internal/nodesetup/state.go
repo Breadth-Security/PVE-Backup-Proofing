@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 )
 
 // SudoersText is /etc/sudoers.d/pbp, exactly as docs/manual-setup.md "Node setup" step 5 shows it.

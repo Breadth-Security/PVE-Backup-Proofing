@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/config"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 )
 
 const testToken = "root@pam!pbp"

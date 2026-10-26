@@ -98,7 +98,7 @@ On the node, as root:
 
 1. Install pbp 0.8.2 (signature and checksum verified):
 
-(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://github.com/Breadth-Security/Proxmox-Backup-Proofing/releases/download/v0.8.2/pbp_0.8.2_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
+(a=$(dpkg --print-architecture) && d=$(mktemp -d) && cd "$d" && curl -fsSLO "https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download/v0.8.2/pbp_0.8.2_${a}.deb" && ...; rc=$?; rm -rf "$d"; exit $rc)
 
 2. Set up the node:
 

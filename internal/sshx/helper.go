@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 )
 
 // Errors returned by Helper. Each is wrapped with the helper's reason.

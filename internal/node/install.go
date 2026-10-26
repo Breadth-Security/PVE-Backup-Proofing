@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
 )
 
 // InstallTemplates writes the embedded notification templates into dir

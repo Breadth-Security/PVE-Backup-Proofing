@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"git.breadthanalytics.com/tdiana/Proxmox-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // NewLogger writes text records to stdout, for commands that are not runs.
