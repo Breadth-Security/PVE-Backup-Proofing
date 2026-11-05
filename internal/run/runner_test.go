@@ -17,6 +17,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/notes"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe/probetest"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
@@ -867,6 +868,55 @@ func TestRunExcludesGuests(t *testing.T) {
 	}
 }
 
+// An excluded guest carries its rule, its name and its status: the newest
+// PBP verdict on any of its backups, older ones included (issue #101).
+func TestRunExcludedGuestStatus(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Selection.Exclude = config.Exclude{Guests: []string{"101", "102"}, Tags: []string{"no-proof"}}
+	proofed := time.Date(2026, 10, 12, 2, 14, 0, 0, time.UTC)
+	older := f.add("pbs", model.KindQEMU, 101, 1024, notes.Line("g101", model.Proven, proofed, "4 checks ok"))
+	older.VolID, older.Time = "pbs:backup/qemu/101/2026-10-11T22:00:00Z", time.Date(2026, 10, 11, 22, 0, 0, 0, time.UTC)
+	f.api.Backups["pbs"][len(f.api.Backups["pbs"])-1] = older
+	f.add("pbs", model.KindQEMU, 101, 1024, "own note") // newest: no PBP line
+	f.add("pbs", model.KindQEMU, 102, 1024, "")
+	f.api.GuestList = append(f.api.GuestList, pve.GuestRef{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 102}, Node: "pve1", Name: "web02"})
+	backedTag := f.add("pbs", model.KindLXC, 103, 1024, "")
+	f.api.BackupConfigs[backedTag.VolID] += "hostname: ct103\ntags: no-proof\n" // a container's name is its hostname
+	dir, _ := f.withRunLog(t)
+
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+
+	got := byVMID(t, s)
+	want := map[int]struct {
+		rule, name string
+		prior      model.Verdict
+	}{
+		101: {"guests: 101", "", model.Proven},
+		102: {"guests: 102", "web02", ""},
+		103: {"tag no-proof", "ct103", ""},
+	}
+	for vmid, w := range want {
+		r := got[vmid]
+		if !r.Excluded || r.Rule != w.rule || r.Name != w.name || r.Prior.Verdict != w.prior {
+			t.Errorf("guest %d: excluded=%t rule %q name %q prior %q, want %q %q %q", vmid, r.Excluded, r.Rule, r.Name, r.Prior.Verdict, w.rule, w.name, w.prior)
+		}
+	}
+	if at := got[101].Prior.At; !at.Equal(proofed) {
+		t.Errorf("guest 101 prior at %v, want %v", at, proofed)
+	}
+	runLog := readLog(t, dir, "run.log")
+	for _, line := range []string{
+		"VM101 EXCLUDED · guests: 101 · last PROVEN 2026-10-12 02:14",
+		"VM102 EXCLUDED · guests: 102 · never proofed",
+		"CT103 EXCLUDED · tag no-proof · never proofed",
+		"3 guests · 🚫 3 excluded",
+	} {
+		if !strings.Contains(runLog, line) {
+			t.Errorf("run.log lacks %q:\n%s", line, runLog)
+		}
+	}
+}
+
 // A container whose backed-up config has raw lxc.* lines cannot be restored
 // as it is: PVE drops those lines unless root@pam restores (issue #34, CT111
 // lost lxc.apparmor.profile). It is ERROR before anything is reserved or
@@ -1295,7 +1345,7 @@ func TestSkipLoggedToGuestFile(t *testing.T) {
 	if g := readLog(t, dir, "VM101.log"); !strings.Contains(g, "skipped: template (not bootable)") {
 		t.Errorf("VM101.log:\n%s", g)
 	}
-	if r := readLog(t, dir, "run.log"); !strings.Contains(r, "VM101 SKIPPED · template (not bootable)") {
+	if r := readLog(t, dir, "run.log"); !strings.Contains(r, "VM101 TEMPLATE · not bootable") {
 		t.Errorf("run.log:\n%s", r)
 	}
 }

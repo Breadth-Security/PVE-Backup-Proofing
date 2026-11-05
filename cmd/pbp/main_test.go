@@ -260,7 +260,7 @@ func TestRunWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const result = "VM101 SKIPPED · already proven"
+	const result = "VM101 PREVIOUSLY PROVEN"
 	if !strings.Contains(string(rb), result) || strings.Contains(string(rb), "VM102") {
 		t.Errorf("run log = %s", rb)
 	}
