@@ -483,8 +483,10 @@ func (p *pool) nameOf(b model.Backup, orig map[string]string) string {
 	if n := p.liveNames[b.Key]; n != "" {
 		return n
 	}
-	if n := strings.TrimSpace(sanitize.GuestName(b.Key.Kind, orig)); orig != nil && n != "" {
-		return n
+	if orig != nil {
+		if n := strings.TrimSpace(sanitize.GuestName(b.Key.Kind, orig)); n != "" {
+			return n
+		}
 	}
 	return notes.Name(b.Notes)
 }
