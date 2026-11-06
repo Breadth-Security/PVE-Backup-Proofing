@@ -200,7 +200,7 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 // execute discovers the backups to proof and proofs them. It returns the
 // results in priority order and any run-level errors.
 func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slog.Logger) ([]model.GuestResult, []string) {
-	queue, old, errs := discover(ctx, d, opt, log)
+	queue, old, prior, errs := discover(ctx, d, opt, log)
 	if queue == nil {
 		return nil, errs
 	}
@@ -210,17 +210,18 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 		log.Error("read guest tags for selection.exclude.tags", "err", err)
 		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error())
 	}
-	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, liveNames: names, stop: opt.Stop}
+	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, liveNames: names, prior: prior, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
 	p.migrateNotes(ctx, old, start)
 	return results, append(errs, p.errs...)
 }
 
 // discover lists every source storage and returns the newest backup per
-// guest in proofing order, and every backup whose notes are in the old PBP
-// format (migrateNotes). A storage that cannot be listed is reported and
-// skipped; if none can be listed the queue is nil.
-func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []model.Backup, []string) {
+// guest in proofing order, every backup whose notes are in the old PBP
+// format (migrateNotes), and each guest's newest PBP verdict on any of its
+// backups (an excluded guest's status, issue #101). A storage that cannot
+// be listed is reported and skipped; if none can be listed the queue is nil.
+func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []model.Backup, map[model.GuestKey]model.Prior, []string) {
 	var all []model.Backup
 	var errs []string
 	listed := 0
@@ -235,7 +236,7 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 		all = append(all, bs...)
 	}
 	if listed == 0 {
-		return nil, nil, errs
+		return nil, nil, nil, errs
 	}
 	rng := d.Cfg.Target.VMIDRange
 	all, inRange := discovery.OutsideRange(all, rng[0], rng[1])
@@ -268,7 +269,20 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 			lastProven[b.Key] = t
 		}
 	}
-	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), old, errs
+	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), old, priors(all, d.Now().Location()), errs
+}
+
+// priors is the newest PBP verdict in the notes of each guest's backups,
+// read in loc.
+func priors(all []model.Backup, loc *time.Location) map[model.GuestKey]model.Prior {
+	out := map[model.GuestKey]model.Prior{}
+	for _, b := range all {
+		v, at, ok := notes.Verdict(b.Notes, loc)
+		if ok && at.After(out[b.Key].At) {
+			out[b.Key] = model.Prior{Verdict: v, At: at}
+		}
+	}
+	return out
 }
 
 // logDiscovery logs how many backups were found, on which storages, and how
@@ -311,6 +325,8 @@ type pool struct {
 	// liveNames are the live guests' names, for the notification's lines
 	// of guests that are not restored (issue #77); nil if unreadable.
 	liveNames map[model.GuestKey]string
+	// prior is each guest's newest PBP verdict (discover).
+	prior map[model.GuestKey]model.Prior
 	// stop closes when no further proofs may start (Options.Stop).
 	stop <-chan struct{}
 }
@@ -351,10 +367,7 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 		if discovery.AlreadyProven(b, d.Cfg.Restore.Reproof) {
 			results[i] = p.skip(glog, b, reasonAlreadyProven)
 			results[i].AlreadyProven = true
-			results[i].Name = p.liveNames[b.Key]
-			if results[i].Name == "" {
-				results[i].Name = notes.Name(b.Notes) // the guest is gone
-			}
+			results[i].Name = p.nameOf(b, nil)
 			p.logResult(results[i])
 			continue
 		}
@@ -418,25 +431,66 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 	return results
 }
 
-// skip logs reason to the guest's log and returns b's SKIPPED result.
+// skip logs reason to the guest's log and returns b's SKIPPED result,
+// named from the live guest or its notes (callers that have read the
+// backed-up config name it from that).
 func (p *pool) skip(glog *slog.Logger, b model.Backup, reason string) model.GuestResult {
 	glog.Info("skipped: " + reason)
-	return model.GuestResult{Backup: b, Verdict: model.Skipped, Reason: reason}
+	return model.GuestResult{Backup: b, Name: p.nameOf(b, nil), Verdict: model.Skipped, Reason: reason}
 }
 
-// logResult writes a guest's final result to the run log.
+// logResult writes a guest's final result to the run log. Skips by design
+// are named as the counts name them (issue #101): "VM110 PREVIOUSLY
+// PROVEN", "VM115 EXCLUDED · guests: 115 · last PROVEN 2026-10-12 02:14",
+// "VM5000 TEMPLATE · not bootable".
 func (p *pool) logResult(r model.GuestResult) {
-	p.log.Info(r.Backup.Key.Label() + " " + string(r.Verdict) + " · " + r.Reason)
+	label := r.Backup.Key.Label()
+	switch {
+	case r.Verdict != model.Skipped:
+	case r.AlreadyProven:
+		p.log.Info(label + " PREVIOUSLY PROVEN")
+		return
+	case r.Excluded:
+		p.log.Info(label + " EXCLUDED · " + r.Rule + " · " + report.PriorStatus(r.Prior, p.d.Now().Location()))
+		return
+	case r.Template:
+		p.log.Info(label + " TEMPLATE · not bootable")
+		return
+	}
+	p.log.Info(label + " " + string(r.Verdict) + " · " + r.Reason)
 }
 
 // exclude is the result for a guest excluded by config (issue #32): a skip
 // that nothing in the guest's backup records and that does not raise the
 // run's severity.
 func (p *pool) exclude(glog *slog.Logger, b model.Backup, rule string) model.GuestResult {
-	r := p.skip(glog, b, "excluded by config ("+rule+")")
-	r.Excluded = true
+	r := p.excluded(glog, b, rule, nil)
 	p.logResult(r)
 	return r
+}
+
+// excluded is b's SKIPPED result for exclusion by rule, with the guest's
+// name and status for the notification (issue #101). orig is the backed-up
+// config when it was read, else nil.
+func (p *pool) excluded(glog *slog.Logger, b model.Backup, rule string, orig map[string]string) model.GuestResult {
+	r := p.skip(glog, b, "excluded by config ("+rule+")")
+	r.Excluded, r.Rule, r.Name, r.Prior = true, rule, p.nameOf(b, orig), p.prior[b.Key]
+	return r
+}
+
+// nameOf is the guest's name for the notification: the live guest's, else
+// the backed-up config's (orig, when read), else the one in front of its
+// notes line when the guest is gone; "" when none is known.
+func (p *pool) nameOf(b model.Backup, orig map[string]string) string {
+	if n := p.liveNames[b.Key]; n != "" {
+		return n
+	}
+	if orig != nil {
+		if n := strings.TrimSpace(sanitize.GuestName(b.Key.Kind, orig)); n != "" {
+			return n
+		}
+	}
+	return notes.Name(b.Notes)
 }
 
 // liveGuests reads every guest's tags and name. The tags are read only
@@ -493,6 +547,7 @@ func (p *pool) admitGuarded(ctx context.Context, glog *slog.Logger, b model.Back
 func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (lease, *model.GuestResult) {
 	d := p.d
 	node, store := d.Cfg.Target.Node, d.Cfg.Restore.Storage
+	var orig map[string]string // the backed-up config, once read
 	fail := func(v model.Verdict, reason string) (lease, *model.GuestResult) {
 		reason = oneLine(reason)
 		if v == model.Error && ctx.Err() != nil {
@@ -501,11 +556,12 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		}
 		if v == model.Skipped {
 			r := p.skip(glog, b, reason)
+			r.Name = p.nameOf(b, orig)
 			return lease{}, &r
 		}
 		// Info, so it is not forwarded: the result line reports it.
 		glog.Info("guest not proofed: " + reason)
-		return lease{}, &model.GuestResult{Backup: b, Verdict: v, Reason: reason}
+		return lease{}, &model.GuestResult{Backup: b, Name: p.nameOf(b, orig), Verdict: v, Reason: reason}
 	}
 
 	at := d.Now()
@@ -528,19 +584,18 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		annotate(d, glog, b, *res, b.Key.Label())
 		return l, res
 	}
-	orig := sanitize.ParseConfigText(raw)
+	orig = sanitize.ParseConfigText(raw)
 	// Exclusion by a tag in the backed-up config: the guest may be gone or
 	// retagged since (the live tags were checked before admission).
 	if rule := d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, sanitize.SplitList(orig["tags"])); rule != "" {
-		l, res := fail(model.Skipped, "excluded by config ("+rule+")")
-		res.Excluded = true
-		return l, res
+		r := p.excluded(glog, b, rule, orig)
+		return lease{}, &r
 	}
 	// A template cannot be started, so it cannot be proven. The backed-up
 	// config decides, not the live guest, which may be gone or converted.
 	if orig["template"] == "1" {
 		l, res := fail(model.Skipped, reasonTemplate)
-		res.Template = true
+		res.Template, res.Name = true, p.nameOf(b, orig)
 		return l, res
 	}
 	// PVE drops raw lxc.* lines unless root@pam restores, so the copy would

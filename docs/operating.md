@@ -47,14 +47,17 @@ Each run writes its own folder under `logging.dir` (`/var/log/pbp` on a `.deb` h
 `run.log` is the run as a whole: preflight, discovery, one line per guest result and a closing summary. Each guest PBP works on also gets its own file, `VM<vmid>.log` or `CT<vmid>.log`, with one line per step: restore, start, checks, teardown. **When a guest failed, start with its own file.** When a PVE task fails (restore, start), the file holds the tail of the task's log; the reason in `run.log` and the notification is just the task's error line.
 
 ```
-2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.8.3 · node pve1
+2026-10-21 02:00:00 EDT run started (schedule) · PBP 0.9.0 · node pve1
 02:00:02 VM102 started (VM102.log)
 02:01:31 VM102 FAILED · failed: sssd-nss.socket, sssd-pam.socket
+02:01:32 VM110 PREVIOUSLY PROVEN
+02:01:32 VM115 EXCLUDED · guests: 115 · last PROVEN 2026-10-12 02:14
+02:01:32 VM5000 TEMPLATE · not bootable
 03:33:54 run finished in 1h33m · ❌ severity error
-03:33:54 ✅ 13 proven · ☑️ 6 previously proven · ❌ 9 failed · ⚠️ 9 error · ⚠️ 4 booted · ⏭️ 3 skipped
+03:33:54 47 guests · ✅ 13 proven · ☑️ 6 previously proven · ❌ 9 failed · ⚠️ 9 error · ⚠️ 4 booted · ⏭️ 3 skipped · 🚫 2 excluded · 📄 1 template
 ```
 
-The markers are the same in the notification: ✅ proven, ☑️ previously proven (skipped because an earlier run proved the backup), ❌ `FAILED` (the backup has a problem), ⚠️ `ERROR` or `BOOTED` (not proven either way), ⏭️ skipped for any other reason. The notification's subject leads with the run's severity (✅, ⚠️ or ❌) and its body with the counts line.
+The counts line starts with the number of guests PBP found a backup of, and every guest is in exactly one count, so they add up to it. The markers are the same in the notification: ✅ proven, ☑️ previously proven (an earlier run proved the backup), ❌ `FAILED` (the backup has a problem), ⚠️ `ERROR` or `BOOTED` (not proven either way), ⏭️ skipped for any other reason (such as not enough memory, or the run's deadline), 🚫 excluded by configuration, 📄 a template (which cannot boot). The notification's subject leads with the run's severity (✅, ⚠️ or ❌) and its body with the counts line.
 
 ```
 02:00:36 restore done in 33s
@@ -83,7 +86,7 @@ selection:
 - **`guests`:** a VMID (`104`, a VM or a container with that number), a label for one kind (`VM104`, `CT109`), or an inclusive range (`900-999`).
 - **`tags`:** a guest is excluded if its live config or its backed-up config carries one of these tags (case does not matter). Tagging a guest in the Proxmox UI takes effect at the next run; a guest that no longer exists is judged by the tags in its backup.
 
-An excluded guest is never restored, nothing is reserved for it, and its backup's notes are left alone. It shows in the run summary as `SKIPPED · excluded by config (<rule>)`, for example `excluded by config (tag no-proof)`, and it does not raise the run's severity. `pbp run --guest N` refuses an excluded guest, names the rule and exits 1: edit the config to proof it. A malformed entry stops PBP from loading the config, naming the entry (the daemon exits 78; `run`, `check` and `health` exit 1).
+An excluded guest is never restored, nothing is reserved for it, and its backup's notes are left alone. It shows in `run.log` as `EXCLUDED · <rule> · <status>` and in the notification's 🚫 EXCLUDED BY CONFIGURATION section, for example `VM115: web02 (guests: 115) · last PROVEN 2026-10-12 02:14`, and it does not raise the run's severity. The status is the newest PBP verdict on any of the guest's backups, or `never proofed`, so a guest excluded since its last proof stays visible. `pbp run --guest N` refuses an excluded guest, names the rule and exits 1: edit the config to proof it. A malformed entry stops PBP from loading the config, naming the entry (the daemon exits 78; `run`, `check` and `health` exit 1).
 
 The daemon reads `config.yaml` when it starts, so restart it after editing (`sudo systemctl restart pbp`, or `docker compose restart pbp`); `pbp run --guest` reads the file each time.
 
@@ -193,7 +196,7 @@ Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CO
 
 ## Notifications
 
-One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven, as a template or as excluded by config), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, or for an environment error (such as a `pbp`-tagged guest outside the VMID range), and `error` for any `FAILED` or a run-level failure. The body lists the problems first (`FAILED`, `ERROR`, `BOOTED`, then `SKIPPED` by reason), then ☑️ PREVIOUSLY PROVEN (guests whose newest backup an earlier run proved) and ✅ PROVEN, one guest per line with its name (`VM110: db01`), containers first, then by VMID.
+One summary per run is sent from the PVE node (through the `pbp node` helper over SSH, using `PVE::Notify`), so it goes to whatever notification targets and matchers you already use. Severity is `info` when everything is `PROVEN` (or skipped as already proven, as a template or as excluded by config), `warning` for any `BOOTED`, `ERROR` or other `SKIPPED`, or for an environment error (such as a `pbp`-tagged guest outside the VMID range), and `error` for any `FAILED` or a run-level failure. The body lists the problems first (`FAILED`, `ERROR`, `BOOTED`, then `SKIPPED`), each guest on its own line with its name, backup time and reason, then 🚫 EXCLUDED BY CONFIGURATION (each guest with the rule and its last PBP verdict), 📄 TEMPLATES, ☑️ PREVIOUSLY PROVEN (guests whose newest backup an earlier run proved) and ✅ PROVEN, one guest per line with its name (`VM110: db01`), containers first, then by VMID.
 
 To route it, create a matcher in Datacenter > Notifications > Notification Matchers with a **Match field** rule: field `type`, value `pbp`. A `hostname` field is also available.
 

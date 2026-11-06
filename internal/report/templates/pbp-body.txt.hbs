@@ -42,6 +42,20 @@ Environment errors:
   {{this}}
 {{/each}}
 {{/if}}
+{{#if excluded}}
+
+🚫 EXCLUDED BY CONFIGURATION
+{{#each excluded}}
+  {{this}}
+{{/each}}
+{{/if}}
+{{#if templates}}
+
+📄 TEMPLATES: cannot boot, not proofed
+{{#each templates}}
+  {{this}}
+{{/each}}
+{{/if}}
 {{#if previously-proven}}
 
 ☑️ PREVIOUSLY PROVEN

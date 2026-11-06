@@ -220,3 +220,35 @@ func TestName(t *testing.T) {
 		}
 	}
 }
+
+// Verdict reads back what Line wrote, in either format, wherever the PBP
+// line is in the notes (issue #101: an excluded guest's last status).
+func TestVerdict(t *testing.T) {
+	at := func(day, hour, min int) time.Time { return time.Date(2026, 10, day, hour, min, 0, 0, time.UTC) }
+	cases := map[string]struct {
+		in   string
+		v    model.Verdict
+		when time.Time
+		ok   bool
+	}{
+		"proven after name": {"db01\n" + pbp(model.Proven, 18, 2, 10, "ok"), model.Proven, at(18, 2, 10), true},
+		"failed":            {pbp(model.Failed, 19, 3, 4, "boom") + "\nown note", model.Failed, at(19, 3, 4), true},
+		"old format":        {old(model.Booted, 20, 4, 5, "agent") + "\ndb01", model.Booted, at(20, 4, 5), true},
+		"name with sep":     {Line("a · b", model.Error, at(21, 5, 6), "x"), model.Error, at(21, 5, 6), true},
+		"no PBP line":       {"db01\nown note", "", time.Time{}, false},
+		"empty":             {"", "", time.Time{}, false},
+		"provenance":        {"PBP PROVENANCE notes", "", time.Time{}, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			v, when, ok := Verdict(c.in, time.UTC)
+			if v != c.v || !when.Equal(c.when) || ok != c.ok {
+				t.Fatalf("got %q %v %v, want %q %v %v", v, when, ok, c.v, c.when, c.ok)
+			}
+		})
+	}
+	loc := time.FixedZone("EST", -5*3600)
+	if _, when, _ := Verdict(pbp(model.Proven, 18, 2, 10, "ok"), loc); when.Location() != loc || when.Hour() != 2 {
+		t.Errorf("time not read in loc: %v", when)
+	}
+}

@@ -13,7 +13,7 @@ import (
 // DataKeys are the keys of TemplateData, which the node helper accepts in a
 // notify payload and no others (code review 2.4).
 var DataKeys = []string{"node", "run-id", "headline", "mark", "summary", "counts", "logs", "run-error", "environment-errors",
-	"failed", "errored", "booted", "skipped", "previously-proven", "proven", "not-covered"}
+	"failed", "errored", "booted", "skipped", "excluded", "templates", "previously-proven", "proven", "not-covered"}
 
 // TemplateData builds the data passed to the PVE notification templates.
 // The lists hold ready-made lines so the templates only print them (no key
@@ -32,10 +32,8 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 
 	failed, errored, booted := []string{}, []string{}, []string{}
 	notCovered := []string{}
-	var proven, previously []model.GuestResult
-	skipReasons := []string{} // reasons in the order they first occur
-	skipGuests := map[string][]string{}
-	problemSkips := 0
+	var proven, previously, excluded, templates []model.GuestResult
+	skipped := []string{}
 	for _, r := range s.Results {
 		label := r.Backup.Key.Label()
 		switch r.Verdict {
@@ -48,27 +46,25 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		case model.Proven:
 			proven = append(proven, r)
 		case model.Skipped:
-			if r.AlreadyProven {
+			// Each skip by design has its own section, so SKIPPED holds
+			// only guests not proofed for another reason (issue #101).
+			switch {
+			case r.AlreadyProven:
 				previously = append(previously, r)
-				break
-			}
-			if _, ok := skipGuests[r.Reason]; !ok {
-				skipReasons = append(skipReasons, r.Reason)
-			}
-			skipGuests[r.Reason] = append(skipGuests[r.Reason], label)
-			if !r.AlreadyProven && !r.Template && !r.Excluded {
-				problemSkips++
+			case r.Excluded:
+				excluded = append(excluded, r)
+			case r.Template:
+				templates = append(templates, r)
+			default:
+				// One guest per line with its name, like the other
+				// problem sections (issue #101).
+				skipped = append(skipped, guestLine(r, loc))
 			}
 		}
 		for _, n := range r.NotCovered {
 			notCovered = append(notCovered, clipLine(label+": "+n.LogLine()))
 		}
 	}
-	skipped := []string{}
-	for _, reason := range skipReasons {
-		skipped = append(skipped, reason+": "+strings.Join(skipGuests[reason], ", "))
-	}
-
 	return map[string]any{
 		"node":   node,
 		"run-id": s.ID,
@@ -76,7 +72,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 			s.Started.Format("Mon 2006-01-02 15:04 MST"), trigger, Dur(s.Ended.Sub(s.Started))),
 		"mark":    SeverityMark(s.Severity()),
 		"counts":  CountsLine(s),
-		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), problemSkips, len(proven)),
+		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), len(skipped), len(proven)),
 		"logs":    logs,
 		// run-error and environment-errors are unchanged.
 		"run-error":          s.RunError,
@@ -85,6 +81,8 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 		"errored":            errored,
 		"booted":             booted,
 		"skipped":            skipped,
+		"excluded":           excludedLines(excluded, loc),
+		"templates":          nameLines(templates),
 		"previously-proven":  nameLines(previously),
 		"proven":             nameLines(proven),
 		"not-covered":        notCovered,
@@ -94,6 +92,42 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 // nameLines lists guests one per line as "VM110: db01" ("VM110" without a
 // name), containers first, then by VMID (issue #77).
 func nameLines(rs []model.GuestResult) []string {
+	rs = byGuest(rs)
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, clipLine(nameOf(r)))
+	}
+	return out
+}
+
+// excludedLines lists excluded guests like nameLines, each with the rule
+// that excluded it and its status: the newest PBP verdict on any of its
+// backups, "VM115: web02 (guests: 115) · last PROVEN 2026-10-12 02:14", or
+// "never proofed" (issue #101).
+func excludedLines(rs []model.GuestResult, loc *time.Location) []string {
+	rs = byGuest(rs)
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		line := nameOf(r)
+		if r.Rule != "" {
+			line += " (" + r.Rule + ")"
+		}
+		out = append(out, clipLine(line+" · "+PriorStatus(r.Prior, loc)))
+	}
+	return out
+}
+
+// PriorStatus is a guest's last PBP verdict as its status, "last PROVEN
+// 2026-10-12 02:14" in loc, or "never proofed".
+func PriorStatus(p model.Prior, loc *time.Location) string {
+	if p.Verdict == "" {
+		return "never proofed"
+	}
+	return "last " + string(p.Verdict) + " " + p.At.In(loc).Format("2006-01-02 15:04")
+}
+
+// byGuest returns a copy of rs with containers first, then by VMID.
+func byGuest(rs []model.GuestResult) []model.GuestResult {
 	rs = slices.Clone(rs)
 	slices.SortFunc(rs, func(a, b model.GuestResult) int {
 		if c := strings.Compare(a.Backup.Key.Label()[:2], b.Backup.Key.Label()[:2]); c != 0 {
@@ -101,15 +135,15 @@ func nameLines(rs []model.GuestResult) []string {
 		}
 		return a.Backup.Key.VMID - b.Backup.Key.VMID
 	})
-	out := make([]string, 0, len(rs))
-	for _, r := range rs {
-		line := r.Backup.Key.Label()
-		if r.Name != "" {
-			line += ": " + r.Name
-		}
-		out = append(out, clipLine(line))
+	return rs
+}
+
+// nameOf is "VM110: db01", or "VM110" without a name.
+func nameOf(r model.GuestResult) string {
+	if r.Name != "" {
+		return r.Backup.Key.Label() + ": " + r.Name
 	}
-	return out
+	return r.Backup.Key.Label()
 }
 
 // guestLine is one guest in a problem section:
@@ -174,6 +208,10 @@ const (
 	MarkSkipped = "⏭️"
 	// MarkAlready is a backup proven by an earlier run.
 	MarkAlready = "☑️"
+	// MarkExcluded is a guest selection.exclude leaves out.
+	MarkExcluded = "🚫"
+	// MarkTemplate is a template, which cannot boot.
+	MarkTemplate = "📄"
 )
 
 // SeverityMark is the marker for a run's severity: ✅ info, ⚠️ warning,
@@ -188,17 +226,26 @@ func SeverityMark(severity string) string {
 	return MarkProven
 }
 
-// CountsLine is the run's verdict counts with their markers, the non-zero
-// ones only: "✅ 13 proven · ☑️ 20 previously proven · ❌ 1 failed · ⚠️ 2
-// error · ⚠️ 4 booted · ⏭️ 3 skipped"; "nothing proofed" when there are
-// none. A backup skipped as already proven has its own count, so "skipped"
-// holds only those not proofed for another reason.
+// CountsLine is the number of guests, then their counts with markers, the
+// non-zero ones only: "39 guests · ✅ 12 proven · ☑️ 11 previously proven ·
+// ❌ 1 failed · ⚠️ 2 error · ⚠️ 1 booted · ⏭️ 4 skipped · 🚫 8 excluded ·
+// 📄 1 template"; "nothing proofed" when there are none. Every guest is in
+// exactly one count (issue #101): "skipped" holds only those not proofed
+// for a reason other than an earlier proof, an exclusion or a template.
 func CountsLine(s model.RunSummary) string {
 	c := s.Counts()
-	already := 0
+	already, excluded, templates := 0, 0, 0
 	for _, r := range s.Results {
-		if r.Verdict == model.Skipped && r.AlreadyProven {
+		if r.Verdict != model.Skipped {
+			continue
+		}
+		switch {
+		case r.AlreadyProven:
 			already++
+		case r.Excluded:
+			excluded++
+		case r.Template:
+			templates++
 		}
 	}
 	var parts []string
@@ -212,7 +259,9 @@ func CountsLine(s model.RunSummary) string {
 		{c[model.Failed], MarkFailed, "failed"},
 		{c[model.Error], MarkWarn, "error"},
 		{c[model.Booted], MarkWarn, "booted"},
-		{c[model.Skipped] - already, MarkSkipped, "skipped"},
+		{c[model.Skipped] - already - excluded - templates, MarkSkipped, "skipped"},
+		{excluded, MarkExcluded, "excluded"},
+		{templates, MarkTemplate, plural(templates, "template")},
 	} {
 		if n := v.n; n > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d %s", v.mark, n, v.word))
@@ -221,5 +270,13 @@ func CountsLine(s model.RunSummary) string {
 	if len(parts) == 0 {
 		return "nothing proofed"
 	}
-	return strings.Join(parts, " · ")
+	return fmt.Sprintf("%d %s · ", len(s.Results), plural(len(s.Results), "guest")) + strings.Join(parts, " · ")
+}
+
+// plural is word, with an "s" unless n is 1.
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }

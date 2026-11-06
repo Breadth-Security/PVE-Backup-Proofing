@@ -16,3 +16,17 @@ func TestTemplates(t *testing.T) {
 		t.Error("Templates returned shared backing memory")
 	}
 }
+
+// Every list the daemon sends has a section in the body (issue #101: a key
+// the node helper accepts but no template shows would drop guests silently).
+func TestBodyShowsEveryList(t *testing.T) {
+	body := string(Templates()["pbp-body.txt.hbs"])
+	for _, k := range DataKeys {
+		if _, isList := TemplateData(sectionsSummary(), "pve1")[k].([]string); !isList {
+			continue
+		}
+		if !strings.Contains(body, "{{#each "+k+"}}") {
+			t.Errorf("body has no {{#each %s}}", k)
+		}
+	}
+}

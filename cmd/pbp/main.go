@@ -463,9 +463,8 @@ func (a *app) runNow(ctx context.Context, cfg config.Config, guest int) int {
 		}
 	}
 	s := a.runOnce(ctx, cfg, run.Options{Trigger: "manual", OnlyVMID: guest})
-	c := s.Counts()
-	fprintf(a.stdout, "run %s: %s; proven %d, failed %d, booted %d, skipped %d, error %d\n",
-		s.ID, s.Severity(), c[model.Proven], c[model.Failed], c[model.Booted], c[model.Skipped], c[model.Error])
+	// The same counts as run.log and the notification (issue #101).
+	fprintf(a.stdout, "run %s: %s · %s\n", s.ID, s.Severity(), report.CountsLine(s))
 	if s.RunError != "" {
 		fprintf(a.stdout, "run error: %s\n", s.RunError)
 	}

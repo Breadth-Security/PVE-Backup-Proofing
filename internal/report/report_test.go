@@ -63,13 +63,19 @@ func sectionsSummary() model.RunSummary {
 				NotCovered: []model.NotCovered{{Unit: "nfs-home.mount", Piece: model.MissingPiece{Kind: "network-storage", Path: "/nfs/home"}}}},
 			{Backup: bk(model.KindLXC, 101), Name: "dns01", Verdict: model.Error, Reason: "restore failed"},
 			{Backup: bk(model.KindQEMU, 117), Name: "win01", Verdict: model.Booted, Reason: "guest agent missing"},
-			{Backup: bk(model.KindQEMU, 104), Verdict: model.Skipped, Reason: "insufficient node memory"},
+			{Backup: bk(model.KindQEMU, 104), Name: "db02", Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 105), Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 100), Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
 			{Backup: bk(model.KindQEMU, 108), Name: "app01", Verdict: model.Proven},
 			{Backup: bk(model.KindLXC, 109), Verdict: model.Proven},
 			{Backup: bk(model.KindQEMU, 99), Name: "fw01", Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
 			{Backup: bk(model.KindLXC, 120), Name: "dns02", Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
+			{Backup: bk(model.KindQEMU, 138), Verdict: model.Skipped, Reason: "excluded by config (tag test)", Excluded: true, Rule: "tag test",
+				Prior: model.Prior{Verdict: model.Failed, At: time.Date(2026, 10, 20, 3, 0, 0, 0, edt)}},
+			{Backup: bk(model.KindQEMU, 115), Name: "web02", Verdict: model.Skipped, Reason: "excluded by config (guests: 115)", Excluded: true, Rule: "guests: 115",
+				Prior: model.Prior{Verdict: model.Proven, At: time.Date(2026, 10, 12, 6, 14, 0, 0, time.UTC)}},
+			{Backup: bk(model.KindLXC, 119), Verdict: model.Skipped, Reason: "excluded by config (guests: 119)", Excluded: true, Rule: "guests: 119"},
+			{Backup: bk(model.KindQEMU, 5000), Name: "tmpl", Verdict: model.Skipped, Reason: "template (not bootable)", Template: true},
 		},
 	}
 }
@@ -83,13 +89,22 @@ func TestTemplateDataSections(t *testing.T) {
 		"logs":              "/var/log/pbp/2026-10-21_02-00-00_schedule/",
 		"summary":           "1 failed, 1 error, 1 booted, 2 skipped · 2 proven",
 		"mark":              "❌",
-		"counts":            "✅ 2 proven · ☑️ 3 previously proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 2 skipped",
+		"counts":            "14 guests · ✅ 2 proven · ☑️ 3 previously proven · ❌ 1 failed · ⚠️ 1 error · ⚠️ 1 booted · ⏭️ 2 skipped · 🚫 3 excluded · 📄 1 template",
 		"proven":            []string{"CT109", "VM108: app01"},
 		"previously-proven": []string{"CT120: dns02", "VM99: fw01", "VM100"},
 		"failed":            []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
 		"errored":           []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
 		"booted":            []string{"VM117 win01 · backup Oct 20 02:00 · guest agent missing"},
-		"skipped":           []string{"insufficient node memory: VM104, VM105"},
+		"skipped": []string{
+			"VM104 db02 · backup Oct 20 02:00 · insufficient node memory",
+			"VM105 · backup Oct 20 02:00 · insufficient node memory",
+		},
+		"excluded": []string{
+			"CT119 (guests: 119) · never proofed",
+			"VM115: web02 (guests: 115) · last PROVEN 2026-10-12 02:14",
+			"VM138 (tag test) · last FAILED 2026-10-20 03:00",
+		},
+		"templates": []string{"VM5000: tmpl"},
 	}
 	for k, v := range want {
 		if fmt.Sprint(d[k]) != fmt.Sprint(v) {
@@ -557,12 +572,20 @@ func TestCountsLineAndMarks(t *testing.T) {
 	if got := CountsLine(model.RunSummary{}); got != "nothing proofed" {
 		t.Errorf("empty = %q", got)
 	}
-	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{{Verdict: model.Proven}}}); got != "✅ 1 proven" {
+	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{{Verdict: model.Proven}}}); got != "1 guest · ✅ 1 proven" {
 		t.Errorf("proven only = %q", got)
 	}
 	already := model.GuestResult{Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true}
-	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{already, already}}); got != "☑️ 2 previously proven" {
+	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{already, already}}); got != "2 guests · ☑️ 2 previously proven" {
 		t.Errorf("already proven only = %q", got)
+	}
+	// Each guest is in exactly one count, so they add up to the total
+	// (issue #101): excluded guests and templates are not "skipped".
+	excluded := model.GuestResult{Verdict: model.Skipped, Reason: "excluded by config (guests: 1)", Excluded: true}
+	tmpl := model.GuestResult{Verdict: model.Skipped, Reason: "template (not bootable)", Template: true}
+	memory := model.GuestResult{Verdict: model.Skipped, Reason: "insufficient node memory"}
+	if got := CountsLine(model.RunSummary{Results: []model.GuestResult{already, excluded, excluded, tmpl, memory}}); got != "5 guests · ☑️ 1 previously proven · ⏭️ 1 skipped · 🚫 2 excluded · 📄 1 template" {
+		t.Errorf("skips = %q", got)
 	}
 	for sev, want := range map[string]string{"info": "✅", "warning": "⚠️", "error": "❌"} {
 		if got := SeverityMark(sev); got != want {

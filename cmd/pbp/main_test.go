@@ -239,7 +239,7 @@ func TestRunWiring(t *testing.T) {
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Trigger != "manual" {
 		t.Fatalf("runs = %+v", runs)
 	}
-	if !strings.Contains(e.out.String(), "run "+id+": info; proven 0, failed 0, booted 0, skipped 1, error 0") {
+	if !strings.Contains(e.out.String(), "run "+id+": info · 1 guest · ☑️ 1 previously proven") {
 		t.Errorf("stdout = %q", e.out)
 	}
 	ents, _ := os.ReadDir(e.logDir)
@@ -260,7 +260,7 @@ func TestRunWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const result = "VM101 SKIPPED · already proven"
+	const result = "VM101 PREVIOUSLY PROVEN"
 	if !strings.Contains(string(rb), result) || strings.Contains(string(rb), "VM102") {
 		t.Errorf("run log = %s", rb)
 	}

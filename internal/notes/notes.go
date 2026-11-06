@@ -103,6 +103,27 @@ func isName(line, name string) bool {
 	return line == clean(name, maxName) || line == clean(name, len(name)+1)
 }
 
+// verdictLine captures the verdict and time of a PBP line in either format.
+var verdictLine = regexp.MustCompile(`^(?:.*` + regexp.QuoteMeta(sep) + `)?` + linePrefix +
+	`(PROVEN|FAILED|BOOTED|SKIPPED|ERROR) (` + timePattern + `)` + regexp.QuoteMeta(sep))
+
+// Verdict is the verdict of the PBP line in notes and when it was reached,
+// read in loc (a line carries no zone), and whether notes have one.
+func Verdict(notes string, loc *time.Location) (model.Verdict, time.Time, bool) {
+	for _, l := range strings.Split(notes, "\n") {
+		m := verdictLine.FindStringSubmatch(strings.TrimRight(l, "\r"))
+		if m == nil {
+			continue
+		}
+		at, err := time.ParseInLocation(timeLayout, m[2], loc)
+		if err != nil {
+			continue
+		}
+		return model.Verdict(m[1]), at, true
+	}
+	return "", time.Time{}, false
+}
+
 // namedLine captures the guest's name in front of a PBP line.
 var namedLine = regexp.MustCompile(`^(.+?)` + regexp.QuoteMeta(sep) + linePrefix + `(?:PROVEN|FAILED|BOOTED|SKIPPED|ERROR) ` + timePattern + regexp.QuoteMeta(sep))
 

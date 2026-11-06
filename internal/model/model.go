@@ -112,9 +112,22 @@ type GuestResult struct {
 	Template bool
 	// Excluded: SKIPPED because selection.exclude in the config names the
 	// guest. Skipped by design, so it does not raise severity either.
-	Excluded                      bool
+	Excluded bool
+	// Rule is the selection.exclude rule that excluded the guest, as its
+	// reason shows it ("guests: 101", "tag no-proof").
+	Rule string
+	// Prior is the newest PBP verdict on any of an excluded guest's
+	// backups, its status in the notification (issue #101).
+	Prior                         Prior
 	RestoreDuration, BootDuration time.Duration
 	BootLog                       string
+}
+
+// Prior is a PBP verdict an earlier run left in a backup's notes. A zero
+// Verdict means the guest has none.
+type Prior struct {
+	Verdict Verdict
+	At      time.Time
 }
 
 type RunSummary struct {
