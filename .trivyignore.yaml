@@ -11,3 +11,16 @@ misconfigurations:
     paths:
       - "test/nodee2e/Dockerfile"
     statement: short-lived test container; the test itself checks sshd is up
+
+vulnerabilities:
+  # GO-2026-5932 flags the whole golang.org/x/crypto module because its
+  # openpgp packages are unmaintained. PBP imports only x/crypto/ssh and
+  # ssh/knownhosts; no openpgp package is in the build (go list -deps), and
+  # govulncheck reports it as required but not called. The only fix is an
+  # untagged commit. Bump x/crypto to the first tagged release after
+  # v0.58.0 and drop this entry; it expires so it cannot be forgotten.
+  - id: GO-2026-5932
+    paths:
+      - "go.mod"
+    statement: x/crypto/openpgp is not imported; PBP uses only x/crypto/ssh
+    expired_at: 2027-02-01
