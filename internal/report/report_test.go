@@ -63,7 +63,7 @@ func sectionsSummary() model.RunSummary {
 				NotCovered: []model.NotCovered{{Unit: "nfs-home.mount", Piece: model.MissingPiece{Kind: "network-storage", Path: "/nfs/home"}}}},
 			{Backup: bk(model.KindLXC, 101), Name: "dns01", Verdict: model.Error, Reason: "restore failed"},
 			{Backup: bk(model.KindQEMU, 117), Name: "win01", Verdict: model.Booted, Reason: "guest agent missing"},
-			{Backup: bk(model.KindQEMU, 104), Verdict: model.Skipped, Reason: "insufficient node memory"},
+			{Backup: bk(model.KindQEMU, 104), Name: "db02", Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 105), Verdict: model.Skipped, Reason: "insufficient node memory"},
 			{Backup: bk(model.KindQEMU, 100), Verdict: model.Skipped, Reason: "already proven", AlreadyProven: true},
 			{Backup: bk(model.KindQEMU, 108), Name: "app01", Verdict: model.Proven},
@@ -95,7 +95,10 @@ func TestTemplateDataSections(t *testing.T) {
 		"failed":            []string{"VM102 web01 · backup Oct 20 02:00 · failed: a.service"},
 		"errored":           []string{"CT101 dns01 · backup Oct 20 02:00 · restore failed"},
 		"booted":            []string{"VM117 win01 · backup Oct 20 02:00 · guest agent missing"},
-		"skipped":           []string{"insufficient node memory: VM104, VM105"},
+		"skipped": []string{
+			"VM104 db02 · backup Oct 20 02:00 · insufficient node memory",
+			"VM105 · backup Oct 20 02:00 · insufficient node memory",
+		},
 		"excluded": []string{
 			"CT119 (guests: 119) · never proofed",
 			"VM115: web02 (guests: 115) · last PROVEN 2026-10-12 02:14",

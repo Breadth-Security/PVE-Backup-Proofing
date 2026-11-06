@@ -33,9 +33,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 	failed, errored, booted := []string{}, []string{}, []string{}
 	notCovered := []string{}
 	var proven, previously, excluded, templates []model.GuestResult
-	skipReasons := []string{} // reasons in the order they first occur
-	skipGuests := map[string][]string{}
-	problemSkips := 0
+	skipped := []string{}
 	for _, r := range s.Results {
 		label := r.Backup.Key.Label()
 		switch r.Verdict {
@@ -58,22 +56,15 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 			case r.Template:
 				templates = append(templates, r)
 			default:
-				if _, ok := skipGuests[r.Reason]; !ok {
-					skipReasons = append(skipReasons, r.Reason)
-				}
-				skipGuests[r.Reason] = append(skipGuests[r.Reason], label)
-				problemSkips++
+				// One guest per line with its name, like the other
+				// problem sections (issue #101).
+				skipped = append(skipped, guestLine(r, loc))
 			}
 		}
 		for _, n := range r.NotCovered {
 			notCovered = append(notCovered, clipLine(label+": "+n.LogLine()))
 		}
 	}
-	skipped := []string{}
-	for _, reason := range skipReasons {
-		skipped = append(skipped, reason+": "+strings.Join(skipGuests[reason], ", "))
-	}
-
 	return map[string]any{
 		"node":   node,
 		"run-id": s.ID,
@@ -81,7 +72,7 @@ func TemplateData(s model.RunSummary, node string) map[string]any {
 			s.Started.Format("Mon 2006-01-02 15:04 MST"), trigger, Dur(s.Ended.Sub(s.Started))),
 		"mark":    SeverityMark(s.Severity()),
 		"counts":  CountsLine(s),
-		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), problemSkips, len(proven)),
+		"summary": subjectSummary(s.RunError != "", len(failed), len(errored), len(booted), len(skipped), len(proven)),
 		"logs":    logs,
 		// run-error and environment-errors are unchanged.
 		"run-error":          s.RunError,

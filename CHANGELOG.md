@@ -6,6 +6,7 @@
 
 - **A clearer run summary** (issue #101). Every guest is now in exactly one count, so the counts add up, and the line starts with the total: `39 guests · ✅ 12 proven · ☑️ 11 previously proven · ⚠️ 2 error · ⚠️ 1 booted · ⏭️ 4 skipped · 🚫 8 excluded · 📄 1 template`. "Skipped" now means only guests not proofed for another reason (such as not enough memory or the run's deadline); guests excluded by configuration and templates have counts of their own.
 - **Excluded guests get their own section, with their status** (issue #101). The notification lists them under 🚫 EXCLUDED BY CONFIGURATION, one per line instead of one line per rule, each with the rule that excluded it and the newest PBP verdict on any of its backups: `VM115: web02 (guests: 115) · last PROVEN 2026-10-12 02:14`, or `never proofed`. Templates are listed under 📄 TEMPLATES. Neither raises the run's severity, as before.
+- **Skipped guests are listed one per line with their name** (issue #101), like the other problem sections: `VM104 db02 · backup Nov 5 02:00 · insufficient node memory`, instead of one line per reason with bare labels (`insufficient node memory: CT100, VM104, VM105`).
 - **`run.log` names skips as the counts do**: `VM110 PREVIOUSLY PROVEN`, `VM115 EXCLUDED · guests: 115 · last PROVEN 2026-10-12 02:14`, `VM5000 TEMPLATE · not bootable`, instead of `SKIPPED · …`, and `pbp run` ends with the same counts line (`run <id>: warning · 39 guests · …`) instead of its own tally. The guest's own log, the backup notes and the verdict PBP records are unchanged.
 
 ## v0.8.3

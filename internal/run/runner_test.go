@@ -634,6 +634,11 @@ func TestRunRAMGate(t *testing.T) {
 	wantResult(t, r[101], model.Proven, "")
 	wantResult(t, r[102], model.Skipped, "insufficient node memory")
 	wantResult(t, r[103], model.Skipped, "insufficient node memory")
+	// Named like every other guest in the notification (issue #101), from
+	// the backed-up config when the live guest list does not name it.
+	if r[102].Name != "g102" || r[103].Name != "g103" {
+		t.Errorf("names = %q, %q, want g102, g103", r[102].Name, r[103].Name)
+	}
 	if n := strings.Count(strings.Join(f.api.CallLog(), "\n"), "NodeMemory pve1"); n != 3 {
 		t.Errorf("NodeMemory fetched %d times, want once per job", n)
 	}

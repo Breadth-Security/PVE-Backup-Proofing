@@ -431,10 +431,12 @@ func (p *pool) run(ctx context.Context, queue []model.Backup, start time.Time) [
 	return results
 }
 
-// skip logs reason to the guest's log and returns b's SKIPPED result.
+// skip logs reason to the guest's log and returns b's SKIPPED result,
+// named from the live guest or its notes (callers that have read the
+// backed-up config name it from that).
 func (p *pool) skip(glog *slog.Logger, b model.Backup, reason string) model.GuestResult {
 	glog.Info("skipped: " + reason)
-	return model.GuestResult{Backup: b, Verdict: model.Skipped, Reason: reason}
+	return model.GuestResult{Backup: b, Name: p.nameOf(b, nil), Verdict: model.Skipped, Reason: reason}
 }
 
 // logResult writes a guest's final result to the run log. Skips by design
@@ -545,6 +547,7 @@ func (p *pool) admitGuarded(ctx context.Context, glog *slog.Logger, b model.Back
 func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (lease, *model.GuestResult) {
 	d := p.d
 	node, store := d.Cfg.Target.Node, d.Cfg.Restore.Storage
+	var orig map[string]string // the backed-up config, once read
 	fail := func(v model.Verdict, reason string) (lease, *model.GuestResult) {
 		reason = oneLine(reason)
 		if v == model.Error && ctx.Err() != nil {
@@ -553,11 +556,12 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		}
 		if v == model.Skipped {
 			r := p.skip(glog, b, reason)
+			r.Name = p.nameOf(b, orig)
 			return lease{}, &r
 		}
 		// Info, so it is not forwarded: the result line reports it.
 		glog.Info("guest not proofed: " + reason)
-		return lease{}, &model.GuestResult{Backup: b, Verdict: v, Reason: reason}
+		return lease{}, &model.GuestResult{Backup: b, Name: p.nameOf(b, orig), Verdict: v, Reason: reason}
 	}
 
 	at := d.Now()
@@ -580,7 +584,7 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		annotate(d, glog, b, *res, b.Key.Label())
 		return l, res
 	}
-	orig := sanitize.ParseConfigText(raw)
+	orig = sanitize.ParseConfigText(raw)
 	// Exclusion by a tag in the backed-up config: the guest may be gone or
 	// retagged since (the live tags were checked before admission).
 	if rule := d.Cfg.Selection.Exclude.ExcludedBy(string(b.Key.Kind), b.Key.VMID, sanitize.SplitList(orig["tags"])); rule != "" {
