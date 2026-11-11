@@ -106,7 +106,9 @@ func Run(ctx context.Context, d Deps, opt Options) model.RunSummary {
 			}
 			log.Info("preflight ok (" + report.Dur(d.Now().Sub(t0)) + ")")
 			envErrs = append(envErrs, strayTaggedErrors(ctx, d, log)...)
-			return execute(ctx, d, opt, start, log)
+			results, errs, warns := execute(ctx, d, opt, start, log)
+			envErrs = append(envErrs, warns...)
+			return results, errs
 		})
 		s.Results = results
 		runErrs = append(runErrs, errs...)
@@ -198,22 +200,23 @@ func finish(d Deps, log *slog.Logger, s model.RunSummary, rec state.RunRecord) {
 }
 
 // execute discovers the backups to proof and proofs them. It returns the
-// results in priority order and any run-level errors.
-func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slog.Logger) ([]model.GuestResult, []string) {
-	queue, old, prior, errs := discover(ctx, d, opt, log)
+// results in priority order, any run-level errors, and warnings about the
+// source storages (environment errors).
+func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slog.Logger) ([]model.GuestResult, []string, []string) {
+	queue, old, prior, errs, warns := discover(ctx, d, opt, log)
 	if queue == nil {
-		return nil, errs
+		return nil, errs, warns
 	}
 	logDiscovery(d, queue, log)
 	live, names, err := liveGuests(ctx, d, log)
 	if err != nil {
 		log.Error("read guest tags for selection.exclude.tags", "err", err)
-		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error())
+		return nil, append(errs, "read guest tags for selection.exclude.tags: "+err.Error()), warns
 	}
 	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, liveNames: names, prior: prior, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
 	p.migrateNotes(ctx, old, start)
-	return results, append(errs, p.errs...)
+	return results, append(errs, p.errs...), warns
 }
 
 // discover lists every source storage and returns the newest backup per
@@ -221,11 +224,21 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 // format (migrateNotes), and each guest's newest PBP verdict on any of its
 // backups (an excluded guest's status, issue #101). A storage that cannot
 // be listed is reported and skipped; if none can be listed the queue is nil.
-func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []model.Backup, map[model.GuestKey]model.Prior, []string) {
+// A source storage the token lacks privileges on is skipped with a warning,
+// and so is one that lists no backups: PVE silently leaves out the backups
+// the token may not see (issue #107).
+func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]model.Backup, []model.Backup, map[model.GuestKey]model.Prior, []string, []string) {
 	var all []model.Backup
-	var errs []string
-	listed := 0
+	var errs, warns []string
+	listed, skipped := 0, 0
 	for _, st := range d.Cfg.Sources.Storages {
+		if problem := sourcePrivilegeProblem(ctx, d, st); problem != "" {
+			msg := fmt.Sprintf("storage %s not read: %s", st, problem)
+			log.Warn(msg)
+			warns = append(warns, msg)
+			skipped++
+			continue
+		}
 		bs, err := d.API.ListBackups(ctx, d.Cfg.Target.Node, st)
 		if err != nil {
 			log.Error("list backups failed", "storage", st, "err", err)
@@ -233,10 +246,18 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 			continue
 		}
 		listed++
+		if len(bs) == 0 {
+			msg := emptyStorageWarning(d, st)
+			log.Warn(msg)
+			warns = append(warns, msg)
+		}
 		all = append(all, bs...)
 	}
 	if listed == 0 {
-		return nil, nil, nil, errs
+		if skipped > 0 {
+			errs = append(errs, "no source storage could be read")
+		}
+		return nil, nil, nil, errs, warns
 	}
 	rng := d.Cfg.Target.VMIDRange
 	all, inRange := discovery.OutsideRange(all, rng[0], rng[1])
@@ -269,7 +290,7 @@ func discover(ctx context.Context, d Deps, opt Options, log *slog.Logger) ([]mod
 			lastProven[b.Key] = t
 		}
 	}
-	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), old, priors(all, d.Now().Location()), errs
+	return append([]model.Backup{}, discovery.Order(newest, lastProven)...), old, priors(all, d.Now().Location()), errs, warns
 }
 
 // priors is the newest PBP verdict in the notes of each guest's backups,

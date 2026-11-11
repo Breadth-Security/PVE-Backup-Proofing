@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
 
 // privCalls are the Privileges calls the fake API recorded, in order.
@@ -66,5 +68,96 @@ func TestPreflightPrivilegesReadError(t *testing.T) {
 	err := Preflight(context.Background(), f.d)
 	if err == nil || !strings.Contains(err.Error(), "read the token's privileges on /sdn/zones/localnetwork") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// hasEnv reports whether an environment error of s contains sub.
+func hasEnv(s model.RunSummary, sub string) bool {
+	return slices.ContainsFunc(s.EnvironmentErrors, func(e string) bool { return strings.Contains(e, sub) })
+}
+
+func listed(f *runFixture, storage string) bool {
+	return slices.ContainsFunc(f.api.CallLog(), func(c string) bool { return strings.HasPrefix(c, "ListBackups pve1 "+storage) })
+}
+
+func TestRunSkipsSourceStorageWithoutPrivileges(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	f.api.Privs = map[string][]string{"/storage/pbs": {"Datastore.Audit"}}
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if slices.Contains(f.api.CallLog(), "ListBackups pve1 pbs") || !listed(f, "pbs-sync") {
+		t.Errorf("calls %q: want pbs-sync listed, pbs not", f.api.CallLog())
+	}
+	if _, ok := byVMID(t, s)[102]; !ok {
+		t.Error("guest on pbs-sync not proofed")
+	}
+	if !hasEnv(s, "storage pbs not read: token pbp@pve!proof lacks Datastore.AllocateSpace on /storage/pbs") {
+		t.Errorf("env = %q", s.EnvironmentErrors)
+	}
+	if s.Severity() != "warning" || s.RunError != "" {
+		t.Errorf("severity %s, run error %q", s.Severity(), s.RunError)
+	}
+}
+
+func TestRunSkipsSourceWhenPrivilegesUnreadable(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	f.api.FailOn = func(method string, args []string) error {
+		if method == "Privileges" && slices.Equal(args, []string{"/storage/pbs"}) {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if !hasEnv(s, "storage pbs not read: cannot read the token's privileges on /storage/pbs") {
+		t.Errorf("env = %q", s.EnvironmentErrors)
+	}
+	if _, ok := byVMID(t, s)[102]; !ok {
+		t.Error("guest on pbs-sync not proofed")
+	}
+}
+
+func TestRunWarnsOnSourceStorageWithNoBackups(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	f.d.Cfg.Sources.Storages = []string{"pbs", "pbs-sync"} // pbs configured, but empty
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if !hasEnv(s, "storage pbs lists no backups for the token") || hasEnv(s, "storage pbs-sync lists no backups") {
+		t.Errorf("env = %q", s.EnvironmentErrors)
+	}
+	if s.Severity() != "warning" {
+		t.Errorf("severity %s", s.Severity())
+	}
+}
+
+func TestRunNoWarningWhenOnlyInRangeBackups(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 990005, 1024, "")
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if hasEnv(s, "lists no backups") {
+		t.Errorf("env = %q", s.EnvironmentErrors)
+	}
+}
+
+func TestRunGuestDoesNotWarnForOtherGuestsBackups(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	s := f.run(context.Background(), Options{Trigger: "manual", OnlyVMID: 102})
+	if hasEnv(s, "lists no backups") {
+		t.Errorf("env = %q", s.EnvironmentErrors)
+	}
+}
+
+func TestRunAllSourcesUnreadable(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.add("pbs", model.KindQEMU, 101, 1024, "")
+	f.add("pbs-sync", model.KindQEMU, 102, 1024, "")
+	f.api.Privs = map[string][]string{"/storage/pbs": {}, "/storage/pbs-sync": {}}
+	s := f.run(context.Background(), Options{Trigger: "manual"})
+	if !strings.Contains(s.RunError, "no source storage could be read") || s.Severity() != "error" {
+		t.Errorf("run error %q, severity %s", s.RunError, s.Severity())
 	}
 }

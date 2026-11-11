@@ -178,6 +178,7 @@ func TestRunReportsTaggedGuestOnAnotherNode(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
 	g := pve.GuestRef{Key: model.GuestKey{Kind: model.KindLXC, VMID: 990003}, Node: "pve2", Name: "web", Tags: []string{"pbp"}}
 	f.tgt.StrayGuests = []pve.GuestRef{g}
+	f.add("pbs", model.KindQEMU, 101, 1024, "") // a storage that lists nothing would warn too
 	s := f.run(context.Background(), Options{Trigger: "schedule"})
 	want := "CT 990003 (web) is tagged pbp and in the PBP range but on node pve2, not pve1; not touched (remove it by hand if it is a leftover)"
 	if !slices.Equal(s.EnvironmentErrors, []string{want}) {

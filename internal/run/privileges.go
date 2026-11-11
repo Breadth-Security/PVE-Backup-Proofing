@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
@@ -41,4 +42,30 @@ func checkCorePrivileges(ctx context.Context, d Deps) error {
 		return errors.New(describe(d, missing))
 	}
 	return nil
+}
+
+// sourcePrivilegeProblem says why the token cannot read source storage st
+// ("" if it can). The restore storage is a core path, checked by preflight.
+func sourcePrivilegeProblem(ctx context.Context, d Deps, st string) string {
+	for _, n := range needs(d) {
+		if n.Source != st {
+			continue
+		}
+		missing, err := privs.Check(ctx, d.API, []privs.Need{n})
+		if err != nil {
+			return "cannot " + err.Error() // "cannot read the token's privileges on …"
+		}
+		return describe(d, missing)
+	}
+	return ""
+}
+
+// emptyStorageWarning is the warning for a source storage that lists no
+// backups to the token: PVE leaves out, without an error, every backup the
+// caller may not see.
+func emptyStorageWarning(d Deps, st string) string {
+	user, token, _ := strings.Cut(d.Cfg.Target.API.TokenID, "!")
+	return fmt.Sprintf("storage %s lists no backups for the token: it is empty, or the token cannot see them "+
+		"(check: pveum user token permissions %s %s --path /vms/<vmid of a guest backed up there>; see docs/troubleshooting.md)",
+		st, user, token)
 }
