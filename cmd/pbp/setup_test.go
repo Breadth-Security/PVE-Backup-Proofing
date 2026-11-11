@@ -240,6 +240,59 @@ func TestSetupReprintsNodeLinesWhenTokenLacksPrivileges(t *testing.T) {
 	}
 }
 
+// A storage problem that no node line can fix (here: a PBS storage that
+// holds no backups) makes setup say what to fix, without the node lines
+// (#119).
+func TestSetupStorageProblemSkipsNodeLines(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.run(answers + e.reply(nil)); code != exitOK {
+		t.Fatalf("first run: exit %d err %s", code, e.errOut)
+	}
+	e.api.Storage["pbs-a"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images"}
+	code := e.run("")
+	out := e.out.String()
+	if !strings.Contains(out, "does not pass the check") || !strings.Contains(out, "storage pbs-a does not hold backup content") ||
+		!strings.Contains(out, msgFixStorages) || strings.Contains(out, msgPasteReply) || strings.Contains(out, "pbp node setup") {
+		t.Errorf("out:\n%s", out)
+	}
+	if code != exitFail {
+		t.Errorf("exit %d, want %d", code, exitFail)
+	}
+}
+
+// The check after a pasted reply says the same when its only failure is a
+// storage problem.
+func TestSetupStorageProblemAfterReply(t *testing.T) {
+	e := newSetupEnv(t)
+	e.api.Storage["pbs-a"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images"}
+	code := e.run(answers + e.reply(nil))
+	if out := e.out.String(); !strings.Contains(out, "storage pbs-a does not hold backup content") || !strings.Contains(out, msgFixStorages) {
+		t.Errorf("out:\n%s", out)
+	}
+	if code != exitFail {
+		t.Errorf("exit %d, want %d", code, exitFail)
+	}
+}
+
+// With a failure the node line can fix as well, the node lines are printed
+// as before.
+func TestSetupMixedProblemsPrintNodeLines(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.run(answers + e.reply(nil)); code != exitOK {
+		t.Fatalf("first run: exit %d err %s", code, e.errOut)
+	}
+	e.api.Storage["pbs-a"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images"}
+	e.api.Privs = map[string][]string{"/vms": {}}
+	code := e.run(e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "" }))
+	out := e.out.String()
+	if !strings.Contains(out, msgPasteReply) || strings.Contains(out, msgFixStorages) {
+		t.Errorf("out:\n%s", out)
+	}
+	if code != exitFail {
+		t.Errorf("exit %d, want %d", code, exitFail)
+	}
+}
+
 func TestSetupNeedRotate(t *testing.T) {
 	e := newSetupEnv(t)
 	code := e.run(answers + e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "" }))

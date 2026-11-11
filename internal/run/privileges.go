@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
@@ -77,17 +79,17 @@ func emptyStorageWarning(d Deps, st string) string {
 // restore storage that is also a source gets the backup check only; preflight
 // covers its privileges (#115). Unlike a run, which skips a storage the token
 // cannot read with a warning, it fails, so pbp setup prints the node lines
-// that grant the missing ACLs.
+// that grant the missing ACLs. Its error is a *SourceProblems.
 func CheckSources(ctx context.Context, d Deps) error {
 	restore := d.Cfg.Restore.Storage
-	var problems []string
+	var sp SourceProblems
 	for _, n := range needs(d) {
 		st := n.Source
 		switch {
 		case st != "":
 			if p := sourcePrivilegeProblem(ctx, d, st); p != "" {
 				// Its status would only add PVE's 403 for the same cause.
-				problems = append(problems, p)
+				sp.Access = append(sp.Access, p)
 				continue
 			}
 		case n.Path == "/storage/"+restore && slices.Contains(d.Cfg.Sources.Storages, restore):
@@ -98,17 +100,36 @@ func CheckSources(ctx context.Context, d Deps) error {
 			continue
 		}
 		status, err := d.API.StorageStatus(ctx, d.Cfg.Target.Node, st)
+		var ae *pve.APIError
 		switch {
+		case err != nil && errors.As(err, &ae) && ae.Status != http.StatusForbidden:
+			// PVE's own answer, such as a storage that does not exist on
+			// the node: the storage definition is at fault.
+			sp.Storage = append(sp.Storage, fmt.Sprintf("storage %s: %v", st, err))
 		case err != nil:
-			problems = append(problems, fmt.Sprintf("storage %s: %v", st, err))
+			// A 403 (rights the node line grants), or no answer at all (a
+			// lost connection, a timeout): not a storage problem setup
+			// could name, so the node lines stay.
+			sp.Access = append(sp.Access, fmt.Sprintf("storage %s: %v", st, err))
 		case !status.Active || !status.Enabled:
-			problems = append(problems, fmt.Sprintf("storage %s is not active and enabled", st))
+			sp.Storage = append(sp.Storage, fmt.Sprintf("storage %s is not active and enabled", st))
 		case !slices.Contains(sanitize.SplitList(status.Content), "backup"):
-			problems = append(problems, fmt.Sprintf("storage %s does not hold backup content (has %q)", st, status.Content))
+			sp.Storage = append(sp.Storage, fmt.Sprintf("storage %s does not hold backup content (has %q)", st, status.Content))
 		}
 	}
-	if len(problems) > 0 {
-		return errors.New(strings.Join(problems, "; "))
+	if len(sp.Access)+len(sp.Storage) > 0 {
+		return &sp
 	}
 	return nil
+}
+
+// SourceProblems is what CheckSources found: Access is what the token lacks
+// (the node line grants it), Storage what is wrong with a storage itself
+// (inactive, missing, no backup content), which no node line fixes (#119).
+type SourceProblems struct {
+	Access, Storage []string
+}
+
+func (e *SourceProblems) Error() string {
+	return strings.Join(append(append([]string{}, e.Access...), e.Storage...), "; ")
 }

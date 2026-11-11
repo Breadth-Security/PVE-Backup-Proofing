@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -245,6 +246,17 @@ func (c Config) validate() error {
 	}
 	if len(c.Sources.Storages) == 0 {
 		bad("sources.storages", "at least one storage is required")
+	}
+	// A run lists each entry as written, so a repeat would be listed (and
+	// warned about) twice: it is a typo, not a choice (#119).
+	for i, st := range c.Sources.Storages {
+		key := fmt.Sprintf("sources.storages[%d]", i)
+		switch {
+		case strings.TrimSpace(st) == "":
+			bad(key, "empty storage name")
+		case slices.Contains(c.Sources.Storages[:i], st):
+			bad(key, "%s is listed twice", st)
+		}
 	}
 	if c.Restore.Storage == "" {
 		bad("restore.storage", "required")

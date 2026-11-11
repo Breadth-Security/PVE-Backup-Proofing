@@ -666,6 +666,10 @@ func TestBrokenBackupFails(t *testing.T) {
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("install unit: %v %+v", err, res)
 	}
+	// Registered before vzdump, as in throwawayOn: the backup goes however
+	// the test ends (#119).
+	before := e.backupsOf(t, ctx, store, vmid)
+	t.Cleanup(func() { e.freeNewBackups(t, store, vmid, before) })
 	out := e.sh(t, "vzdump "+v+" --storage "+sshx.Quote(store)+" --mode stop --notes-template '{{guestname}}' 2>&1")
 	t.Logf("vzdump:\n%s", out)
 	destroyCT()
@@ -677,12 +681,6 @@ func TestBrokenBackupFails(t *testing.T) {
 	if b.Storage != store || !strings.Contains(b.VolID, "backup/ct/"+v+"/") {
 		t.Fatalf("unexpected backup %+v", b)
 	}
-	t.Cleanup(func() {
-		res, err := e.admin.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
-		if err != nil || res.ExitCode != 0 {
-			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
-		}
-	})
 
 	r := e.proofThrowaway(t, key)
 	if r.Verdict != model.Failed || !slices.Contains(r.FailedUnits, unit) {
@@ -854,8 +852,8 @@ func (e *env) exists(t *testing.T, ctx context.Context, vmid int) bool {
 // the restore storage, NIC on the isolated bridge, extra pct create args
 // appended), runs configure on it, backs it up to PBP_IT_BROKEN_STORAGE with
 // "vzdump --mode stop", destroys it (clearing its protection first) and
-// returns the backup. The backup is deleted with "pvesm free" when the test
-// ends.
+// returns the backup. Any backup of vmid it made is deleted with "pvesm free"
+// when the test ends, however it ends (freeNewBackups).
 func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, configure func(v string)) model.Backup {
 	t.Helper()
 	return e.throwawayOn(t, envStr(t, "PBP_IT_BROKEN_STORAGE"), vmid, tmpl, hostname, extra, configure)
@@ -885,6 +883,10 @@ func (e *env) throwawayOn(t *testing.T, store string, vmid int, tmpl, hostname, 
 		"--rootfs %s:2 --net0 name=eth0,bridge=%s --start 1 %s",
 		v, sshx.Quote(tmpl), hostname, e.cfg.Restore.Storage, e.cfg.Target.Bridge, extra))
 	configure(v)
+	// Registered before vzdump, so whatever backup it makes is deleted
+	// however the test ends (#119).
+	before := e.backupsOf(t, ctx, store, vmid)
+	t.Cleanup(func() { e.freeNewBackups(t, store, vmid, before) })
 	out := e.sh(t, "vzdump "+v+" --storage "+sshx.Quote(store)+" --mode stop --notes-template '{{guestname}}' 2>&1")
 	t.Logf("vzdump:\n%s", out)
 	destroyCT()
@@ -899,13 +901,51 @@ func (e *env) throwawayOn(t *testing.T, store string, vmid int, tmpl, hostname, 
 		t.Fatalf("unexpected backup %+v", b)
 	}
 	t.Logf("created backup %s", b.VolID)
-	t.Cleanup(func() {
-		res, err := e.admin.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
+	return b
+}
+
+// backupsOf returns the volids of vmid's backups on store.
+func (e *env) backupsOf(t *testing.T, ctx context.Context, store string, vmid int) map[string]bool {
+	t.Helper()
+	bs, err := e.api.ListBackups(ctx, e.cfg.Target.Node, store)
+	if err != nil {
+		t.Fatalf("list backups on %s: %v", store, err)
+	}
+	out := map[string]bool{}
+	for _, b := range bs {
+		if b.Key.VMID == vmid {
+			out[b.VolID] = true
+		}
+	}
+	return out
+}
+
+// freeNewBackups deletes vmid's backups on store that are not in before: the
+// ones this test made. It clears protected first, which a crashed run may
+// have left set and which would make "pvesm free" refuse.
+func (e *env) freeNewBackups(t *testing.T, store string, vmid int, before map[string]bool) {
+	t.Helper()
+	ctx := context.Background()
+	bs, err := e.api.ListBackups(ctx, e.cfg.Target.Node, store)
+	if err != nil {
+		t.Errorf("list backups on %s for cleanup: %v", store, err)
+		return
+	}
+	off := false
+	for _, b := range bs {
+		if b.Key.VMID != vmid || before[b.VolID] {
+			continue
+		}
+		if b.Protected {
+			if err := e.api.SetVolumeAttrs(ctx, e.cfg.Target.Node, store, b.VolID, nil, &off); err != nil {
+				t.Errorf("unprotect test backup %s: %v", b.VolID, err)
+			}
+		}
+		res, err := e.admin.Run(ctx, "pvesm free "+sshx.Quote(b.VolID), nil)
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
 		}
-	})
-	return b
+	}
 }
 
 // waitOpenRCDefault waits until the container's OpenRC reached the default

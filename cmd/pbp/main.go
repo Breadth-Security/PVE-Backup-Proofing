@@ -597,11 +597,23 @@ type checkOut struct {
 	// tokenRejected: the API answered 401, so the token secret is wrong
 	// (pbp setup then offers the --rotate-token line; code review 3.6).
 	tokenRejected bool
+	// fails counts the failed lines; sourcesStorageOnly: the source
+	// storages line failed only on problems with the storages themselves.
+	fails              int
+	sourcesStorageOnly bool
+}
+
+// storageOnly reports whether the one failed line is the source storages
+// line, failing only on what no node line fixes (an inactive storage, one
+// that holds no backups), so pbp setup prints what to fix instead (#119).
+func (c *checkOut) storageOnly() bool {
+	return c.fails == 1 && c.sourcesStorageOnly
 }
 
 func (c *checkOut) line(name string, err error) {
 	if err != nil {
 		c.ok = false
+		c.fails++
 		fprintf(c.w, "%s: FAIL: %v\n", name, err)
 		return
 	}
@@ -661,7 +673,10 @@ func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.St
 	} else {
 		c.line(preflightReadOnlyName, run.PreflightReadOnly(ctx, d))
 	}
-	c.line(sourcesName, run.CheckSources(ctx, d))
+	srcErr := run.CheckSources(ctx, d)
+	c.line(sourcesName, srcErr)
+	var sp *run.SourceProblems
+	c.sourcesStorageOnly = errors.As(srcErr, &sp) && len(sp.Access) == 0
 	if !c.ok {
 		return exitFail
 	}

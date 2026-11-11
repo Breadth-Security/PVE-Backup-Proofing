@@ -236,3 +236,38 @@ func TestCheckSourcesRestoreStorageAlsoSource(t *testing.T) {
 		t.Errorf("privileges read on %q", got)
 	}
 }
+
+// CheckSources keeps what the token lacks (the node line grants it) apart
+// from what is wrong with a storage itself (no node line fixes that), so pbp
+// setup knows whether to print the node lines (#119).
+func TestCheckSourcesSplitsAccessAndStorage(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
+	f.api.Storage["pbs-sync"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images"}
+	f.api.Privs = map[string][]string{"/storage/pbs": {"Datastore.Audit"}}
+	err := CheckSources(context.Background(), f.d)
+	var sp *SourceProblems
+	if !errors.As(err, &sp) || len(sp.Access) != 1 || len(sp.Storage) != 1 ||
+		!strings.Contains(sp.Access[0], "lacks Datastore.AllocateSpace on /storage/pbs") ||
+		!strings.Contains(sp.Storage[0], "storage pbs-sync does not hold backup content") {
+		t.Fatalf("err = %#v", err)
+	}
+}
+
+// A status read that fails without PVE's answer (a lost connection, a
+// timeout) is not a storage problem setup could name: it counts as Access,
+// so pbp setup prints the node lines as before (#119 review).
+func TestCheckSourcesUnknownStatusErrorIsAccess(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.api.FailOn = func(method string, args []string) error {
+		if method == "StorageStatus" && slices.Equal(args, []string{"pve1", "pbs"}) {
+			return errors.New("connection reset")
+		}
+		return nil
+	}
+	var sp *SourceProblems
+	if err := CheckSources(context.Background(), f.d); !errors.As(err, &sp) || len(sp.Access) != 1 || len(sp.Storage) != 0 ||
+		!strings.Contains(sp.Access[0], "connection reset") {
+		t.Errorf("err = %#v", err)
+	}
+}

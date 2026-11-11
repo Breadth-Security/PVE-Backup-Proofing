@@ -25,8 +25,10 @@ go test -tags integration ./test/integration/ -v -timeout 90m
 The node runs production guests. The tests only create, start and destroy
 guests inside `target.vmid_range`, only on the isolated bridge, and only
 change `notes` and `protected` on the backups they proof (restoring
-`protected`). The one exception is `TestBrokenBackupFails`, which creates its
-own backup and deletes exactly that backup again. Each proof and crash test
+`protected`). The one exception is the throwaway tests (`TestBrokenBackupFails`,
+`TestProofAlpine*`, `TestProofProtectedGuest`, `TestProofNamespacedStorage`):
+each creates its own backup and deletes the backup(s) it created again,
+however the test ends. Each proof and crash test
 checks this: it records every guest outside the range (status, name, tags
 and config, without `lock`) and the `protected` flag and notes of every
 backup on the source storages, and fails if any of them changed other than

@@ -217,7 +217,7 @@ A node file that differs from what setup writes stops it, as with `pbp node setu
 
 ## If something goes wrong
 
-**Interrupted, or something to fix.** Ctrl-C at any point keeps everything written so far. Run `pbp setup` again (the same command): it skips the questions, prints the node lines again and waits for the reply. When everything is in place and the check passes, it changes nothing and prints `setup has already been completed`. When the check fails (for example the node was reinstalled and has a new host key), it shows what failed and prints the node lines again; the new reply replaces `known_hosts`, `target.node` and the fingerprint, and setup lists each value it changed.
+**Interrupted, or something to fix.** Ctrl-C at any point keeps everything written so far. Run `pbp setup` again (the same command): it skips the questions, prints the node lines again and waits for the reply. When everything is in place and the check passes, it changes nothing and prints `setup has already been completed`. When the check fails (for example the node was reinstalled and has a new host key), it shows what failed and prints the node lines again (unless the only problem is a PBS storage itself, inactive or holding no backups, which the node lines cannot fix: then it says to fix the storage or `sources.storages` and run `pbp setup` again); the new reply replaces `known_hosts`, `target.node` and the fingerprint, and setup lists each value it changed.
 
 ### Lost token secret
 

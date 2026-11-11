@@ -22,6 +22,10 @@ const (
 	setupUsage     = "usage: pbp setup [--dir DIR] [--deb [--replace]]\n"
 	msgPasteReply  = "Paste the reply printed by pbp node setup, then press Enter:"
 	msgInterrupted = "pbp setup: interrupted; everything written so far stays; run pbp setup again to continue"
+	// msgFixStorages follows a check whose only failure is a storage
+	// problem, which the node lines would not change (#119).
+	msgFixStorages = "The node lines do not change this. Fix the storage named above on the node (pvesm status lists them), " +
+		"or correct sources.storages in the config, then run pbp setup again."
 )
 
 // setupMain runs `pbp setup` on the PBP host (spec §4): the questions (only
@@ -87,7 +91,7 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 
 	if !pending && l.HaveToken() && exists(l.KnownHostsPath()) {
 		var buf bytes.Buffer
-		code, rejected := a.setupCheck(ctx, l, cfg, &buf)
+		code, rejected, storageOnly := a.setupCheck(ctx, l, cfg, &buf)
 		if code == exitOK {
 			fprintln(a.stdout, msgAlreadyComplete)
 			return exitOK
@@ -95,6 +99,10 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		fprintf(a.stdout, "The existing setup does not pass the check:\n%s", buf.String())
 		if rejected {
 			a.rotateHint(cfg, pub, l)
+			return exitFail
+		}
+		if storageOnly {
+			fprintln(a.stdout, "\n"+msgFixStorages)
 			return exitFail
 		}
 		fprintln(a.stdout, "\nRun the lines below on the node to repair it.")
@@ -144,9 +152,12 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if code, rejected := a.setupCheck(ctx, l, done, a.stdout); code != exitOK {
-		if rejected {
+	if code, rejected, storageOnly := a.setupCheck(ctx, l, done, a.stdout); code != exitOK {
+		switch {
+		case rejected:
 			a.rotateHint(done, pub, l)
+		case storageOnly:
+			fprintln(a.stdout, "\n"+msgFixStorages)
 		}
 		return code
 	}
@@ -241,15 +252,16 @@ func (a *app) interruptible(ctx context.Context, fn func()) bool {
 // setupCheck runs pbp check's steps (not the state store, not the lock) on
 // a copy of cfg whose key, token and known_hosts paths are the layout's
 // on-disk files: the config names the paths the daemon sees. It also
-// reports whether the node rejected this host's token secret (HTTP 401).
-func (a *app) setupCheck(ctx context.Context, l hostsetup.Layout, cfg config.Config, out io.Writer) (int, bool) {
+// reports whether the node rejected this host's token secret (HTTP 401), and
+// whether the only failure is one no node line fixes (checkOut.storageOnly).
+func (a *app) setupCheck(ctx context.Context, l hostsetup.Layout, cfg config.Config, out io.Writer) (code int, rejected, storageOnly bool) {
 	c := cfg
 	c.Target.SSH.KeyFile = l.KeyPath()
 	c.Target.API.TokenSecretFile = l.TokenPath()
 	c.Target.SSH.KnownHostsFile = l.KnownHostsPath()
 	co := &checkOut{w: out, ok: true}
-	code := a.checkSteps(ctx, c, nil, co)
-	return code, co.tokenRejected
+	code = a.checkSteps(ctx, c, nil, co)
+	return code, co.tokenRejected, co.storageOnly()
 }
 
 // rotateHint tells the admin to replace a token whose secret this host
