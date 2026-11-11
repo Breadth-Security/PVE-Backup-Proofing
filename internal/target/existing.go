@@ -430,6 +430,12 @@ func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid i
 	if first == nil {
 		return nil
 	}
+	// The scan dies inside PVE's destroy task. A request PVE refused or
+	// that never arrived is not that, and is not retried: the warning would
+	// blame a healthy storage.
+	if _, _, failedTask := pve.TaskFailure(first); !failedTask {
+		return first
+	}
 	if err := n.task(ctx, kind, vmid, "destroy without the scan for unreferenced disks", op(false)); err != nil {
 		return fmt.Errorf("%w; %w", first, err)
 	}

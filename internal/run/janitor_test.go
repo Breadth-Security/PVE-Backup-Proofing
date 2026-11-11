@@ -334,7 +334,8 @@ func TestJanitorCountsDestroyWithoutScan(t *testing.T) {
 	if _, ok := f.store.Snapshot().InFlight[990000]; ok {
 		t.Error("in-flight record kept")
 	}
-	if !strings.Contains(f.logBuf.String(), "without the scan for unreferenced disks") {
+	if l := f.logBuf.String(); !strings.Contains(l, "janitor: destroyed without PVE's scan for unreferenced disks") ||
+		!strings.Contains(l, "no such logical volume pve/data") || strings.Contains(l, "UPID") {
 		t.Errorf("log:\n%s", f.logBuf)
 	}
 }

@@ -3,10 +3,12 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 // A test copy removed only without PVE's scan for unreferenced disks keeps
@@ -61,11 +63,34 @@ func TestScanSkippedWarningsGroupByCause(t *testing.T) {
 		t.Fatalf("warnings = %q", ws)
 	}
 	if !strings.HasPrefix(ws[0], "test copies 990000, 990001 removed without PVE's scan for unreferenced disks, because destroying them failed: lvm broke.") ||
-		!strings.Contains(ws[0], "leftover disks of those VMIDs on local-zfs (check: pvesm list local-zfs --vmid 990000)") {
+		!strings.Contains(ws[0], "leftover disks of those VMIDs on local-zfs (check: pvesm list local-zfs --vmid <vmid>)") {
 		t.Errorf("first = %q", ws[0])
 	}
 	if !strings.HasPrefix(ws[1], "test copy 990002 removed without PVE's scan for unreferenced disks, because destroying it failed: nfs gone.") ||
 		!strings.Contains(ws[1], "leftover disks of that VMID") {
 		t.Errorf("second = %q", ws[1])
+	}
+}
+
+// Real PVE causes embed the task's UPID and the VMID, which differ per copy;
+// the warning groups by PVE's exit status instead, without them (review of
+// #108).
+func TestScanSkippedWarningsGroupRealTaskErrors(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	cause := func(vmid int, upid string) error {
+		return fmt.Errorf("destroy %d: %w", vmid, &pve.TaskError{UPID: upid, ExitStatus: "no such logical volume pve/data",
+			Log: []string{"  WARNING: Cannot find matching striped segment", "TASK ERROR: no such logical volume pve/data"}})
+	}
+	rs := []model.GuestResult{
+		{TempVMID: 990000, DestroyScanSkipped: scanCause(cause(990000, "UPID:pve1:0001:AA:qmdestroy:990000:pbp@pve!proof:"))},
+		{TempVMID: 990001, DestroyScanSkipped: scanCause(cause(990001, "UPID:pve1:0002:BB:qmdestroy:990001:pbp@pve!proof:"))},
+	}
+	ws := scanSkippedWarnings(f.d, rs)
+	if len(ws) != 1 {
+		t.Fatalf("warnings = %q, want one", ws)
+	}
+	if !strings.Contains(ws[0], "test copies 990000, 990001") || !strings.Contains(ws[0], "no such logical volume pve/data") ||
+		strings.Contains(ws[0], "UPID") || strings.Contains(ws[0], "striped segment") || !strings.Contains(ws[0], "--vmid <vmid>") {
+		t.Errorf("warning = %q", ws[0])
 	}
 }

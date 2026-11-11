@@ -63,7 +63,8 @@ func Janitor(ctx context.Context, d Deps) error {
 func destroyed(log *slog.Logger, err error) error {
 	var skipped *target.ScanSkipped
 	if errors.As(err, &skipped) {
-		log.Warn("janitor: " + oneLine(skipped.Error()))
+		log.Warn("janitor: destroyed without PVE's scan for unreferenced disks; a storage enabled on the node is likely missing or broken",
+			"guest", fmt.Sprintf("%s/%d", skipped.Kind, skipped.VMID), "err", scanCause(skipped.Cause))
 		return nil
 	}
 	return err

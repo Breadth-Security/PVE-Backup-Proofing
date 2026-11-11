@@ -392,8 +392,8 @@ func (j *job) teardown(res *model.GuestResult) {
 		if errors.As(err, &skipped) {
 			// Gone, but PVE could not scan for disks the config does not
 			// name; the run reports it once for all copies.
-			res.DestroyScanSkipped = oneLine(skipped.Cause.Error())
-			j.log.Warn("test copy removed without PVE's scan for unreferenced disks", "vmid", j.vmid, "err", res.DestroyScanSkipped)
+			res.DestroyScanSkipped = scanCause(skipped.Cause)
+			j.log.Warn("test copy removed without PVE's scan for unreferenced disks", "vmid", j.vmid, "err", oneLine(skipped.Cause.Error()))
 			err = nil
 		}
 		if err != nil {

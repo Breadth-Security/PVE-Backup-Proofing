@@ -7,7 +7,18 @@ import (
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
+
+// scanCause is the cause a destroy that needed the fallback is reported and
+// grouped by: PVE's one-line exit status, without the task's UPID and the
+// VMID, which differ for every copy; else the error on one line.
+func scanCause(err error) string {
+	if exit, _, ok := pve.TaskFailure(err); ok && strings.TrimSpace(exit) != "" {
+		return strings.TrimSpace(exit)
+	}
+	return oneLine(err.Error())
+}
 
 // scanSkippedWarnings are the run's warnings for test copies removed only
 // without PVE's scan for unreferenced disks: one per distinct cause, naming
@@ -40,13 +51,13 @@ func scanSkippedWarnings(d Deps, results []model.GuestResult) []string {
 		for i, v := range vmids {
 			ids[i] = strconv.Itoa(v)
 		}
-		copies, them, those := "test copy "+ids[0], "it", "that VMID"
+		copies, them, those, vmid := "test copy "+ids[0], "it", "that VMID", ids[0]
 		if len(ids) > 1 {
-			copies, them, those = "test copies "+strings.Join(ids, ", "), "them", "those VMIDs"
+			copies, them, those, vmid = "test copies "+strings.Join(ids, ", "), "them", "those VMIDs", "<vmid>"
 		}
 		out = append(out, fmt.Sprintf("%s removed without PVE's scan for unreferenced disks, because destroying %s failed: %s. "+
 			"A storage enabled on node %s is likely missing or broken (check pvesm status); PBP cannot see leftover disks of %s on %s "+
-			"(check: pvesm list %s --vmid %d)", copies, them, c, node, those, store, store, vmids[0]))
+			"(check: pvesm list %s --vmid %s)", copies, them, c, node, those, store, store, vmid))
 	}
 	return out
 }

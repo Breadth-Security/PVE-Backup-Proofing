@@ -45,9 +45,13 @@ type Fake struct {
 	// them; list a path with an empty slice for none. Privileges answers
 	// from it.
 	Privs map[string][]string
-	// UnreferencedScanErr fails every Destroy with unreferenced set, as
-	// PVE does when a storage enabled on the node is broken (issue #108).
+	// UnreferencedScanErr makes every destroy task with unreferenced set
+	// fail with this exit status, as PVE's does when a storage enabled on
+	// the node is broken (issue #108): Destroy returns a UPID, WaitTask
+	// the *pve.TaskError.
 	UnreferencedScanErr error
+	failedTasks         map[string]*pve.TaskError
+	taskSeq             int
 	// Node is the only node name the fake answers for, like a real
 	// cluster; "" means pve1. Calls naming another node fail.
 	Node string
@@ -269,6 +273,9 @@ func (f *Fake) WaitTask(ctx context.Context, node, upid string) error {
 	if err := f.begin("WaitTask", node, upid); err != nil {
 		return err
 	}
+	if te := f.failedTasks[upid]; te != nil {
+		return te
+	}
 	return f.at(node)
 }
 
@@ -489,8 +496,16 @@ func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, v
 		return "", err
 	}
 	if unreferenced && f.UnreferencedScanErr != nil {
-		// Like PVE: the scan of every storage dies, and the guest stays.
-		return "", f.UnreferencedScanErr
+		// Like PVE: the task starts, its scan of every storage dies, and
+		// the guest stays; WaitTask reports the failed task.
+		f.taskSeq++
+		id := fmt.Sprintf("UPID:%s:fake%04d:qmdestroy:%d:", fakeNode, f.taskSeq, vmid)
+		if f.failedTasks == nil {
+			f.failedTasks = map[string]*pve.TaskError{}
+		}
+		f.failedTasks[id] = &pve.TaskError{UPID: id, ExitStatus: f.UnreferencedScanErr.Error(),
+			Log: []string{"TASK ERROR: " + f.UnreferencedScanErr.Error()}}
+		return id, nil
 	}
 	if err := f.at(node); err != nil {
 		return "", err

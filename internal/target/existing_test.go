@@ -931,6 +931,9 @@ func TestDestroyFallsBackWithoutUnreferencedScan(t *testing.T) {
 	if !errors.As(err, &ss) || ss.VMID != 990003 || ss.Kind != model.KindQEMU || !strings.Contains(ss.Error(), "no such logical volume pve/data") {
 		t.Fatalf("err = %v, want *ScanSkipped", err)
 	}
+	if exit, _, ok := pve.TaskFailure(ss.Cause); !ok || exit != "no such logical volume pve/data" {
+		t.Errorf("cause %v is not PVE's failed task (exit %q)", ss.Cause, exit)
+	}
 	var destroys []string
 	for _, c := range f.CallLog() {
 		if strings.HasPrefix(c, "Destroy ") {
@@ -942,6 +945,36 @@ func TestDestroyFallsBackWithoutUnreferencedScan(t *testing.T) {
 	}
 	if len(f.GuestList) != 0 {
 		t.Error("guest not destroyed")
+	}
+}
+
+// Only a failed destroy *task* (where PVE's scan dies) triggers the retry: a
+// refusal or transport error on the request itself is returned as before, so
+// a healthy storage is never blamed.
+func TestDestroyNoFallbackOnRequestError(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990005, "stopped", "pbp")}
+	f.Configs[990005] = map[string]string{"tags": "pbp"}
+	f.FailOn = func(method string, args []string) error {
+		if method == "Destroy" {
+			return errors.New("connection reset")
+		}
+		return nil
+	}
+	err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990005, Recorded{})
+	var ss *ScanSkipped
+	if err == nil || errors.As(err, &ss) || !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("err = %v", err)
+	}
+	n := 0
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "Destroy ") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d destroy calls, want 1: %q", n, f.CallLog())
 	}
 }
 
