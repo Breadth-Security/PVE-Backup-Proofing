@@ -938,20 +938,25 @@ func (e *env) rcCrashed(t *testing.T, v string) (string, int) {
 	return res.Stdout, res.ExitCode
 }
 
+// healthyAlpine waits for the Alpine container v to reach its default
+// runlevel and fails the test unless "rc-status --crashed" shows nothing.
+func (e *env) healthyAlpine(t *testing.T, v string) {
+	t.Helper()
+	e.waitOpenRCDefault(t, v)
+	out, code := e.rcCrashed(t, v)
+	t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
+	if strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
+		t.Fatalf("source not healthy: exit %d, output %q", code, out)
+	}
+}
+
 // TestProofAlpineHealthy proofs a plain Alpine container's backup through the
 // OpenRC probe ("rc-status --crashed", chosen by ostype alpine).
 func TestProofAlpineHealthy(t *testing.T) {
 	e := setup(t)
 	vmid := envInt(t, "PBP_IT_ALPINE_VMID")
 	tmpl := envStr(t, "PBP_IT_ALPINE_TEMPLATE")
-	e.throwaway(t, vmid, tmpl, "pbp-it-alpine", "", func(v string) {
-		e.waitOpenRCDefault(t, v)
-		out, code := e.rcCrashed(t, v)
-		t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
-		if strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
-			t.Fatalf("source not healthy: exit %d, output %q", code, out)
-		}
-	})
+	e.throwaway(t, vmid, tmpl, "pbp-it-alpine", "", func(v string) { e.healthyAlpine(t, v) })
 	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
 	if r.Verdict != model.Proven {
 		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
@@ -1024,7 +1029,7 @@ func TestProofProtectedGuest(t *testing.T) {
 // namespace (issue #116): a healthy Alpine container built inside the range,
 // backed up into PBP_IT_NS_STORAGE. proofCfg checks what a namespace could
 // break: the backed-up config is read (extractconfig), the verdict is
-// written to the backup's notes, and its protected flag is set and put back.
+// written to the backup's notes, and its protected flag is left as it was.
 func TestProofNamespacedStorage(t *testing.T) {
 	e := setup(t)
 	store := envStr(t, "PBP_IT_NS_STORAGE")
@@ -1040,12 +1045,7 @@ func TestProofNamespacedStorage(t *testing.T) {
 		t.Fatalf("PBP_IT_NS_STORAGE %s has no namespace", store)
 	}
 	t.Logf("storage %s, namespace %q", store, scfg.Namespace)
-	e.throwawayOn(t, store, vmid, tmpl, "pbp-it-ns", "", func(v string) {
-		e.waitOpenRCDefault(t, v)
-		if out, code := e.rcCrashed(t, v); strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
-			t.Fatalf("source not healthy: exit %d, output %q", code, out)
-		}
-	})
+	e.throwawayOn(t, store, vmid, tmpl, "pbp-it-ns", "", func(v string) { e.healthyAlpine(t, v) })
 	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
 	if r.Verdict != model.Proven {
 		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
