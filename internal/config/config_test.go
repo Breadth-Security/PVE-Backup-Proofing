@@ -95,6 +95,11 @@ func TestValidateErrors(t *testing.T) {
 		{"sources", "storages: [pbs-main]", "storages: []", "sources.storages"},
 		{"sources empty entry", "storages: [pbs-main]", "storages: [pbs-main, '']", "sources.storages[1]"},
 		{"sources duplicate", "storages: [pbs-main]", "storages: [pbs-main, pbs-main]", "sources.storages[1]"},
+		{"sources trailing space", "storages: [pbs-main]", "storages: [pbs-main, 'pbs ']", "sources.storages[1]"},
+		{"sources slash", "storages: [pbs-main]", "storages: [pbs/x]", "sources.storages[0]"},
+		{"sources one char", "storages: [pbs-main]", "storages: [p]", "sources.storages[0]"},
+		{"restore bad id", RS, "restore: {storage: 'local zfs'}", "restore.storage"},
+		{"restore trailing dash", RS, "restore: {storage: local-}", "restore.storage"},
 		{"range lo", "[990000, 990049]", "[99, 990049]", "target.vmid_range"},
 		{"range hi", "[990000, 990049]", "[990000, 989999]", "target.vmid_range"},
 		{"workers", "schedule:", "workers: 0\nschedule:", "workers"},
@@ -359,5 +364,24 @@ func TestIgnoreListsAddToDefaults(t *testing.T) {
 	// [] with the defaults on means "nothing extra".
 	if c, err := loadStr(t, minimal+"checks: {ignore_units: []}\n"); err != nil || !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) {
 		t.Errorf("[]: %q, err %v; want the defaults", c.Checks.IgnoreUnits, err)
+	}
+}
+
+// TestValidStorageID pins PVE's storage ID rule (PVE::JSONSchema::parse_id):
+// two or more characters, a letter first, then letters, digits, '_', '.'
+// or '-', ending in a letter or digit; case does not matter (#121).
+func TestValidStorageID(t *testing.T) {
+	for _, s := range []string{"ab", "PBS-qemu", "local-zfs", "pbs_cic-nas.1", "a1", "Z9"} {
+		if err := ValidStorageID(s); err != nil {
+			t.Errorf("ValidStorageID(%q) = %v, want nil", s, err)
+		}
+	}
+	for _, s := range []string{"", "a", "1pbs", "-pbs", "_pbs", "pbs-", "pbs.", "pbs_", "pbs ", " pbs", "pbs/x", "pbs:x", "pbs\nx", "pbs\n", "p\u00e9s"} {
+		err := ValidStorageID(s)
+		if err == nil {
+			t.Errorf("ValidStorageID(%q) = nil, want an error", s)
+		} else if !strings.Contains(err.Error(), "not a valid storage ID") {
+			t.Errorf("ValidStorageID(%q) = %v, want it to say \"not a valid storage ID\"", s, err)
+		}
 	}
 }

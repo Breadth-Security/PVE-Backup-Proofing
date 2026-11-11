@@ -122,6 +122,21 @@ type Logging struct {
 // reFingerprint is a SHA-256 certificate fingerprint without separators.
 var reFingerprint = regexp.MustCompile(`^[0-9A-Fa-f]{64}$`)
 
+// reStorageID is PVE's storage ID rule (PVE::JSONSchema::parse_id): a
+// letter, then letters, digits, '_', '.' or '-', ending in a letter or
+// digit, so two characters at least; case does not matter.
+var reStorageID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*[A-Za-z0-9]$`)
+
+// ValidStorageID reports whether s is a storage ID PVE would accept, so a
+// typo in a storage name is a config error naming its key rather than a
+// PVE error in every run (#121).
+func ValidStorageID(s string) error {
+	if !reStorageID.MatchString(s) {
+		return fmt.Errorf("%q is not a valid storage ID (2 or more letters, digits, '_', '.', '-'; starting with a letter, ending in a letter or digit)", s)
+	}
+	return nil
+}
+
 // defaults returns the config that absent keys fall back to. Decoding YAML on
 // top of it means only keys that are present override a default, so an
 // explicit zero is kept (and validated) rather than replaced. The ignore
@@ -251,15 +266,20 @@ func (c Config) validate() error {
 	// warned about) twice: it is a typo, not a choice (#119).
 	for i, st := range c.Sources.Storages {
 		key := fmt.Sprintf("sources.storages[%d]", i)
+		idErr := ValidStorageID(st)
 		switch {
 		case strings.TrimSpace(st) == "":
 			bad(key, "empty storage name")
+		case idErr != nil:
+			bad(key, "%v", idErr)
 		case slices.Contains(c.Sources.Storages[:i], st):
 			bad(key, "%s is listed twice", st)
 		}
 	}
 	if c.Restore.Storage == "" {
 		bad("restore.storage", "required")
+	} else if err := ValidStorageID(c.Restore.Storage); err != nil {
+		bad("restore.storage", "%v", err)
 	}
 	r := c.Restore
 	if r.SpaceMarginPercent < 0 || r.SpaceMarginPercent > 100 {
