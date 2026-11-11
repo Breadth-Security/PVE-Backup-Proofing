@@ -29,7 +29,7 @@ type API interface {
 	Start(ctx context.Context, node string, kind model.GuestKind, vmid int) (upid string, err error)
 	Shutdown(ctx context.Context, node string, kind model.GuestKind, vmid int) (upid string, err error)
 	Stop(ctx context.Context, node string, kind model.GuestKind, vmid int) (upid string, err error)
-	Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int) (upid string, err error)
+	Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (upid string, err error)
 	GuestStatus(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error)
 	AgentPing(ctx context.Context, node string, vmid int) error
 	AgentOSInfo(ctx context.Context, node string, vmid int) (OSInfo, error)

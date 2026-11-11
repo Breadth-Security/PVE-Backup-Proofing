@@ -128,7 +128,9 @@ func (f *janitorFixture) exists(vmid int) bool {
 
 func (f *janitorFixture) destroyed(vmid int) bool {
 	return slices.ContainsFunc(f.api.CallLog(), func(c string) bool {
-		return strings.HasPrefix(c, "Destroy pve1 ") && strings.HasSuffix(c, fmt.Sprintf(" %d", vmid))
+		// "Destroy pve1 <kind> <vmid> <unreferenced>"
+		fs := strings.Fields(c)
+		return len(fs) >= 4 && fs[0] == "Destroy" && fs[1] == "pve1" && fs[3] == fmt.Sprint(vmid)
 	})
 }
 
@@ -310,4 +312,30 @@ func (f *janitorFixture) allow(volid string) {
 		f.allowed = map[string]bool{}
 	}
 	f.allowed[volid] = true
+}
+
+// A leftover that PVE destroys only without its scan for unreferenced disks
+// (a broken storage on the node, issue #108) is destroyed, not an error that
+// fails preflight every run; run.log says so.
+func TestJanitorCountsDestroyWithoutScan(t *testing.T) {
+	f := newJanitorFixture(t)
+	f.api.UnreferencedScanErr = errors.New("no such logical volume pve/data")
+	f.guest(model.KindQEMU, 990000, true)
+	f.backup("pbs:v0", true)
+	f.guest(model.KindLXC, 990005, true)
+	f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageStarted})
+
+	if err := Janitor(context.Background(), f.d); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if f.exists(990000) || f.exists(990005) {
+		t.Error("leftovers not destroyed")
+	}
+	if _, ok := f.store.Snapshot().InFlight[990000]; ok {
+		t.Error("in-flight record kept")
+	}
+	if l := f.logBuf.String(); !strings.Contains(l, "janitor: destroyed without PVE's scan for unreferenced disks") ||
+		!strings.Contains(l, "no such logical volume pve/data") || strings.Contains(l, "UPID") {
+		t.Errorf("log:\n%s", f.logBuf)
+	}
 }

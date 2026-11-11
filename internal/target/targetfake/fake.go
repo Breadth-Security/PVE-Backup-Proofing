@@ -73,6 +73,10 @@ type Fake struct {
 	Exec map[int]probe.Executor
 	// DestroyErr fails Destroy for a VMID; the guest is then kept.
 	DestroyErr map[int]error
+	// ScanSkip makes Destroy remove the guest at a VMID but return
+	// *target.ScanSkipped with this cause, as ExistingNode does when only a
+	// destroy without PVE's scan for unreferenced disks succeeds.
+	ScanSkip map[int]error
 
 	// Live holds guests restored and not yet destroyed, keyed by VMID.
 	// Tests read it to check cleanup.
@@ -305,5 +309,8 @@ func (f *Fake) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec 
 	}
 	delete(f.Live, vmid)
 	f.OwnedGuests = slices.DeleteFunc(f.OwnedGuests, func(g pve.GuestRef) bool { return g.Key.VMID == vmid })
+	if cause := f.ScanSkip[vmid]; cause != nil {
+		return &target.ScanSkipped{Kind: kind, VMID: vmid, Cause: cause}
+	}
 	return nil
 }

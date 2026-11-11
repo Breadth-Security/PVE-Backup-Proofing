@@ -163,9 +163,15 @@ func (c *Client) Stop(ctx context.Context, node string, kind model.GuestKind, vm
 	return c.upid(ctx, http.MethodPost, guestPath(node, kind, vmid)+"/status/stop", nil, url.Values{})
 }
 
-// Destroy removes a guest along with its disks.
-func (c *Client) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
-	q := url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}}
+// Destroy removes a guest along with its disks. With unreferenced, PVE also
+// removes disks of vmid that the config does not name, from every storage
+// enabled on the node, so one broken storage there fails it (issue #108).
+func (c *Client) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (string, error) {
+	scan := "0"
+	if unreferenced {
+		scan = "1"
+	}
+	q := url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {scan}}
 	return c.upid(ctx, http.MethodDelete, guestPath(node, kind, vmid), q, nil)
 }
 

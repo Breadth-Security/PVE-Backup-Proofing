@@ -215,6 +215,7 @@ func execute(ctx context.Context, d Deps, opt Options, start time.Time, log *slo
 	}
 	p := &pool{d: d, log: log, inUse: map[int]bool{}, liveTags: live, liveNames: names, prior: prior, stop: opt.Stop}
 	results := p.run(ctx, queue, start)
+	warns = append(warns, scanSkippedWarnings(d, results)...)
 	p.migrateNotes(ctx, old, start)
 	return results, append(errs, p.errs...), warns
 }

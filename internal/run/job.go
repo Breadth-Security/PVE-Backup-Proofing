@@ -388,6 +388,14 @@ func (j *job) teardown(res *model.GuestResult) {
 			rec := target.Recorded{VolID: j.b.VolID, Name: sanitize.GuestName(kind, j.orig)}
 			return j.d.Target.Destroy(ctx, kind, j.vmid, rec)
 		})
+		var skipped *target.ScanSkipped
+		if errors.As(err, &skipped) {
+			// Gone, but PVE could not scan for disks the config does not
+			// name; the run reports it once for all copies.
+			res.DestroyScanSkipped = scanCause(skipped.Cause)
+			j.log.Warn("test copy removed without PVE's scan for unreferenced disks", "vmid", j.vmid, "err", oneLine(skipped.Cause.Error()))
+			err = nil
+		}
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "vmid", j.vmid, "err", err)
 			if res.Verdict == model.Proven {
