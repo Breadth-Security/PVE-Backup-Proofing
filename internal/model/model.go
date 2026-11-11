@@ -121,6 +121,10 @@ type GuestResult struct {
 	Prior                         Prior
 	RestoreDuration, BootDuration time.Duration
 	BootLog                       string
+	// DestroyScanSkipped is why the test copy's destroy with PVE's scan for
+	// unreferenced disks failed, when only a destroy without the scan
+	// removed it (issue #108); "" otherwise. The run reports it, grouped.
+	DestroyScanSkipped string
 }
 
 // Prior is a PBP verdict an earlier run left in a backup's notes. A zero

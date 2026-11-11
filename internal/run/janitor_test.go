@@ -313,3 +313,28 @@ func (f *janitorFixture) allow(volid string) {
 	}
 	f.allowed[volid] = true
 }
+
+// A leftover that PVE destroys only without its scan for unreferenced disks
+// (a broken storage on the node, issue #108) is destroyed, not an error that
+// fails preflight every run; run.log says so.
+func TestJanitorCountsDestroyWithoutScan(t *testing.T) {
+	f := newJanitorFixture(t)
+	f.api.UnreferencedScanErr = errors.New("no such logical volume pve/data")
+	f.guest(model.KindQEMU, 990000, true)
+	f.backup("pbs:v0", true)
+	f.guest(model.KindLXC, 990005, true)
+	f.inFlight(state.Job{TempVMID: 990000, Kind: model.KindQEMU, VolID: "pbs:v0", Storage: "pbs", ProtectedOrig: ptr(false), Stage: state.StageStarted})
+
+	if err := Janitor(context.Background(), f.d); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if f.exists(990000) || f.exists(990005) {
+		t.Error("leftovers not destroyed")
+	}
+	if _, ok := f.store.Snapshot().InFlight[990000]; ok {
+		t.Error("in-flight record kept")
+	}
+	if !strings.Contains(f.logBuf.String(), "without the scan for unreferenced disks") {
+		t.Errorf("log:\n%s", f.logBuf)
+	}
+}

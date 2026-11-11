@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"regexp"
 	"slices"
@@ -48,12 +49,24 @@ func Janitor(ctx context.Context, d Deps) error {
 			continue // its job's cleanup failed above and was reported
 		}
 		log.Warn("janitor: destroying leftover guest", "guest", g.Key.String(), "name", g.Name)
-		if err := d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID, target.Recorded{}); err != nil {
+		if err := destroyed(log, d.Target.Destroy(ctx, g.Key.Kind, g.Key.VMID, target.Recorded{})); err != nil {
 			log.Error("janitor: destroy leftover guest", "guest", g.Key.String(), "err", err)
 			errs = append(errs, fmt.Errorf("leftover %s: %w", g.Key, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// destroyed is err from Target.Destroy, except that a guest removed only
+// without PVE's scan for unreferenced disks counts as destroyed: logged,
+// not an error that would fail preflight every run (issue #108).
+func destroyed(log *slog.Logger, err error) error {
+	var skipped *target.ScanSkipped
+	if errors.As(err, &skipped) {
+		log.Warn("janitor: " + oneLine(skipped.Error()))
+		return nil
+	}
+	return err
 }
 
 // cleanupJob undoes what the recorded stage says may have happened: destroy
@@ -71,7 +84,7 @@ func cleanupJob(ctx context.Context, d Deps, j state.Job) error {
 		if j.MayHaveGuest() {
 			rec.VolID = j.VolID
 		}
-		if err := d.Target.Destroy(ctx, j.Kind, j.TempVMID, rec); err != nil {
+		if err := destroyed(log, d.Target.Destroy(ctx, j.Kind, j.TempVMID, rec)); err != nil {
 			errs = append(errs, fmt.Errorf("destroy %s/%d: %w", j.Kind, j.TempVMID, err))
 		} else if err := d.Store.SetStage(j.TempVMID, state.StageDestroyed, false); err != nil {
 			errs = append(errs, fmt.Errorf("record %d destroyed: %w", j.TempVMID, err))
