@@ -858,13 +858,19 @@ func (e *env) exists(t *testing.T, ctx context.Context, vmid int) bool {
 // ends.
 func (e *env) throwaway(t *testing.T, vmid int, tmpl, hostname, extra string, configure func(v string)) model.Backup {
 	t.Helper()
-	store := envStr(t, "PBP_IT_BROKEN_STORAGE")
+	return e.throwawayOn(t, envStr(t, "PBP_IT_BROKEN_STORAGE"), vmid, tmpl, hostname, extra, configure)
+}
+
+// throwawayOn is throwaway backing up to store, which must be a configured
+// source.
+func (e *env) throwawayOn(t *testing.T, store string, vmid int, tmpl, hostname, extra string, configure func(v string)) model.Backup {
+	t.Helper()
 	ctx := context.Background()
 	if lo, hi := e.cfg.Target.VMIDRange[0], e.cfg.Target.VMIDRange[1]; vmid < lo || vmid > hi {
 		t.Fatalf("VMID %d outside the range [%d, %d]", vmid, lo, hi)
 	}
 	if !slices.Contains(e.cfg.Sources.Storages, store) {
-		t.Fatalf("PBP_IT_BROKEN_STORAGE %s is not a configured source", store)
+		t.Fatalf("storage %s is not a configured source", store)
 	}
 	e.assertRangeEmpty(t, ctx)
 	if t.Failed() {
@@ -932,20 +938,25 @@ func (e *env) rcCrashed(t *testing.T, v string) (string, int) {
 	return res.Stdout, res.ExitCode
 }
 
+// healthyAlpine waits for the Alpine container v to reach its default
+// runlevel and fails the test unless "rc-status --crashed" shows nothing.
+func (e *env) healthyAlpine(t *testing.T, v string) {
+	t.Helper()
+	e.waitOpenRCDefault(t, v)
+	out, code := e.rcCrashed(t, v)
+	t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
+	if strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
+		t.Fatalf("source not healthy: exit %d, output %q", code, out)
+	}
+}
+
 // TestProofAlpineHealthy proofs a plain Alpine container's backup through the
 // OpenRC probe ("rc-status --crashed", chosen by ostype alpine).
 func TestProofAlpineHealthy(t *testing.T) {
 	e := setup(t)
 	vmid := envInt(t, "PBP_IT_ALPINE_VMID")
 	tmpl := envStr(t, "PBP_IT_ALPINE_TEMPLATE")
-	e.throwaway(t, vmid, tmpl, "pbp-it-alpine", "", func(v string) {
-		e.waitOpenRCDefault(t, v)
-		out, code := e.rcCrashed(t, v)
-		t.Logf("source: rc-status --crashed exit %d, output %q", code, out)
-		if strings.TrimSpace(out) != "" || (code != 0 && code != 1) {
-			t.Fatalf("source not healthy: exit %d, output %q", code, out)
-		}
-	})
+	e.throwaway(t, vmid, tmpl, "pbp-it-alpine", "", func(v string) { e.healthyAlpine(t, v) })
 	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
 	if r.Verdict != model.Proven {
 		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
@@ -1008,6 +1019,33 @@ func TestProofProtectedGuest(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^protection: 1$`).MatchString(orig) {
 		t.Fatalf("backup config lacks protection: 1:\n%s", orig)
 	}
+	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
+	if r.Verdict != model.Proven {
+		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)
+	}
+}
+
+// TestProofNamespacedStorage proofs a backup on a PBS storage with a
+// namespace (issue #116): a healthy Alpine container built inside the range,
+// backed up into PBP_IT_NS_STORAGE. proofCfg checks what a namespace could
+// break: the backed-up config is read (extractconfig), the verdict is
+// written to the backup's notes, and its protected flag is left as it was.
+func TestProofNamespacedStorage(t *testing.T) {
+	e := setup(t)
+	store := envStr(t, "PBP_IT_NS_STORAGE")
+	vmid := envInt(t, "PBP_IT_NS_VMID")
+	tmpl := envStr(t, "PBP_IT_ALPINE_TEMPLATE")
+	var scfg struct {
+		Namespace string `json:"namespace"`
+	}
+	if err := json.Unmarshal([]byte(e.sh(t, "pvesh get /storage/"+sshx.Quote(store)+" --output-format json")), &scfg); err != nil {
+		t.Fatalf("read storage %s: %v", store, err)
+	}
+	if scfg.Namespace == "" {
+		t.Fatalf("PBP_IT_NS_STORAGE %s has no namespace", store)
+	}
+	t.Logf("storage %s, namespace %q", store, scfg.Namespace)
+	e.throwawayOn(t, store, vmid, tmpl, "pbp-it-ns", "", func(v string) { e.healthyAlpine(t, v) })
 	r := e.proofThrowaway(t, model.GuestKey{Kind: model.KindLXC, VMID: vmid})
 	if r.Verdict != model.Proven {
 		t.Errorf("verdict %s: %s, want PROVEN", r.Verdict, r.Reason)

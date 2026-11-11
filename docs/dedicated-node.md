@@ -2,7 +2,7 @@
 
 By default PBP restores and boots its proof copies on a production Proxmox node. It can instead use a **separate Proxmox VE host that only proofs**: the copies never run on production hardware, production nodes need nothing from PBP (no helper, no API token, no isolated bridge), and proofs no longer compete with production guests for RAM, storage and I/O. If that host is the standby hardware your disaster recovery plan would restore to, every proof also proves that restore path.
 
-This page covers **one source cluster** whose backups are proofed on one dedicated node. Proofing backups of several clusters from one datastore is not supported yet: guests are identified by kind and VMID, so two clusters' VM 100 would be treated as one guest.
+This page covers **one source cluster** whose backups are proofed on one dedicated node. Proofing backups of several clusters from one datastore is not supported yet: guests are identified by kind and VMID, so two clusters' VM 100 would be treated as one guest. Putting each cluster in its own PBS namespace does not change that.
 
 ```
 Production PVE  ── Backup jobs ──▶  PBS datastore  ◀── same datastore ──  Proofing PVE

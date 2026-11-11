@@ -4,6 +4,7 @@
 
 - **`pbp check` also checks a restore storage that is also listed in `sources.storages`** (issue #115): it must hold backups too. Before, it passed `pbp check`, and every run then warned that it lists no backups. The storage's content list is now read the same way for the restore and the PBS storages.
 - A missing privilege's message says "both need it" when one privilege is missing.
+- **PBS storages with a namespace are tested** (issue #116): a new integration test proofs a backup on a namespaced storage, checking that the backed-up config is read, the verdict is written to its notes and its `protected` flag is left as it was. It passed on PVE 9.2 with PBS 4.2. [Operating](docs/operating.md#adding-a-pbs-storage) now says so; a namespace per cluster does not make proofing several clusters from one datastore work.
 
 ## v0.9.1
 

@@ -57,11 +57,13 @@ PowerShell check is unit-tested against a real capture
 | `PBP_IT_BROKEN_TEMPLATE` | `TestBrokenBackupFails` | A systemd-based (Debian/Ubuntu) `vztmpl` volume. |
 | `PBP_IT_BROKEN_STORAGE` | `TestBrokenBackupFails` | A PBS storage listed in `sources.storages` to back it up to. |
 | `PBP_IT_BROKEN_STORAGE` | `TestProofAlpine*`, `TestProofProtectedGuest` | Also where those tests put their throwaway backups. |
-| `PBP_IT_ALPINE_TEMPLATE` | `TestProofAlpine*` | An Alpine (OpenRC) `vztmpl` volume. |
+| `PBP_IT_ALPINE_TEMPLATE` | `TestProofAlpine*`, `TestProofNamespacedStorage` | An Alpine (OpenRC) `vztmpl` volume. |
 | `PBP_IT_ALPINE_VMID` | `TestProofAlpineHealthy` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_ALPINE_CRASH_VMID` | `TestProofAlpineCrashed` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_PROTECTED_VMID` | `TestProofProtectedGuest` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_PROTECTED_TEMPLATE` | `TestProofProtectedGuest` | A systemd-based (Debian/Ubuntu) `vztmpl` volume. |
+| `PBP_IT_NS_STORAGE` | `TestProofNamespacedStorage` | A PBS storage with a `namespace`, listed in `sources.storages` (see [Namespaced storage](#namespaced-storage)). |
+| `PBP_IT_NS_VMID` | `TestProofNamespacedStorage` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
@@ -109,6 +111,11 @@ The values above are from a test node: 110 `ct110` (unprivileged CT, 0.7 GB), 10
   systemd-logind fails in an unprivileged Debian 12 container). PBP must
   clear protection on its restored copy so it can be destroyed; expects
   `PROVEN` and an empty range.
+- **TestProofNamespacedStorage**: a throwaway healthy Alpine container backed
+  up into `PBP_IT_NS_STORAGE`, a PBS storage with a namespace (the test fails
+  first if the storage has none). Expects `PROVEN`; the usual checks after a
+  proof show that the backed-up config was read, the verdict written to the
+  backup's notes and its protected flag left as it was, all in the namespace.
 - **TestCrashRecovery** (subtests `restored` and `started`): builds `pbp`,
   starts `pbp run --guest PBP_IT_LXC` (with `notify.when: problems`, only the
   storage holding that backup), kills it with SIGKILL once its job reaches
@@ -119,7 +126,7 @@ The values above are from a test node: 110 `ct110` (unprivileged CT, 0.7 GB), 10
   janitor must destroy the guest and restore `protected`.
 
 The throwaway tests (`TestBrokenBackupFails`, `TestProofAlpine*`,
-`TestProofProtectedGuest`) build their source container inside the range,
+`TestProofProtectedGuest`, `TestProofNamespacedStorage`) build their source container inside the range,
 and PBP never proofs backups whose VMID is in its range. They proof with the
 range narrowed to the side of the source VMID with more room (e.g. 990009 ->
 `[990000, 990008]`); the range-empty checks still cover the whole range.
@@ -134,6 +141,18 @@ fresh state directory each, and hand the run summary to a capturing notifier
 instead of the node, so they send no notifications. They also hide backups of
 other guest kinds with the same VMID (VMIDs get reused: a run for
 `--guest N` proofs every kind with that VMID).
+
+## Namespaced storage
+
+`TestProofNamespacedStorage` needs a PBS storage that points at a PBS namespace, so that the backup it builds lands there. The same datastore as another source is fine:
+
+1. On the PBS, create the namespace: Datastore > Content > Add Namespace (here `pbp-it`).
+2. On the node, add a second PBS storage with the same server, datastore, user, fingerprint and encryption key as the existing one, plus the namespace. The existing storage's password and key file are on the node, in `/etc/pve/priv/storage/<existing>.pw` and `<existing>.enc`; pass the key file itself to `--encryption-key`, and the password with `--password "$(cat /etc/pve/priv/storage/<existing>.pw)"`, so it is not typed or shown:
+   `pvesm add pbs pbs-it-ns --server <pbs> --datastore <datastore> --username <user> --password "$(cat /etc/pve/priv/storage/<existing>.pw)" --fingerprint <same> --encryption-key /etc/pve/priv/storage/<existing>.enc --namespace pbp-it --content backup`
+3. Give PBP's token the role there, for both the user and the token: `pveum acl modify /storage/pbs-it-ns --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer`.
+4. List it in `sources.storages` of the suite's config, and set `PBP_IT_NS_STORAGE=pbs-it-ns`.
+
+Afterwards, remove the storage (`pvesm remove pbs-it-ns`; its ACLs go with it). The test deletes its own backup; the namespace can stay.
 
 ## Admin key for the fixtures (add before a live run, remove after)
 
