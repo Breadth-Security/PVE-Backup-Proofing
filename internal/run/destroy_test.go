@@ -13,11 +13,11 @@ import (
 
 // A test copy removed only without PVE's scan for unreferenced disks keeps
 // its verdict, and the run carries one warning naming the cause, the node
-// and the restore storage (issue #108).
+// and the restore storage (issue #108). One copy: grouping several is
+// TestScanSkippedWarningsGroupRealTaskErrors.
 func TestRunReportsDestroyWithoutScan(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
 	f.add("pbs", model.KindQEMU, 101, 1024, "")
-	f.add("pbs", model.KindQEMU, 102, 1024, "")
 	f.tgt.ScanSkip = map[int]error{990000: errors.New("destroy 990000: no such logical volume pve/data")}
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})

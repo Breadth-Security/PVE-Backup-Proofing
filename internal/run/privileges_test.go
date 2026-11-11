@@ -209,3 +209,30 @@ func TestCheckSourcesSkipsStatusWhenUnreadable(t *testing.T) {
 		t.Errorf("read the status of a storage the token cannot read: %q", f.api.CallLog())
 	}
 }
+
+// The content list is parsed as the restore-storage check parses it, so a
+// list with spaces still counts (#115).
+func TestCheckSourcesContentWithSpaces(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.api.Storage["pbs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images, backup"}
+	if err := CheckSources(context.Background(), f.d); err != nil {
+		t.Error(err)
+	}
+}
+
+// A restore storage that is also a source must hold backups too; preflight
+// checks only images/rootdir on it (#115).
+func TestCheckSourcesRestoreStorageAlsoSource(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Sources.Storages = []string{"local-zfs", "pbs"}
+	f.api.Storage["local-zfs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images,rootdir"}
+	f.api.Storage["pbs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
+	err := CheckSources(context.Background(), f.d)
+	if err == nil || !strings.Contains(err.Error(), `storage local-zfs does not hold backup content (has "images,rootdir")`) {
+		t.Errorf("err = %v", err)
+	}
+	// Its privileges are preflight's: CheckSources reads them only for pbs.
+	if got := privCalls(f); !slices.Equal(got, []string{"/storage/pbs"}) {
+		t.Errorf("privileges read on %q", got)
+	}
+}

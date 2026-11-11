@@ -139,3 +139,12 @@ func TestDescribeUsesConfiguredToken(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
+
+func TestDescribeSinglePrivilege(t *testing.T) {
+	got := Missing{Need{Path: "/sdn/zones/localnetwork"}, []string{"SDN.Use"}}.Describe("pbp@pve!proof")
+	want := "token pbp@pve!proof lacks SDN.Use on /sdn/zones/localnetwork; the user pbp@pve and its privilege-separated token both need it: " +
+		"pveum acl modify /sdn/zones/localnetwork --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
