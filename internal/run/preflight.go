@@ -6,7 +6,8 @@ import (
 )
 
 // Preflight checks the node helper first, so nothing on the node is touched
-// if the helper is missing or misconfigured. It then verifies the target node
+// if the helper is missing or misconfigured. It then checks the API token's
+// privileges on the core paths (issue #107), verifies the target node
 // (PVE version, bridge, restore storage), checks the notification templates,
 // cleans up after any crashed run (design section 6 step 1) and finally checks
 // that no foreign guest sits in the VMID range. The range check comes last:
@@ -23,6 +24,9 @@ func PreflightReadOnly(ctx context.Context, d Deps) error { return preflight(ctx
 func preflight(ctx context.Context, d Deps, janitor bool) error {
 	if err := d.Target.CheckNode(ctx); err != nil {
 		return fmt.Errorf("node helper: %w", err)
+	}
+	if err := checkCorePrivileges(ctx, d); err != nil {
+		return fmt.Errorf("token privileges: %w", err)
 	}
 	if err := d.Target.Prepare(ctx); err != nil {
 		return fmt.Errorf("target: %w", err)

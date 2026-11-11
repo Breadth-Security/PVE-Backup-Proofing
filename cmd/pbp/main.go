@@ -610,8 +610,8 @@ func (c *checkOut) line(name string, err error) {
 
 // Preflight line names for pbp check and for pbp setup (no janitor).
 const (
-	preflightName         = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)"
-	preflightReadOnlyName = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, VMID range)"
+	preflightName         = "preflight (node helper, token privileges, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)"
+	preflightReadOnlyName = "preflight (node helper, token privileges, node version, isolated bridge, restore storage, notification templates, VMID range)"
 )
 
 // checkSteps runs everything pbp check does after the state line: the API

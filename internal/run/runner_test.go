@@ -190,6 +190,7 @@ func newRunFixture(t *testing.T, lo, hi int) *runFixture {
 	var cfg config.Config
 	cfg.Workers = 1
 	cfg.Target.Node = "pve1"
+	cfg.Target.API.TokenID = "pbp@pve!proof"
 	cfg.Target.VMIDRange = [2]int{lo, hi}
 	cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
 	cfg.Restore.Storage = "local-zfs"
@@ -958,7 +959,15 @@ func TestRunPrivilegedContainer(t *testing.T) {
 	}{
 		{"no Sys.Modify", func(f *runFixture) {}, true},
 		{"Sys.Modify granted", func(f *runFixture) { f.api.Privs = map[string][]string{"/": {"Sys.Modify"}} }, false},
-		{"privileges unreadable", func(f *runFixture) { f.api.Fail["Privileges"] = errors.New("api down") }, false},
+		{"privileges unreadable", func(f *runFixture) {
+			// Only the read on /: preflight reads the core paths first.
+			f.api.FailOn = func(method string, args []string) error {
+				if method == "Privileges" && len(args) == 1 && args[0] == "/" {
+					return errors.New("api down")
+				}
+				return nil
+			}
+		}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
