@@ -101,7 +101,11 @@ func Check(ctx context.Context, api Privileger, needs []Need) ([]Missing, error)
 // the grant: both need it.
 func (m Missing) Describe(tokenID string) string {
 	user, _, _ := strings.Cut(tokenID, "!")
-	return fmt.Sprintf("token %s lacks %s on %s; the user %s and its privilege-separated token both need them: "+
+	them := "them"
+	if len(m.Lacks) == 1 {
+		them = "it"
+	}
+	return fmt.Sprintf("token %s lacks %s on %s; the user %s and its privilege-separated token both need %s: "+
 		"pveum acl modify %s --users %s --tokens '%s' --roles %s",
-		tokenID, strings.Join(m.Lacks, ", "), m.Path, user, m.Path, user, tokenID, RoleName)
+		tokenID, strings.Join(m.Lacks, ", "), m.Path, user, them, m.Path, user, tokenID, RoleName)
 }

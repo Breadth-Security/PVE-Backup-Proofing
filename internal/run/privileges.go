@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // needs are the privileges PBP's token needs for d's config.
@@ -71,21 +72,29 @@ func emptyStorageWarning(d Deps, st string) string {
 		st, user, token)
 }
 
-// CheckSources is pbp check's look at each source storage that is not also
-// the restore storage (preflight covers that one): the token's privileges on
-// it, and that it is active, enabled and holds backups. Unlike a run, which
-// skips such a storage with a warning, it fails, so pbp setup prints the
-// node lines that grant the missing ACLs.
+// CheckSources is pbp check's look at each source storage: the token's
+// privileges on it, and that it is active, enabled and holds backups. A
+// restore storage that is also a source gets the backup check only; preflight
+// covers its privileges (#115). Unlike a run, which skips a storage the token
+// cannot read with a warning, it fails, so pbp setup prints the node lines
+// that grant the missing ACLs.
 func CheckSources(ctx context.Context, d Deps) error {
+	restore := d.Cfg.Restore.Storage
 	var problems []string
 	for _, n := range needs(d) {
-		if n.Source == "" {
-			continue
-		}
 		st := n.Source
-		if p := sourcePrivilegeProblem(ctx, d, st); p != "" {
-			// Its status would only add PVE's 403 for the same cause.
-			problems = append(problems, p)
+		switch {
+		case st != "":
+			if p := sourcePrivilegeProblem(ctx, d, st); p != "" {
+				// Its status would only add PVE's 403 for the same cause.
+				problems = append(problems, p)
+				continue
+			}
+		case n.Path == "/storage/"+restore && slices.Contains(d.Cfg.Sources.Storages, restore):
+			// The restore storage's own (core) need: Needs drops it from
+			// the sources, so it comes up here once and never above.
+			st = restore
+		default:
 			continue
 		}
 		status, err := d.API.StorageStatus(ctx, d.Cfg.Target.Node, st)
@@ -94,7 +103,7 @@ func CheckSources(ctx context.Context, d Deps) error {
 			problems = append(problems, fmt.Sprintf("storage %s: %v", st, err))
 		case !status.Active || !status.Enabled:
 			problems = append(problems, fmt.Sprintf("storage %s is not active and enabled", st))
-		case !slices.Contains(strings.Split(status.Content, ","), "backup"):
+		case !slices.Contains(sanitize.SplitList(status.Content), "backup"):
 			problems = append(problems, fmt.Sprintf("storage %s does not hold backup content (has %q)", st, status.Content))
 		}
 	}
