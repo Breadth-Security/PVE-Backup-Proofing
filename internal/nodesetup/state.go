@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
 )
 
 // SudoersText is /etc/sudoers.d/pbp, exactly as docs/manual-setup.md "Node setup" step 5 shows it.
@@ -15,18 +16,15 @@ const SudoersText = "Defaults:pbp env_reset\nDefaults:pbp env_keep = \"SSH_ORIGI
 
 // PVE identities for the API token (docs/manual-setup.md "Create an API token").
 const (
-	RoleName  = "PBPProofer"
+	RoleName  = privs.RoleName
 	UserID    = "pbp@pve"
 	TokenName = "proof"
 	TokenID   = UserID + "!" + TokenName
 )
 
-// RolePrivs are the PBPProofer privileges, in the order docs/manual-setup.md lists them.
-var RolePrivs = []string{
-	"VM.Allocate", "VM.Audit", "VM.Backup", "VM.Config.HWType", "VM.Config.Network",
-	"VM.Config.Options", "VM.PowerMgmt", "VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted",
-	"Datastore.AllocateSpace", "Datastore.Audit", "Sys.Audit", "SDN.Use",
-}
+// RolePrivs are the PBPProofer privileges, in the order docs/manual-setup.md
+// lists them. internal/privs owns them, with the paths each one is needed on.
+var RolePrivs = privs.RolePrivs
 
 // Paths and fixed values of the node's end state.
 const (
@@ -59,5 +57,5 @@ func ACLPaths(nodeName string, storages []string) []string {
 	for _, s := range storages {
 		out = append(out, "/storage/"+s)
 	}
-	return append(out, "/nodes/"+nodeName, "/sdn/zones/localnetwork")
+	return append(out, "/nodes/"+nodeName, privs.SDNZonePath)
 }

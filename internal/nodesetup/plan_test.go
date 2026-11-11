@@ -13,6 +13,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
 )
 
@@ -781,5 +782,23 @@ func TestPlanWarnsMatchByAddress(t *testing.T) {
 	}
 	if len(hits) != 1 || !strings.Contains(hits[0], "/etc/ssh/sshd_config.d/10-lan.conf:1") {
 		t.Errorf("warnings = %q", p.Warnings)
+	}
+}
+
+// TestACLPathsMatchPrivsNeeds: setup grants the role on exactly the paths the
+// daemon checks the token's privileges on, so a passing setup passes the check.
+func TestACLPathsMatchPrivsNeeds(t *testing.T) {
+	var needs []string
+	for _, n := range privs.Needs("pve1", "local-zfs", []string{"pbs"}) {
+		needs = append(needs, n.Path)
+	}
+	acl := ACLPaths("pve1", []string{"local-zfs", "pbs"})
+	slices.Sort(needs)
+	slices.Sort(acl)
+	if !slices.Equal(needs, acl) {
+		t.Errorf("privs.Needs paths %v, ACLPaths %v", needs, acl)
+	}
+	if RoleName != privs.RoleName || !slices.Equal(RolePrivs, privs.RolePrivs) {
+		t.Errorf("nodesetup role %s %v, privs %s %v", RoleName, RolePrivs, privs.RoleName, privs.RolePrivs)
 	}
 }
