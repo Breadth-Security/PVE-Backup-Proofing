@@ -87,7 +87,7 @@ Setup asks these only when there is no `config.yaml` yet. Enter accepts the defa
 | Schedule (cron) | `0 2 * * *` | `schedule`: five cron fields (minute, hour, day of month, month, day of week); see [The schedule](operating.md#the-schedule) |
 | Time zone for the schedule (Docker only; a `.deb` host uses its own zone) | the `TZ` passed in | `.env`, which `docker-compose.yml` reads; an `Area/City` name such as `Europe/Berlin` (see [The time zone](operating.md#the-time-zone)) |
 
-Everything else comes from [`config.example.yaml`](../config.example.yaml), with its comments, so `config.yaml` reads like the example. Edit it afterwards for the rest (checks, notifications, timeouts) with `sudoedit config.yaml` (Docker) or `sudoedit /etc/pbp/config.yaml` (`.deb`): setup leaves it read-only. Once `config.yaml` exists, setup never asks again: it reads the file and uses its values.
+Everything else comes from [`config.example.yaml`](../config.example.yaml), with its comments, so `config.yaml` reads like the example. Edit it afterwards for the rest (checks, notifications, timeouts) with `sudoedit config.yaml` (Docker) or `sudoedit /etc/pbp/config.yaml` (`.deb`): setup leaves it read-only. Once `config.yaml` exists, setup never asks again: it reads the file and uses its values. If you add a PBS storage to `sources.storages` later, the token needs access to it too: see [Adding a PBS storage](operating.md#adding-a-pbs-storage).
 
 ### What it prints
 

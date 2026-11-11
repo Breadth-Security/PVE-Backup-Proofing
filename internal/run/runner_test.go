@@ -167,7 +167,7 @@ type runFixture struct {
 	allowed map[string]bool
 }
 
-// newRunFixture: VMID range [lo, hi], storages pbs and pbs-sync, restore
+// newRunFixture: VMID range [lo, hi], source storage pbs (add adds others), restore
 // storage local-zfs with plenty of room, 64 GiB free node memory.
 func newRunFixture(t *testing.T, lo, hi int) *runFixture {
 	t.Helper()
@@ -190,8 +190,9 @@ func newRunFixture(t *testing.T, lo, hi int) *runFixture {
 	var cfg config.Config
 	cfg.Workers = 1
 	cfg.Target.Node = "pve1"
+	cfg.Target.API.TokenID = "pbp@pve!proof"
 	cfg.Target.VMIDRange = [2]int{lo, hi}
-	cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
+	cfg.Sources.Storages = []string{"pbs"} // add makes any other storage a source
 	cfg.Restore.Storage = "local-zfs"
 	cfg.Restore.SpaceMarginPercent = 10
 	cfg.Restore.BootTimeout = 5 * time.Minute
@@ -255,6 +256,9 @@ func (f *runFixture) add(storage string, kind model.GuestKind, vmid, memMiB int,
 		Time:  time.Date(2026, 10, 18, 22, 0, 0, 0, time.UTC),
 	}
 	f.api.Backups[storage] = append(f.api.Backups[storage], b)
+	if !slices.Contains(f.d.Cfg.Sources.Storages, storage) {
+		f.d.Cfg.Sources.Storages = append(f.d.Cfg.Sources.Storages, storage)
+	}
 	cfg := fmt.Sprintf("name: g%d\n", vmid)
 	if kind == model.KindLXC {
 		cfg += "unprivileged: 1\n"
@@ -958,7 +962,15 @@ func TestRunPrivilegedContainer(t *testing.T) {
 	}{
 		{"no Sys.Modify", func(f *runFixture) {}, true},
 		{"Sys.Modify granted", func(f *runFixture) { f.api.Privs = map[string][]string{"/": {"Sys.Modify"}} }, false},
-		{"privileges unreadable", func(f *runFixture) { f.api.Fail["Privileges"] = errors.New("api down") }, false},
+		{"privileges unreadable", func(f *runFixture) {
+			// Only the read on /: preflight reads the core paths first.
+			f.api.FailOn = func(method string, args []string) error {
+				if method == "Privileges" && len(args) == 1 && args[0] == "/" {
+					return errors.New("api down")
+				}
+				return nil
+			}
+		}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1052,6 +1064,7 @@ func TestRunStorageDiscoveryErrors(t *testing.T) {
 
 	f2 := newRunFixture(t, 990000, 990009)
 	f2.add("pbs", model.KindQEMU, 101, 1024, "")
+	f2.d.Cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
 	f2.api.listErr = map[string]error{"pbs": errors.New("a"), "pbs-sync": errors.New("b")}
 	s2 := f2.run(context.Background(), Options{Trigger: "schedule"})
 	if s2.RunError != "storage pbs: a; storage pbs-sync: b" || len(s2.Results) != 0 {

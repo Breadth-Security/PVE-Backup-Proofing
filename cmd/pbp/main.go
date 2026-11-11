@@ -610,8 +610,10 @@ func (c *checkOut) line(name string, err error) {
 
 // Preflight line names for pbp check and for pbp setup (no janitor).
 const (
-	preflightName         = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)"
-	preflightReadOnlyName = "preflight (node helper, node version, isolated bridge, restore storage, notification templates, VMID range)"
+	preflightName         = "preflight (node helper, token privileges, node version, isolated bridge, restore storage, notification templates, janitor, VMID range)"
+	preflightReadOnlyName = "preflight (node helper, token privileges, node version, isolated bridge, restore storage, notification templates, VMID range)"
+	// sourcesName is pbp check's line for the source storages (issue #107).
+	sourcesName = "source storages (token privileges, active, backup content)"
 )
 
 // checkSteps runs everything pbp check does after the state line: the API
@@ -659,6 +661,7 @@ func (a *app) checkSteps(ctx context.Context, cfg config.Config, store *state.St
 	} else {
 		c.line(preflightReadOnlyName, run.PreflightReadOnly(ctx, d))
 	}
+	c.line(sourcesName, run.CheckSources(ctx, d))
 	if !c.ok {
 		return exitFail
 	}
