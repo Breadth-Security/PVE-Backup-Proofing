@@ -62,6 +62,8 @@ PowerShell check is unit-tested against a real capture
 | `PBP_IT_ALPINE_CRASH_VMID` | `TestProofAlpineCrashed` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_PROTECTED_VMID` | `TestProofProtectedGuest` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_PROTECTED_TEMPLATE` | `TestProofProtectedGuest` | A systemd-based (Debian/Ubuntu) `vztmpl` volume. |
+| `PBP_IT_NS_STORAGE` | `TestProofNamespacedStorage` | A PBS storage with a `namespace`, listed in `sources.storages` (see [Namespaced storage](#namespaced-storage)). |
+| `PBP_IT_NS_VMID` | `TestProofNamespacedStorage` | A free VMID inside the range for the throwaway container. |
 | `PBP_IT_LIVE_NOTIFY=1` | `TestNotificationDelivers` | Send one real notification through the node's targets. |
 
 Pick small guests: every proof restores the full backup to `restore.storage`.
@@ -134,6 +136,18 @@ fresh state directory each, and hand the run summary to a capturing notifier
 instead of the node, so they send no notifications. They also hide backups of
 other guest kinds with the same VMID (VMIDs get reused: a run for
 `--guest N` proofs every kind with that VMID).
+
+## Namespaced storage
+
+`TestProofNamespacedStorage` needs a PBS storage that points at a PBS namespace, so that the backup it builds lands there. The same datastore as another source is fine:
+
+1. On the PBS, create the namespace: Datastore > Content > Add Namespace (here `pbp-it`).
+2. On the node, add a second PBS storage with the same server, datastore, user, fingerprint and encryption key as the existing one, plus the namespace:
+   `pvesm add pbs pbs-it-ns --server <pbs> --datastore <datastore> --username <user> --password <same> --fingerprint <same> --encryption-key <same key file> --namespace pbp-it --content backup`
+3. Give PBP's token the role there, for both the user and the token: `pveum acl modify /storage/pbs-it-ns --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer`.
+4. List it in `sources.storages` of the suite's config, and set `PBP_IT_NS_STORAGE=pbs-it-ns`.
+
+Afterwards, remove the storage (`pvesm remove pbs-it-ns`; its ACLs go with it). The test deletes its own backup; the namespace can stay.
 
 ## Admin key for the fixtures (add before a live run, remove after)
 
