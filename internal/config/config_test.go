@@ -93,6 +93,8 @@ func TestValidateErrors(t *testing.T) {
 		{"bridge", "bridge: vmbr-pbp", "bridge: ''", "target.bridge"},
 		{"storage", "restore: {storage: local-zfs}", "restore: {}", "restore.storage"},
 		{"sources", "storages: [pbs-main]", "storages: []", "sources.storages"},
+		{"sources empty entry", "storages: [pbs-main]", "storages: [pbs-main, '']", "sources.storages[1]"},
+		{"sources duplicate", "storages: [pbs-main]", "storages: [pbs-main, pbs-main]", "sources.storages[1]"},
 		{"range lo", "[990000, 990049]", "[99, 990049]", "target.vmid_range"},
 		{"range hi", "[990000, 990049]", "[990000, 989999]", "target.vmid_range"},
 		{"workers", "schedule:", "workers: 0\nschedule:", "workers"},
