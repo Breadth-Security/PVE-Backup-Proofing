@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Built with Go 1.26.11** (issue #110), which fixes GO-2026-6859, a crash in Go's HTTP/1 server (`net/http`). PBP runs no HTTP server, only HTTP requests to the Proxmox API, so it was not exposed; govulncheck flagged it because PBP uses `net/http`.
+
 ## v0.9.0
 
 **Upgrade both sides, and reinstall the notification templates**: the notification has two new sections, whose data keys a 0.8 node helper refuses. Run the install line and the `pbp node setup` line `pbp setup` prints (or `pbp node install-templates`) after upgrading. Configs need no change.
