@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Only the daemon changed. Configs need no change.
+
+- **`pbp check`, `pbp setup` and every run check the API token's privileges** on each path PBP needs (issue #107): `/vms`, the node, the SDN zone, the restore storage and each PBS storage, with the minimum PBP uses on each. A missing one is named with the `pveum acl modify` line that grants it. The token is privilege-separated, so a grant to the user alone, or a token re-created by hand (which drops its ACLs), left it short without a clear error. A missing privilege on `/vms`, the node, the zone or the restore storage stops a run at preflight. `pbp check` has a new `source storages` line, and when it fails `pbp setup` prints the node lines again, so the `pbp node setup` line restores the ACLs.
+- **A run skips a PBS storage the token cannot read**, with a warning, and proofs the others; if none can be read, the run ends with `no source storage could be read`.
+- **A PBS storage that lists no backups is reported** as a warning (`storage <name> lists no backups for the token`). PVE leaves out every backup the token may not see without an error, so missing rights used to look like an empty storage, and its guests were silently never proofed (issue #5).
 - **Built with Go 1.26.11** (issue #110), which fixes GO-2026-6859, a crash in Go's HTTP/1 server (`net/http`). PBP runs no HTTP server, only HTTP requests to the Proxmox API, so it was not exposed; govulncheck flagged it because PBP uses `net/http`.
 
 ## v0.9.0

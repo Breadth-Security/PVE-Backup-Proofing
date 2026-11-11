@@ -15,6 +15,8 @@ for p in /vms /storage/<restore storage> /storage/<each PBS storage> /nodes/<nod
 done
 ```
 
+Deleting and re-creating the token drops its ACLs, while the user keeps them: run the `acl modify` loop again afterwards. `pbp check` names any path where the token falls short.
+
 Put the token secret in `secrets/pve_token` in the Docker checkout, or `/etc/pbp/secrets/pve_token` on a `.deb` host (see [Configure and start](#configure-and-start)). `pbp node setup --create-token` does this step and prints the secret in its reply block.
 
 ## Create the SSH key

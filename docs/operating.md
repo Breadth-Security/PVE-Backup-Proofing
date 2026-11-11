@@ -90,6 +90,15 @@ An excluded guest is never restored, nothing is reserved for it, and its backup'
 
 The daemon reads `config.yaml` when it starts, so restart it after editing (`sudo systemctl restart pbp`, or `docker compose restart pbp`); `pbp run --guest` reads the file each time.
 
+## Adding a PBS storage
+
+To proof the backups of another PBS storage, add its name (as the node knows it) to `sources.storages` in `config.yaml`. The token has no access to it yet, so `pbp check` then fails on the `source storages` line, naming the missing privileges, and a run skips the storage with a warning. Grant access in either of two ways:
+
+- run `pbp setup` again (the same command as at setup): the failed check makes it print the node lines, with every storage in `--storages`; run the `pbp node setup` line on the node and paste the reply, or
+- on the node, run the line the message gives: `pveum acl modify /storage/<name> --users pbp@pve --tokens 'pbp@pve!proof' --roles PBPProofer`.
+
+Then `pbp check` passes again.
+
 ## Schedule and time zone
 
 ### The schedule

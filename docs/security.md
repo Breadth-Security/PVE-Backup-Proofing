@@ -57,6 +57,8 @@ The node still trusts PBP's API token (below), so protect the PBP host and its s
 
 `Datastore.Allocate` is **not** needed and should not be granted: on a PBS storage it allows deleting any backup.
 
+`pbp check`, `pbp setup` and every run check the token's effective privileges on each of these paths and name a missing one with the `pveum` line that grants it. A run stops at preflight when `/vms`, the node, the SDN zone or the restore storage is short, and skips only a PBS storage the token cannot read.
+
 `SDN.Use` is needed on the bridges the **original** guests use, not only on the isolated bridge: PVE checks the backed-up NIC configuration (for example `bridge=vmbr0,tag=2`) when it restores, before PBP can move the NICs to the isolated bridge. Granting it on `/sdn/zones/localnetwork` covers every local bridge and VLAN. The restored guest is never started until every NIC is on the isolated bridge.
 
 `/vms` cannot be narrowed to the VMID range in PVE's permission model, so the token could act on every guest. The reserved range is enforced by PBP itself; the token is the second line, not the first.
