@@ -91,6 +91,8 @@ func CheckSources(ctx context.Context, d Deps) error {
 				continue
 			}
 		case n.Path == "/storage/"+restore && slices.Contains(d.Cfg.Sources.Storages, restore):
+			// The restore storage's own (core) need: Needs drops it from
+			// the sources, so it comes up here once and never above.
 			st = restore
 		default:
 			continue

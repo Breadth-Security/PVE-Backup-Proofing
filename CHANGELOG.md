@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`pbp check` also checks a restore storage that is listed as a PBS storage** (issue #115): it must hold backups too. Before, it passed `pbp check`, and every run then warned that it lists no backups. The storage's content list is now read the same way for the restore and the PBS storages.
+- **`pbp check` also checks a restore storage that is also listed in `sources.storages`** (issue #115): it must hold backups too. Before, it passed `pbp check`, and every run then warned that it lists no backups. The storage's content list is now read the same way for the restore and the PBS storages.
 - A missing privilege's message says "both need it" when one privilege is missing.
 
 ## v0.9.1
