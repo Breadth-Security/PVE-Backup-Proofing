@@ -266,11 +266,12 @@ func (c Config) validate() error {
 	// warned about) twice: it is a typo, not a choice (#119).
 	for i, st := range c.Sources.Storages {
 		key := fmt.Sprintf("sources.storages[%d]", i)
+		idErr := ValidStorageID(st)
 		switch {
 		case strings.TrimSpace(st) == "":
 			bad(key, "empty storage name")
-		case ValidStorageID(st) != nil:
-			bad(key, "%v", ValidStorageID(st))
+		case idErr != nil:
+			bad(key, "%v", idErr)
 		case slices.Contains(c.Sources.Storages[:i], st):
 			bad(key, "%s is listed twice", st)
 		}

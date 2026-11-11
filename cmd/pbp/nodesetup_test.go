@@ -389,6 +389,16 @@ func TestNodeSetupUsageErrors(t *testing.T) {
 			t.Errorf("--bridge %q: exit %d; stderr %q", b, code, r.errOut)
 		}
 	}
+	// So is a storage name PVE would reject (#121).
+	for _, s := range []string{"pbs-", "local-zfs,p", "pbs/x", "pbs;id", "pbs1,1x"} {
+		if code := r.main("", "node", "setup", "--vmid-range", "990000-990049", "--bridge", "vmbr99", "--pubkey", r.pubkey, "--storages", s); code != exitUsage ||
+			!strings.Contains(r.errOut.String(), "not a valid storage ID") {
+			t.Errorf("--storages %q: exit %d; stderr %q", s, code, r.errOut)
+		}
+	}
+	if len(r.f.events) != 0 {
+		t.Errorf("bad storage names ran commands: %v", r.f.events)
+	}
 }
 
 func TestNodeSetupMissingDaemonVersion(t *testing.T) {

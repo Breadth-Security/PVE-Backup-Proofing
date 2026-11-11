@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodesetup"
@@ -172,6 +173,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 		for s := range strings.SplitSeq(*storages, ",") {
 			if s = strings.TrimSpace(s); s == "" {
 				return a.usageErr(sub, "--storages has an empty name: %q", *storages)
+			}
+			if err := config.ValidStorageID(s); err != nil {
+				return a.usageErr(sub, "--storages: %v", err)
 			}
 			sts = append(sts, s)
 		}
