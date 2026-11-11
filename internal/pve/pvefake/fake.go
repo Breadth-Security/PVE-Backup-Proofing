@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/testutil"
 )
@@ -39,8 +40,10 @@ type Fake struct {
 	// test can fail, say, only the second SetGuestConfig of one VMID. It
 	// runs with the fake locked: it must not call the fake.
 	FailOn func(method string, args []string) error
-	// Privs are the token's privileges by ACL path; a path not listed has
-	// none. Privileges answers from it.
+	// Privs are the token's privileges by ACL path. A path not listed has
+	// PBPProofer's privileges (privs.RolePrivs), as pbp node setup grants
+	// them; list a path with an empty slice for none. Privileges answers
+	// from it.
 	Privs map[string][]string
 	// Node is the only node name the fake answers for, like a real
 	// cluster; "" means pve1. Calls naming another node fail.
@@ -569,8 +572,12 @@ func (f *Fake) Privileges(ctx context.Context, path string) (map[string]bool, er
 	if err := f.begin("Privileges", path); err != nil {
 		return nil, err
 	}
+	granted, listed := f.Privs[path]
+	if !listed {
+		granted = privs.RolePrivs
+	}
 	out := map[string]bool{}
-	for _, p := range f.Privs[path] {
+	for _, p := range granted {
 		out[p] = true
 	}
 	return out, nil

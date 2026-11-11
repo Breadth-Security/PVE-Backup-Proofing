@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
@@ -384,5 +385,26 @@ func TestBehavesLikePVE(t *testing.T) {
 	}
 	if err := f.SetGuestConfig(ctx, "pve2", model.KindQEMU, 9000, map[string]string{"a": "2"}, nil); err != boom {
 		t.Errorf("second call: %v, want boom", err)
+	}
+}
+
+func TestPrivilegesDefaultToRole(t *testing.T) {
+	ctx := context.Background()
+	f := New()
+	got, err := f.Privileges(ctx, "/vms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range privs.RolePrivs {
+		if !got[p] {
+			t.Errorf("unlisted /vms lacks %s: %v", p, got)
+		}
+	}
+	f.Privs = map[string][]string{"/vms": {}}
+	if got, _ := f.Privileges(ctx, "/vms"); len(got) != 0 {
+		t.Errorf("listed-empty /vms = %v, want none", got)
+	}
+	if got, _ := f.Privileges(ctx, "/nodes/pve1"); len(got) != len(privs.RolePrivs) {
+		t.Errorf("unlisted /nodes/pve1 = %v, want the role", got)
 	}
 }
