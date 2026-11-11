@@ -99,6 +99,8 @@ To proof the backups of another PBS storage, add its name (as the node knows it)
 
 Then `pbp check` passes again.
 
+A PBS storage that points at a **namespace** (the `namespace` setting of the storage) works like any other: PBP lists, restores and proofs its backups and writes their notes and `protected` flag through the storage, so they stay in that namespace. Each namespace you want proofed needs its own storage on the node, listed in `sources.storages`.
+
 ## Schedule and time zone
 
 ### The schedule
