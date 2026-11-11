@@ -12,6 +12,7 @@ import (
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/hostsetup"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodesetup"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 // localRig is `sudo pbp setup --deb` in a root terminal on a (fake) Proxmox
@@ -28,6 +29,10 @@ func newLocalRig(t *testing.T) *localRig {
 	deb := t.TempDir()
 	t.Cleanup(hostsetup.SetTestHooks(func(string, int, int) error { return nil },
 		func(string) (int, error) { return 4242, nil }, deb))
+	// The API is the fake node's: its name, and the PBS storage the
+	// answers below name.
+	r.api.Node = r.f.host
+	r.api.Storage["pbs1"] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
 	r.a.onPVENode = func() bool { return true }
 	r.a.defaultTZ = func() string { return "UTC" }
 	r.a.echoOff = func() (func(), error) { return func() {}, nil }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/privs"
@@ -68,4 +69,35 @@ func emptyStorageWarning(d Deps, st string) string {
 	return fmt.Sprintf("storage %s lists no backups for the token: it is empty, or the token cannot see them "+
 		"(check: pveum user token permissions %s %s --path /vms/<vmid of a guest backed up there>; see docs/troubleshooting.md)",
 		st, user, token)
+}
+
+// CheckSources is pbp check's look at each source storage that is not also
+// the restore storage (preflight covers that one): the token's privileges on
+// it, and that it is active, enabled and holds backups. Unlike a run, which
+// skips such a storage with a warning, it fails, so pbp setup prints the
+// node lines that grant the missing ACLs.
+func CheckSources(ctx context.Context, d Deps) error {
+	var problems []string
+	for _, n := range needs(d) {
+		if n.Source == "" {
+			continue
+		}
+		st := n.Source
+		if p := sourcePrivilegeProblem(ctx, d, st); p != "" {
+			problems = append(problems, p)
+		}
+		status, err := d.API.StorageStatus(ctx, d.Cfg.Target.Node, st)
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("storage %s: %v", st, err))
+		case !status.Active || !status.Enabled:
+			problems = append(problems, fmt.Sprintf("storage %s is not active and enabled", st))
+		case !slices.Contains(strings.Split(status.Content, ","), "backup"):
+			problems = append(problems, fmt.Sprintf("storage %s does not hold backup content (has %q)", st, status.Content))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
 }

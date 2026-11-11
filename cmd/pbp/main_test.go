@@ -24,6 +24,7 @@ import (
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/node"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/nodeproto"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sshx/helperfake"
@@ -83,6 +84,7 @@ func newEnv(t *testing.T) *env {
 	t.Setenv("PBP_STATE_DIR", filepath.Join(dir, "state"))
 	e := &env{t: t, out: &bytes.Buffer{}, errOut: &bytes.Buffer{}, logDir: filepath.Join(dir, "log"),
 		api: pvefake.New(), tgt: targetfake.New(990000, 990049), notif: &fakeNotifier{}}
+	e.api.Storage["pbs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
 	e.cfgPath = filepath.Join(dir, "config.yaml")
 	cfg := fmt.Sprintf(`
 schedule: "0 2 * * *"
@@ -90,7 +92,7 @@ target:
   node: pve1
   bridge: vmbr-pbp
   vmid_range: [990000, 990049]
-  api: {tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
+  api: {token_id: "pbp@pve!proof", tls_fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
   ssh: {known_hosts_file: /kh}
 sources: {storages: [pbs]}
 restore: {storage: local-zfs}
@@ -393,7 +395,7 @@ func TestCheck(t *testing.T) {
 	if code := e.run("check"); code != exitOK {
 		t.Errorf("exit %d out %q", code, e.out)
 	}
-	for _, want := range []string{"config " + e.cfgPath + ": ok", "ssh : ok", "preflight (", "): ok"} {
+	for _, want := range []string{"config " + e.cfgPath + ": ok", "ssh : ok", "preflight (", "): ok", sourcesName + ": ok"} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("missing %q in %q", want, e.out)
 		}
@@ -411,6 +413,21 @@ func TestCheck(t *testing.T) {
 	if code := e.run("check"); code != exitFail || !strings.Contains(e.out.String(), "ssh : FAIL: ssh : refused") ||
 		strings.Contains(e.out.String(), "preflight") {
 		t.Errorf("exit %d out %q", code, e.out)
+	}
+}
+
+// A source storage the token cannot read fails pbp check with the fix, while
+// preflight (core paths only) still passes (issue #107).
+func TestCheckFailsOnSourceStoragePrivileges(t *testing.T) {
+	e := newEnv(t)
+	e.api.Privs = map[string][]string{"/storage/pbs": {"Datastore.Audit"}}
+	if code := e.run("check"); code != exitFail {
+		t.Errorf("exit %d", code)
+	}
+	out := e.out.String()
+	if !strings.Contains(out, sourcesName+": FAIL: token pbp@pve!proof lacks Datastore.AllocateSpace on /storage/pbs") ||
+		!strings.Contains(out, preflightName+": ok") {
+		t.Errorf("out:\n%s", out)
 	}
 }
 

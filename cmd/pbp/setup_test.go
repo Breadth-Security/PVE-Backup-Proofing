@@ -53,6 +53,7 @@ type setupEnv struct {
 	errOut   *bytes.Buffer
 	term     *fakeTerm
 	tgt      *targetfake.Fake
+	api      *pvefake.Fake
 	checked  []config.Config
 	pub      string
 }
@@ -65,7 +66,7 @@ func newSetupEnv(t *testing.T) *setupEnv {
 	t.Cleanup(hostsetup.SetTestHooks(func(string, int, int) error { return nil },
 		func(string) (int, error) { return 4242, nil }, t.TempDir()))
 	e := &setupEnv{t: t, dir: t.TempDir(), stateDir: filepath.Join(t.TempDir(), "state"),
-		out: &bytes.Buffer{}, errOut: &bytes.Buffer{}, term: &fakeTerm{}, tgt: targetfake.New(990000, 990009)}
+		out: &bytes.Buffer{}, errOut: &bytes.Buffer{}, term: &fakeTerm{}, tgt: targetfake.New(990000, 990009), api: pvefake.New()}
 	t.Setenv("PBP_STATE_DIR", e.stateDir)
 	pub, _, err := hostsetup.EnsureKey(hostsetup.Layout{Dir: e.dir})
 	if err != nil {
@@ -77,7 +78,13 @@ func newSetupEnv(t *testing.T) *setupEnv {
 		defaultTZ: func() string { return "Europe/Berlin" },
 		connect: func(cfg config.Config) wiring {
 			e.checked = append(e.checked, cfg)
-			return wiring{api: pvefake.New(), target: e.tgt, notifier: &fakeNotifier{}, close: func() {}}
+			// The node has every configured source storage, for backups.
+			for _, st := range cfg.Sources.Storages {
+				if _, ok := e.api.Storage[st]; !ok {
+					e.api.Storage[st] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
+				}
+			}
+			return wiring{api: e.api, target: e.tgt, notifier: &fakeNotifier{}, close: func() {}}
 		}}
 	return e
 }
@@ -211,6 +218,26 @@ func TestSetupAlreadyCompletedButCheckFails(t *testing.T) {
 		t.Errorf("exit %d, want %d (the check still fails)", code, exitFail)
 	}
 	e.stateEmpty()
+}
+
+// A token that lost a grant (here /vms, as in GitHub issue #5) fails the
+// check, so setup prints the node lines again, whose pbp node setup line
+// restores the ACLs (issue #107).
+func TestSetupReprintsNodeLinesWhenTokenLacksPrivileges(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.run(answers + e.reply(nil)); code != exitOK {
+		t.Fatalf("first run: exit %d err %s", code, e.errOut)
+	}
+	e.api.Privs = map[string][]string{"/vms": {}}
+	code := e.run(e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "" }))
+	out := e.out.String()
+	if strings.Contains(out, msgAlreadyComplete) || !strings.Contains(out, "lacks VM.Allocate") ||
+		!strings.Contains(out, "on /vms") || !strings.Contains(out, msgPasteReply) {
+		t.Errorf("out:\n%s", out)
+	}
+	if code != exitFail {
+		t.Errorf("exit %d, want %d (the check still fails)", code, exitFail)
+	}
 }
 
 func TestSetupNeedRotate(t *testing.T) {

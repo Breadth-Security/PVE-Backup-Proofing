@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 )
 
 // privCalls are the Privileges calls the fake API recorded, in order.
@@ -159,5 +160,37 @@ func TestRunAllSourcesUnreadable(t *testing.T) {
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 	if !strings.Contains(s.RunError, "no source storage could be read") || s.Severity() != "error" {
 		t.Errorf("run error %q, severity %s", s.RunError, s.Severity())
+	}
+}
+
+func TestCheckSourcesOK(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
+	for _, st := range f.d.Cfg.Sources.Storages {
+		f.api.Storage[st] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
+	}
+	if err := CheckSources(context.Background(), f.d); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestCheckSourcesReportsEach(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.d.Cfg.Sources.Storages = []string{"pbs", "pbs-sync"}
+	f.api.Storage["pbs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
+	f.api.Storage["pbs-sync"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images,rootdir"}
+	f.api.Privs = map[string][]string{"/storage/pbs": {"Datastore.Audit"}}
+	err := CheckSources(context.Background(), f.d)
+	if err == nil || !strings.Contains(err.Error(), "lacks Datastore.AllocateSpace on /storage/pbs") ||
+		!strings.Contains(err.Error(), `storage pbs-sync does not hold backup content (has "images,rootdir")`) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestCheckSourcesInactive(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.api.Storage["pbs"] = pve.StorageStatus{Active: false, Enabled: true, Content: "backup"}
+	if err := CheckSources(context.Background(), f.d); err == nil || !strings.Contains(err.Error(), "storage pbs is not active and enabled") {
+		t.Errorf("err = %v", err)
 	}
 }
