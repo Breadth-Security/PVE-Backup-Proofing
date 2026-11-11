@@ -128,7 +128,9 @@ func (f *janitorFixture) exists(vmid int) bool {
 
 func (f *janitorFixture) destroyed(vmid int) bool {
 	return slices.ContainsFunc(f.api.CallLog(), func(c string) bool {
-		return strings.HasPrefix(c, "Destroy pve1 ") && strings.HasSuffix(c, fmt.Sprintf(" %d", vmid))
+		// "Destroy pve1 <kind> <vmid> <unreferenced>"
+		fs := strings.Fields(c)
+		return len(fs) >= 4 && fs[0] == "Destroy" && fs[1] == "pve1" && fs[3] == fmt.Sprint(vmid)
 	})
 }
 

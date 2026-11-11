@@ -203,13 +203,22 @@ func TestPowerOps(t *testing.T) {
 }
 
 func TestDestroy(t *testing.T) {
-	c, got := capture(t, `{"data":"UPID:d"}`)
-	upid, err := c.Destroy(context.Background(), "pve1", model.KindLXC, 9101)
-	if err != nil || upid != "UPID:d" {
-		t.Fatalf("upid=%q err=%v", upid, err)
-	}
-	if got.method != "DELETE" || got.path != "/api2/json/nodes/pve1/lxc/9101" || got.rawQuery != "destroy-unreferenced-disks=1&purge=1" {
-		t.Errorf("request = %+v", got)
+	for _, tc := range []struct {
+		unreferenced bool
+		query        string
+	}{
+		{true, "destroy-unreferenced-disks=1&purge=1"},
+		// Without PVE's scan of every storage on the node (issue #108).
+		{false, "destroy-unreferenced-disks=0&purge=1"},
+	} {
+		c, got := capture(t, `{"data":"UPID:d"}`)
+		upid, err := c.Destroy(context.Background(), "pve1", model.KindLXC, 9101, tc.unreferenced)
+		if err != nil || upid != "UPID:d" {
+			t.Fatalf("upid=%q err=%v", upid, err)
+		}
+		if got.method != "DELETE" || got.path != "/api2/json/nodes/pve1/lxc/9101" || got.rawQuery != tc.query {
+			t.Errorf("unreferenced=%v: request = %+v", tc.unreferenced, got)
+		}
 	}
 }
 

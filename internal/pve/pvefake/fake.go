@@ -45,6 +45,9 @@ type Fake struct {
 	// them; list a path with an empty slice for none. Privileges answers
 	// from it.
 	Privs map[string][]string
+	// UnreferencedScanErr fails every Destroy with unreferenced set, as
+	// PVE does when a storage enabled on the node is broken (issue #108).
+	UnreferencedScanErr error
 	// Node is the only node name the fake answers for, like a real
 	// cluster; "" means pve1. Calls naming another node fail.
 	Node string
@@ -479,11 +482,15 @@ func (f *Fake) Stop(ctx context.Context, node string, kind model.GuestKind, vmid
 	return f.setStatus("stop", "Stop", node, kind, vmid, "stopped")
 }
 
-func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
+func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("Destroy", node, kind, vmid); err != nil {
+	if err := f.begin("Destroy", node, kind, vmid, unreferenced); err != nil {
 		return "", err
+	}
+	if unreferenced && f.UnreferencedScanErr != nil {
+		// Like PVE: the scan of every storage dies, and the guest stays.
+		return "", f.UnreferencedScanErr
 	}
 	if err := f.at(node); err != nil {
 		return "", err

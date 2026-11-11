@@ -149,3 +149,21 @@ type Recorded struct {
 	// original config, if the caller has it; empty makes Destroy read it.
 	Name string
 }
+
+// ScanSkipped is what Destroy returns when the guest is gone, but only a
+// second destroy, without PVE's scan for unreferenced disks, removed it. The
+// first failed with Cause, typically because a storage enabled on the node
+// is missing or broken: PVE scans every one of them (issue #108). Disks of
+// VMID that the config did not name may be left behind. Callers treat it as
+// destroyed and report it.
+type ScanSkipped struct {
+	Kind  model.GuestKind
+	VMID  int
+	Cause error
+}
+
+func (e *ScanSkipped) Error() string {
+	return fmt.Sprintf("%s %d destroyed without the scan for unreferenced disks; the first destroy failed: %v", e.Kind, e.VMID, e.Cause)
+}
+
+func (e *ScanSkipped) Unwrap() error { return e.Cause }

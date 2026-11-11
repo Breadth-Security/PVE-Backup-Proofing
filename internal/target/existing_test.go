@@ -854,7 +854,7 @@ func TestDestroy(t *testing.T) {
 				muts = append(muts, c)
 			}
 		}
-		want := []string{"Stop pve1 qemu 990005", "Destroy pve1 qemu 990005"}
+		want := []string{"Stop pve1 qemu 990005", "Destroy pve1 qemu 990005 true"}
 		if !slices.Equal(muts, want) {
 			t.Errorf("mutating calls = %q", muts)
 		}
@@ -889,7 +889,7 @@ func TestDestroy(t *testing.T) {
 				muts = append(muts, c)
 			}
 		}
-		want := []string{"SetGuestConfig pve1 qemu 990008 set=map[protection:0] del=[]", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008"}
+		want := []string{"SetGuestConfig pve1 qemu 990008 set=map[protection:0] del=[]", "Stop pve1 qemu 990008", "Destroy pve1 qemu 990008 true"}
 		if !slices.Equal(muts, want) {
 			t.Errorf("mutating calls = %q", muts)
 		}
@@ -915,6 +915,58 @@ func TestDestroy(t *testing.T) {
 			t.Error("Destroy reported success while guest still exists")
 		}
 	})
+}
+
+// One broken storage enabled on the node fails PVE's scan for unreferenced
+// disks, and with it every destroy (issue #108, GitHub #5). Destroy then
+// retries without the scan and reports the guest destroyed, with the cause.
+func TestDestroyFallsBackWithoutUnreferencedScan(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindQEMU, 990003, "stopped", "pbp")}
+	f.Configs[990003] = map[string]string{"tags": "pbp"}
+	f.UnreferencedScanErr = errors.New("no such logical volume pve/data")
+	err := newTarget(t, f, f, nil).Destroy(ctx, model.KindQEMU, 990003, Recorded{})
+	var ss *ScanSkipped
+	if !errors.As(err, &ss) || ss.VMID != 990003 || ss.Kind != model.KindQEMU || !strings.Contains(ss.Error(), "no such logical volume pve/data") {
+		t.Fatalf("err = %v, want *ScanSkipped", err)
+	}
+	var destroys []string
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "Destroy ") {
+			destroys = append(destroys, c)
+		}
+	}
+	if want := []string{"Destroy pve1 qemu 990003 true", "Destroy pve1 qemu 990003 false"}; !slices.Equal(destroys, want) {
+		t.Errorf("destroys = %q, want %q", destroys, want)
+	}
+	if len(f.GuestList) != 0 {
+		t.Error("guest not destroyed")
+	}
+}
+
+// When the destroy without the scan fails too, the guest stays and Destroy
+// fails with both errors; it is not reported as destroyed.
+func TestDestroyFallbackAlsoFails(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.GuestList = []pve.GuestRef{guest(model.KindLXC, 990004, "stopped", "pbp")}
+	f.Configs[990004] = map[string]string{"tags": "pbp"}
+	f.UnreferencedScanErr = errors.New("scan broke")
+	f.FailOn = func(method string, args []string) error {
+		if method == "Destroy" && args[len(args)-1] == "false" {
+			return errors.New("still locked")
+		}
+		return nil
+	}
+	err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, 990004, Recorded{})
+	var ss *ScanSkipped
+	if err == nil || errors.As(err, &ss) || !strings.Contains(err.Error(), "scan broke") || !strings.Contains(err.Error(), "still locked") {
+		t.Errorf("err = %v", err)
+	}
+	if len(f.GuestList) != 1 {
+		t.Error("guest gone although both destroys failed")
+	}
 }
 
 // Destroy with a Recorded (the state store records an in-flight restore at
@@ -1062,7 +1114,7 @@ func TestDestroyRecorded(t *testing.T) {
 // undeadAPI accepts Destroy but never removes the guest.
 type undeadAPI struct{ *pvefake.Fake }
 
-func (undeadAPI) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
+func (undeadAPI) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (string, error) {
 	return "UPID:undead", nil
 }
 

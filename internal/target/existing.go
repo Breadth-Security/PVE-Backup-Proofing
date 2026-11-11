@@ -404,7 +404,7 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 			return err
 		}
 	}
-	if err := n.task(ctx, kind, vmid, "destroy", n.api.Destroy); err != nil {
+	if err := n.destroy(ctx, kind, vmid); err != nil {
 		return err
 	}
 	if _, still, err := n.find(ctx, vmid); err != nil {
@@ -413,6 +413,27 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 		return fmt.Errorf("guest %d still exists after destroy", vmid)
 	}
 	return nil
+}
+
+// destroy destroys the guest with PVE's scan for unreferenced disks, and if
+// that fails, once more without it: the scan covers every storage enabled on
+// the node, so one broken storage there would fail every destroy, and the
+// janitor's retries with it every run (issue #108). A destroy that only
+// succeeds without the scan returns *ScanSkipped.
+func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid int) error {
+	op := func(unreferenced bool) func(context.Context, string, model.GuestKind, int) (string, error) {
+		return func(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
+			return n.api.Destroy(ctx, node, kind, vmid, unreferenced)
+		}
+	}
+	first := n.task(ctx, kind, vmid, "destroy", op(true))
+	if first == nil {
+		return nil
+	}
+	if err := n.task(ctx, kind, vmid, "destroy without the scan for unreferenced disks", op(false)); err != nil {
+		return fmt.Errorf("%w; %w", first, err)
+	}
+	return &ScanSkipped{Kind: kind, VMID: vmid, Cause: first}
 }
 
 // notLeftover says why the stopped, untagged guest with config cfg is not

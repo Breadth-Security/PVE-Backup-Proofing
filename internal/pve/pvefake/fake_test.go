@@ -83,7 +83,7 @@ func TestLifecycle(t *testing.T) {
 	if cfg["onboot"] != "0" || cfg["cores"] != "" {
 		t.Errorf("cfg = %v", cfg)
 	}
-	if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 9100); err != nil {
+	if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 9100, true); err != nil {
 		t.Fatal(err)
 	}
 	if g, _ := f.Guests(ctx); len(g) != 0 {
@@ -156,7 +156,7 @@ func TestConcurrentUse(t *testing.T) {
 			if _, err := f.Stop(ctx, "pve1", model.KindQEMU, vmid); err != nil {
 				t.Error(err)
 			}
-			if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, vmid); err != nil {
+			if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, vmid, true); err != nil {
 				t.Error(err)
 			}
 		}(9000 + i)
@@ -189,7 +189,7 @@ func TestDestroyRefusesProtected(t *testing.T) {
 	f := New()
 	f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990000}, Status: "stopped"}}
 	f.Configs[990000] = map[string]string{"protection": "1"}
-	if _, err := f.Destroy(context.Background(), "pve1", model.KindQEMU, 990000); err == nil {
+	if _, err := f.Destroy(context.Background(), "pve1", model.KindQEMU, 990000, true); err == nil {
 		t.Fatal("destroyed a protected guest")
 	}
 	if len(f.GuestList) != 1 {
@@ -303,7 +303,7 @@ func TestFailOnOtherMethods(t *testing.T) {
 		"Start":           func() error { _, err := f.Start(ctx, "pve1", model.KindQEMU, 100); return err },
 		"Shutdown":        func() error { _, err := f.Shutdown(ctx, "pve1", model.KindQEMU, 100); return err },
 		"Stop":            func() error { _, err := f.Stop(ctx, "pve1", model.KindQEMU, 100); return err },
-		"Destroy":         func() error { _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 100); return err },
+		"Destroy":         func() error { _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 100, true); return err },
 		"GuestStatus":     func() error { _, err := f.GuestStatus(ctx, "pve1", model.KindQEMU, 100); return err },
 		"AgentPing":       func() error { return f.AgentPing(ctx, "pve1", 100) },
 		"AgentOSInfo":     func() error { _, err := f.AgentOSInfo(ctx, "pve1", 100); return err },
@@ -360,7 +360,7 @@ func TestBehavesLikePVE(t *testing.T) {
 	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 9000); err == nil {
+	if _, err := f.Destroy(ctx, "pve1", model.KindQEMU, 9000, true); err == nil {
 		t.Error("destroyed a running guest")
 	}
 	if _, err := f.Stop(ctx, "pve2", model.KindQEMU, 9000); err == nil {
