@@ -84,7 +84,9 @@ func CheckSources(ctx context.Context, d Deps) error {
 		}
 		st := n.Source
 		if p := sourcePrivilegeProblem(ctx, d, st); p != "" {
+			// Its status would only add PVE's 403 for the same cause.
 			problems = append(problems, p)
+			continue
 		}
 		status, err := d.API.StorageStatus(ctx, d.Cfg.Target.Node, st)
 		switch {

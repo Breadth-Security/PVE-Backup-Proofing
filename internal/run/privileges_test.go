@@ -194,3 +194,18 @@ func TestCheckSourcesInactive(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A storage the token cannot read is reported once, by its privileges, not
+// again by PVE's 403 on its status (found on a test node).
+func TestCheckSourcesSkipsStatusWhenUnreadable(t *testing.T) {
+	f := newRunFixture(t, 990000, 990009)
+	f.api.Storage["pbs"] = pve.StorageStatus{Active: true, Enabled: true, Content: "backup"}
+	f.api.Privs = map[string][]string{"/storage/pbs": {}}
+	err := CheckSources(context.Background(), f.d)
+	if err == nil || !strings.Contains(err.Error(), "lacks Datastore.AllocateSpace, Datastore.Audit on /storage/pbs") {
+		t.Fatalf("err = %v", err)
+	}
+	if slices.Contains(f.api.CallLog(), "StorageStatus pve1 pbs") {
+		t.Errorf("read the status of a storage the token cannot read: %q", f.api.CallLog())
+	}
+}
