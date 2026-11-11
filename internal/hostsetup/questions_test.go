@@ -43,8 +43,8 @@ func TestAskReasks(t *testing.T) {
 		"", "https://pve1:8006", "pve1:22", "pve1", // address: empty, scheme, port, ok
 		"5-1", "abc", "990000-990009", // range: rule, syntax, ok
 		"-bad", "vmbr99", // bridge
-		"bad/x", "", // restore storage
-		"", "pbs,1x", "pbs, pbs", // PBS storages: empty, bad id, ok (dedup)
+		"bad/x", "a", "local-", "", // restore storage: bad ids (PVE's rule, #121), default
+		"", "pbs,1x", "pbs-", "pbs, pbs", // PBS storages: empty, bad id, bad id, ok (dedup)
 		"nope", "0 3 * * *", // schedule
 		"Mars/Base", "", // tz
 	}, "\n") + "\n"
@@ -64,7 +64,7 @@ func TestAskReasks(t *testing.T) {
 		"not a valid bridge name",
 		"invalid cron expression",
 		"unknown time zone",
-		"not a valid storage id",
+		"not a valid storage ID",
 		"without a scheme",
 	} {
 		if !strings.Contains(out.String(), msg) {

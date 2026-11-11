@@ -38,7 +38,6 @@ const (
 )
 
 var (
-	reStorage  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*$`)
 	reHostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\.?$`)
 )
 
@@ -192,11 +191,10 @@ func parseRange(s string) ([2]int, error) {
 	return [2]int{lo, hi}, nil
 }
 
+// validStorage applies PVE's storage ID rule, the one config validation
+// applies to the file setup writes (#121).
 func validStorage(s string) error {
-	if !reStorage.MatchString(s) {
-		return fmt.Errorf("%q is not a valid storage id (a letter, then letters, digits, '_', '.', '-')", s)
-	}
-	return nil
+	return config.ValidStorageID(s)
 }
 
 // parseStorages splits a comma-separated list, dropping repeats.
