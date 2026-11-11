@@ -260,6 +260,20 @@ func TestSetupStorageProblemSkipsNodeLines(t *testing.T) {
 	}
 }
 
+// The check after a pasted reply says the same when its only failure is a
+// storage problem.
+func TestSetupStorageProblemAfterReply(t *testing.T) {
+	e := newSetupEnv(t)
+	e.api.Storage["pbs-a"] = pve.StorageStatus{Active: true, Enabled: true, Content: "images"}
+	code := e.run(answers + e.reply(nil))
+	if out := e.out.String(); !strings.Contains(out, "storage pbs-a does not hold backup content") || !strings.Contains(out, msgFixStorages) {
+		t.Errorf("out:\n%s", out)
+	}
+	if code != exitFail {
+		t.Errorf("exit %d, want %d", code, exitFail)
+	}
+}
+
 // With a failure the node line can fix as well, the node lines are printed
 // as before.
 func TestSetupMixedProblemsPrintNodeLines(t *testing.T) {

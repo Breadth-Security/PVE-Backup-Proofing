@@ -102,10 +102,15 @@ func CheckSources(ctx context.Context, d Deps) error {
 		status, err := d.API.StorageStatus(ctx, d.Cfg.Target.Node, st)
 		var ae *pve.APIError
 		switch {
-		case errors.As(err, &ae) && ae.Status == http.StatusForbidden:
-			sp.Access = append(sp.Access, fmt.Sprintf("storage %s: %v", st, err))
-		case err != nil:
+		case err != nil && errors.As(err, &ae) && ae.Status != http.StatusForbidden:
+			// PVE's own answer, such as a storage that does not exist on
+			// the node: the storage definition is at fault.
 			sp.Storage = append(sp.Storage, fmt.Sprintf("storage %s: %v", st, err))
+		case err != nil:
+			// A 403 (rights the node line grants), or no answer at all (a
+			// lost connection, a timeout): not a storage problem setup
+			// could name, so the node lines stay.
+			sp.Access = append(sp.Access, fmt.Sprintf("storage %s: %v", st, err))
 		case !status.Active || !status.Enabled:
 			sp.Storage = append(sp.Storage, fmt.Sprintf("storage %s is not active and enabled", st))
 		case !slices.Contains(sanitize.SplitList(status.Content), "backup"):

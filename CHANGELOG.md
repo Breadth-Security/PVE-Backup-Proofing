@@ -4,7 +4,7 @@
 
 - **`pbp check` also checks a restore storage that is also listed in `sources.storages`** (issue #115): it must hold backups too. Before, it passed `pbp check`, and every run then warned that it lists no backups. The storage's content list is now read the same way for the restore and the PBS storages.
 - A missing privilege's message says "both need it" when one privilege is missing.
-- **`sources.storages` rejects an empty or repeated storage name** (issue #119); a repeated one was listed, and could be warned about, twice per run.
+- **`sources.storages` rejects an empty or repeated storage name** (issue #119); a repeated one was listed, and could be warned about, twice per run. **Check your config before upgrading:** with such an entry, the daemon and every `pbp` command refuse to start until it is removed; the message names it (`sources.storages[1]: pbs-main is listed twice`).
 - **`pbp setup` says what to fix when the only problem is a PBS storage itself** (inactive, or holding no backups), instead of printing the node lines, which would not change it (issue #119).
 - **PBS storages with a namespace are tested** (issue #116): a new integration test proofs a backup on a namespaced storage, checking that the backed-up config is read, the verdict is written to its notes and its `protected` flag is left as it was. It passed on PVE 9.2 with PBS 4.2. [Operating](docs/operating.md#adding-a-pbs-storage) now says so; a namespace per cluster does not make proofing several clusters from one datastore work.
 

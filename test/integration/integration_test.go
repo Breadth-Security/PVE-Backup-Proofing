@@ -666,6 +666,10 @@ func TestBrokenBackupFails(t *testing.T) {
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("install unit: %v %+v", err, res)
 	}
+	// Registered before vzdump, as in throwawayOn: the backup goes however
+	// the test ends (#119).
+	before := e.backupsOf(t, ctx, store, vmid)
+	t.Cleanup(func() { e.freeNewBackups(t, store, vmid, before) })
 	out := e.sh(t, "vzdump "+v+" --storage "+sshx.Quote(store)+" --mode stop --notes-template '{{guestname}}' 2>&1")
 	t.Logf("vzdump:\n%s", out)
 	destroyCT()
@@ -677,12 +681,6 @@ func TestBrokenBackupFails(t *testing.T) {
 	if b.Storage != store || !strings.Contains(b.VolID, "backup/ct/"+v+"/") {
 		t.Fatalf("unexpected backup %+v", b)
 	}
-	t.Cleanup(func() {
-		res, err := e.admin.Run(context.Background(), "pvesm free "+sshx.Quote(b.VolID), nil)
-		if err != nil || res.ExitCode != 0 {
-			t.Errorf("delete test backup %s: %v %+v", b.VolID, err, res)
-		}
-	})
 
 	r := e.proofThrowaway(t, key)
 	if r.Verdict != model.Failed || !slices.Contains(r.FailedUnits, unit) {
