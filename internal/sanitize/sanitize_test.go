@@ -414,3 +414,40 @@ func TestEnableAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentEnabled reads a qemu "agent" value as PVE does: the positional
+// first field or "enabled=", a PVE boolean, spaces allowed (#123 review).
+func TestAgentEnabled(t *testing.T) {
+	for v, want := range map[string]bool{
+		"":                          false,
+		"0":                         false,
+		"1":                         true,
+		"true":                      true,
+		"yes":                       true,
+		"on":                        true,
+		"ON":                        true,
+		"false":                     false,
+		"enabled=1":                 true,
+		"enabled=true":              true,
+		"enabled=0":                 false,
+		"type=isa, enabled=1":       true,
+		" 1 ,fstrim_cloned_disks=1": true,
+		"type=isa":                  false,
+		"0,type=isa":                false,
+	} {
+		if got := AgentEnabled(v); got != want {
+			t.Errorf("AgentEnabled(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// TestEnableAgentReadsAsOn: whatever EnableAgent writes, AgentEnabled reads
+// as on, so the override is never a silent no-op (#123 review).
+func TestEnableAgentReadsAsOn(t *testing.T) {
+	for _, v := range []string{"", "0", "1", " 0 ", "false", "off", "0,fstrim_cloned_disks=1", "enabled=0,type=isa",
+		"type=isa,enabled=0", "type=isa, enabled=no", "enabled=1", "type=isa", "freeze-fs-on-backup=0"} {
+		if out := EnableAgent(v); !AgentEnabled(out) {
+			t.Errorf("EnableAgent(%q) = %q, which does not read as on", v, out)
+		}
+	}
+}

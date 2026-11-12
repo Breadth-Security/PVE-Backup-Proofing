@@ -95,6 +95,12 @@ func TestWaitBootedVM(t *testing.T) {
 			want: BootInfo{OS: probe.Linux}, argv: "true"},
 		{name: "windows", agent: "enabled=1", api: &agentAPI{osID: "mswindows"},
 			want: BootInfo{OS: probe.Windows}, argv: "cmd /c exit 0"},
+		// PVE booleans and spaced options read as on, as the run reads them
+		// (#123 review).
+		{name: "enabled=true", agent: "enabled=true", api: &agentAPI{osID: "debian"},
+			want: BootInfo{OS: probe.Linux}, argv: "true"},
+		{name: "spaced enabled=yes", agent: "type=isa, enabled=yes", api: &agentAPI{osID: "debian"},
+			want: BootInfo{OS: probe.Linux}, argv: "true"},
 		{name: "exec blocked", agent: "1", api: &agentAPI{osID: "rhel", execErr: errors.New("guest-exec has been disabled by agent policy")},
 			want: BootInfo{OS: probe.Linux, ExecBlocked: true}, argv: "true"},
 	}

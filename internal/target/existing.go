@@ -246,10 +246,7 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 	var agent string
 	if old := cfg["agent"]; opts.EnableAgent && kind == model.KindQEMU {
 		if v := sanitize.EnableAgent(old); v != old {
-			if plan.Set == nil {
-				plan.Set = map[string]string{}
-			}
-			plan.Set["agent"] = v
+			plan.Set["agent"] = v // Sanitize always makes Set
 			agent = fmt.Sprintf("agent: %s \u2192 %s", cmp.Or(old, "(unset)"), v)
 		}
 	}

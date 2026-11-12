@@ -1018,11 +1018,3 @@ func TestNoNestingOnlyUnprivileged(t *testing.T) {
 		}
 	}
 }
-
-func TestAgentEnabled(t *testing.T) {
-	for v, want := range map[string]bool{"1": true, "enabled=1,fstrim_cloned_disks=1": true, "1,fstrim_cloned_disks=1": true, "0": false, "": false, "enabled=0": false} {
-		if got := agentEnabled(map[string]string{"agent": v}); got != want {
-			t.Errorf("agent %q: %v, want %v", v, got, want)
-		}
-	}
-}

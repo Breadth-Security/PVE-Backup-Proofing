@@ -199,7 +199,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	guest := j.originalIdentity()
 	// checks.guests may turn the agent on for a VM copy whose backup has it
 	// off (#123); only then does the copy differ from the backup in it.
-	agentOn := kind == model.KindQEMU && !agentEnabled(j.orig) && probe.EnableGuestAgent(d.Cfg.Checks, guest)
+	agentOn := kind == model.KindQEMU && !sanitize.AgentEnabled(j.orig["agent"]) && probe.EnableGuestAgent(d.Cfg.Checks, guest)
 	sanitized, err := d.Target.Sanitize(ctx, kind, j.vmid, target.SanitizeOpts{EnableAgent: agentOn})
 	removed := sanitized.Removed
 	if errors.Is(err, target.ErrUnsafe) {
@@ -262,7 +262,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		switch {
 		case agentOn:
 			fail(model.Booted, "guest agent turned on for the proof copy (off in the backup) did not answer within %s: is qemu-guest-agent installed and running?", report.Dur(d.Cfg.Restore.BootTimeout))
-		case agentEnabled(j.orig):
+		case sanitize.AgentEnabled(j.orig["agent"]):
 			fail(model.Booted, "guest agent did not answer within %s: is qemu-guest-agent installed and running?", report.Dur(d.Cfg.Restore.BootTimeout))
 		default:
 			fail(model.Booted, "guest agent not enabled for this VM (docs/checks.md#vms-and-the-guest-agent)")
@@ -550,19 +550,4 @@ func (j *job) plainProbeReason(reason string) string {
 		return "lost contact with the guest during the checks (see the guest's log)"
 	}
 	return scrub(reason, j.vmid, j.b.Key.Label())
-}
-
-// agentEnabled reports whether a VM config enables the QEMU guest agent
-// ("agent: 1" or "agent: enabled=1,…").
-func agentEnabled(cfg map[string]string) bool {
-	for i, part := range strings.Split(cfg["agent"], ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok && i == 0 && (k == "1" || k == "true") {
-			return true
-		}
-		if ok && k == "enabled" && (v == "1" || v == "true") {
-			return true
-		}
-	}
-	return false
 }
