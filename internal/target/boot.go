@@ -9,6 +9,7 @@ import (
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // postPingGrace bounds the OS-info and test-exec calls made after the agent
@@ -130,7 +131,7 @@ func (n *ExistingNode) waitVM(ctx, tctx context.Context, vmid int) (BootInfo, er
 	if err != nil {
 		return BootInfo{}, fmt.Errorf("read config %d: %w", vmid, err)
 	}
-	if !agentEnabled(cfg["agent"]) {
+	if !sanitize.AgentEnabled(cfg["agent"]) {
 		return missing, nil
 	}
 	for n.api.AgentPing(tctx, n.node, vmid) != nil {
@@ -170,19 +171,4 @@ func (n *ExistingNode) waitVM(ctx, tctx context.Context, vmid int) (BootInfo, er
 		info.ExecBlocked = true
 	}
 	return info, nil
-}
-
-// agentEnabled reads a qemu "agent" option: "1", "1,opts..." or
-// "enabled=1,opts...".
-func agentEnabled(v string) bool {
-	fields := strings.Split(strings.TrimSpace(v), ",")
-	if fields[0] == "1" {
-		return true
-	}
-	for _, f := range fields {
-		if f == "enabled=1" {
-			return true
-		}
-	}
-	return false
 }

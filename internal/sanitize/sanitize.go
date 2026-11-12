@@ -208,3 +208,52 @@ func manualAddressing(v string) string {
 	}
 	return strings.Join(fields, ",")
 }
+
+// EnableAgent returns the qemu "agent" value v ("1", "0,opts…",
+// "enabled=0,opts…" or "") with the agent turned on and its other options
+// kept (issue #123).
+func EnableAgent(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "1"
+	}
+	fields := strings.Split(v, ",")
+	for i, f := range fields {
+		k, _, ok := strings.Cut(strings.TrimSpace(f), "=")
+		switch {
+		case !ok && i == 0: // the positional "enabled"
+			fields[i] = "1"
+			return strings.Join(fields, ",")
+		case ok && k == "enabled":
+			fields[i] = "enabled=1"
+			return strings.Join(fields, ",")
+		}
+	}
+	return "1," + v
+}
+
+// AgentEnabled reports whether a qemu "agent" value turns the agent on: its
+// positional first field or its "enabled" option is a PVE boolean true (1,
+// on, yes, true; case ignored), spaces allowed. The run and the target read
+// the agent with it, so they cannot disagree (#123 review).
+func AgentEnabled(v string) bool {
+	for i, f := range strings.Split(v, ",") {
+		k, val, ok := strings.Cut(strings.TrimSpace(f), "=")
+		switch {
+		case !ok && i == 0:
+			return pveTrue(k)
+		case ok && strings.TrimSpace(k) == "enabled":
+			return pveTrue(val)
+		}
+	}
+	return false
+}
+
+// pveTrue is PVE's parse_boolean true.
+func pveTrue(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "on", "yes", "true":
+		return true
+	}
+	return false
+}

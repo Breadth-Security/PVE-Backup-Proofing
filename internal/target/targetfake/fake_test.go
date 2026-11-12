@@ -38,7 +38,7 @@ func TestScriptedLifecycle(t *testing.T) {
 	if _, err := f.Executor(model.KindQEMU, 990002).Exec(ctx, []string{"true"}); err == nil {
 		t.Error("unscripted executor should fail")
 	}
-	if _, err := f.Sanitize(ctx, model.KindQEMU, 990002); !errors.Is(err, target.ErrUnsafe) {
+	if _, err := f.Sanitize(ctx, model.KindQEMU, 990002, target.SanitizeOpts{}); !errors.Is(err, target.ErrUnsafe) {
 		t.Errorf("sanitize err = %v", err)
 	}
 	if _, err := f.AllocateVMID(ctx, map[int]bool{990002: true}); !errors.Is(err, target.ErrNoFreeVMID) {
@@ -95,7 +95,7 @@ func TestContracts(t *testing.T) {
 			"Destroy":          f.Destroy(ctx, model.KindQEMU, out, target.Recorded{}),
 			"Destroy recorded": f.Destroy(ctx, model.KindQEMU, out, target.Recorded{VolID: "vol"}),
 		}
-		_, checks["Sanitize"] = f.Sanitize(ctx, model.KindQEMU, out)
+		_, checks["Sanitize"] = f.Sanitize(ctx, model.KindQEMU, out, target.SanitizeOpts{})
 		_, checks["WaitBooted"] = f.WaitBooted(ctx, model.KindQEMU, out, 0)
 		_, checks["Executor"] = f.Executor(model.KindQEMU, out).Exec(ctx, []string{"true"})
 		for m, err := range checks {
@@ -120,14 +120,14 @@ func TestContracts(t *testing.T) {
 			t.Error("Start before Sanitize succeeded")
 		}
 		f.SanitizeErr = map[int]error{990000: target.ErrUnsafe}
-		if _, err := f.Sanitize(ctx, model.KindQEMU, 990000); err == nil {
+		if _, err := f.Sanitize(ctx, model.KindQEMU, 990000, target.SanitizeOpts{}); err == nil {
 			t.Fatal("want sanitize error")
 		}
 		if err := f.Start(ctx, model.KindQEMU, 990000); err == nil {
 			t.Error("Start after failed Sanitize succeeded")
 		}
 		f.SanitizeErr = nil
-		if _, err := f.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
+		if _, err := f.Sanitize(ctx, model.KindQEMU, 990000, target.SanitizeOpts{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.Start(ctx, model.KindQEMU, 990000); err != nil {

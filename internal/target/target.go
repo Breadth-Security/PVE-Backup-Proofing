@@ -89,6 +89,18 @@ type Sanitized struct {
 	// Changes lists each edited config key, sorted by key, one line each:
 	// "net0: old \u2192 new", or "usb0 removed (old)".
 	Changes []string
+	// Agent is the guest agent change SanitizeOpts.EnableAgent made, as
+	// "agent: old \u2192 new" ("" when none). It is not a safety change, so
+	// it is not in Changes.
+	Agent string
+}
+
+// SanitizeOpts are the changes Sanitize makes beyond safety.
+type SanitizeOpts struct {
+	// EnableAgent turns the QEMU guest agent on for a VM copy whose config
+	// has it off (checks.guests enable_guest_agent, issue #123). Containers
+	// ignore it.
+	EnableAgent bool
 }
 
 // Target is where backups are restored and proofed (design section 5.1).
@@ -121,7 +133,7 @@ type Target interface {
 	Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error
 	// Sanitize makes the restored guest safe to start and verifies it. It
 	// returns the pieces it removed, which the proof cannot cover.
-	Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (Sanitized, error)
+	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts SanitizeOpts) (Sanitized, error)
 	// Start starts a sanitized guest; it refuses one that is not.
 	Start(ctx context.Context, kind model.GuestKind, vmid int) error
 	// WaitBooted waits until the guest runs and can be looked into. An

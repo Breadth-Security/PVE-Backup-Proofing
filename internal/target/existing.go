@@ -1,6 +1,7 @@
 package target
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -223,7 +224,7 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	return nil
 }
 
-func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (Sanitized, error) {
+func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts SanitizeOpts) (Sanitized, error) {
 	if err := n.guard(vmid); err != nil {
 		return Sanitized{}, err
 	}
@@ -239,13 +240,23 @@ func (n *ExistingNode) Sanitize(ctx context.Context, kind model.GuestKind, vmid 
 	if err := n.mayRemoveDrives(ctx, plan, cfg, vmid); err != nil {
 		return Sanitized{}, err
 	}
+	changes := sanitizeChanges(cfg, plan)
+	// The agent goes in the same write, after the safety changes are listed:
+	// it is an observation channel, not a safety edit.
+	var agent string
+	if old := cfg["agent"]; opts.EnableAgent && kind == model.KindQEMU {
+		if v := sanitize.EnableAgent(old); v != old {
+			plan.Set["agent"] = v // Sanitize always makes Set
+			agent = fmt.Sprintf("agent: %s \u2192 %s", cmp.Or(old, "(unset)"), v)
+		}
+	}
 	if err := n.api.SetGuestConfig(ctx, n.node, kind, vmid, plan.Set, plan.Delete); err != nil {
 		return Sanitized{}, fmt.Errorf("sanitize config %d: %w", vmid, err)
 	}
 	if err := n.verifySanitized(ctx, kind, vmid); err != nil {
 		return Sanitized{}, err
 	}
-	return Sanitized{Removed: plan.Removed, Changes: sanitizeChanges(cfg, plan)}, nil
+	return Sanitized{Removed: plan.Removed, Changes: changes, Agent: agent}, nil
 }
 
 // sanitizeChanges describes the edits plan makes to cfg, sorted by key. A

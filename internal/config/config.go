@@ -107,7 +107,11 @@ type GuestChecks struct {
 	// for the matching guests only (issue #68).
 	IgnoreUnits           []string `yaml:"ignore_units"`
 	WindowsIgnoreServices []string `yaml:"windows_ignore_services"`
-	CheckSet              `yaml:",inline"`
+	// EnableGuestAgent turns the QEMU guest agent on for the proof copy of
+	// a matching VM whose backup has it off. The source guest and the backup
+	// are never changed; containers ignore it (issue #123).
+	EnableGuestAgent bool `yaml:"enable_guest_agent"`
+	CheckSet         `yaml:",inline"`
 }
 
 type Notify struct {
