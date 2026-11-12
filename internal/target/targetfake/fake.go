@@ -216,10 +216,14 @@ func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, origTags s
 	return err
 }
 
-func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (target.Sanitized, error) {
+func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts target.SanitizeOpts) (target.Sanitized, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("Sanitize %s %d", kind, vmid)
+	if opts.EnableAgent {
+		f.record("Sanitize %s %d enable-agent", kind, vmid)
+	} else {
+		f.record("Sanitize %s %d", kind, vmid)
+	}
 	if err := f.guard(vmid); err != nil {
 		return target.Sanitized{}, err
 	}
@@ -236,7 +240,11 @@ func (f *Fake) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (ta
 	}
 	g.Sanitized = true
 	f.Live[vmid] = g
-	return target.Sanitized{Removed: slices.Clone(f.Missing[vmid])}, nil
+	s := target.Sanitized{Removed: slices.Clone(f.Missing[vmid])}
+	if opts.EnableAgent && kind == model.KindQEMU {
+		s.Agent = "agent: (unset) \u2192 1"
+	}
+	return s, nil
 }
 
 func (f *Fake) Start(ctx context.Context, kind model.GuestKind, vmid int) error {

@@ -208,3 +208,26 @@ func manualAddressing(v string) string {
 	}
 	return strings.Join(fields, ",")
 }
+
+// EnableAgent returns the qemu "agent" value v ("1", "0,opts…",
+// "enabled=0,opts…" or "") with the agent turned on and its other options
+// kept (issue #123).
+func EnableAgent(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "1"
+	}
+	fields := strings.Split(v, ",")
+	for i, f := range fields {
+		k, _, ok := strings.Cut(strings.TrimSpace(f), "=")
+		switch {
+		case !ok && i == 0: // the positional "enabled"
+			fields[i] = "1"
+			return strings.Join(fields, ",")
+		case ok && k == "enabled":
+			fields[i] = "enabled=1"
+			return strings.Join(fields, ",")
+		}
+	}
+	return "1," + v
+}

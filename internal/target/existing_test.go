@@ -475,7 +475,7 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	}
 	// A later sanitize failure still leaves a guest Destroy accepts.
 	f.Fail["SetGuestConfig"] = errors.New("boom")
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err == nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err == nil {
 		t.Fatal("Sanitize should fail")
 	}
 	delete(f.Fail, "SetGuestConfig")
@@ -506,7 +506,7 @@ func TestRestoreClearsProtection(t *testing.T) {
 		t.Errorf("want one SetGuestConfig as the last call, got %q", got)
 	}
 	f.Fail["SetGuestConfig"] = errors.New("boom")
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err == nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err == nil {
 		t.Fatal("Sanitize should fail")
 	}
 	delete(f.Fail, "SetGuestConfig")
@@ -537,7 +537,7 @@ func TestSanitizeVerifiesProtectionCleared(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "protection") {
 		t.Fatalf("err = %v, want protection verification failure", err)
 	}
@@ -634,7 +634,7 @@ func TestRestoreKeepsOriginalTags(t *testing.T) {
 	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
 		t.Errorf("tags after restore = %q", got)
 	}
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
@@ -650,7 +650,7 @@ func TestSanitize(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	san, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	missing := san.Removed
 	if err != nil {
 		t.Fatal(err)
@@ -673,6 +673,75 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
+// TestSanitizeEnablesAgent: with EnableAgent, Sanitize turns the agent on
+// for the copy in the same config write, keeping its other options, and
+// reports it apart from the safety changes (#123).
+func TestSanitizeEnablesAgent(t *testing.T) {
+	for _, tc := range []struct{ orig, want, line string }{
+		{"", "1", "agent: (unset) \u2192 1"},
+		{"agent: 0,fstrim_cloned_disks=1\n", "1,fstrim_cloned_disks=1", "agent: 0,fstrim_cloned_disks=1 \u2192 1,fstrim_cloned_disks=1"},
+	} {
+		ctx := context.Background()
+		f := healthyFake()
+		f.BackupConfigs[vmVol] = strings.Replace(vmConf, "agent: 1\n", tc.orig, 1)
+		n := newTarget(t, f, f, nil)
+		if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+			t.Fatal(err)
+		}
+		san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{EnableAgent: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := f.Configs[990000]["agent"]; got != tc.want {
+			t.Errorf("%q: agent = %q, want %q", tc.orig, got, tc.want)
+		}
+		if san.Agent != tc.line {
+			t.Errorf("%q: Agent = %q, want %q", tc.orig, san.Agent, tc.line)
+		}
+		for _, c := range san.Changes {
+			if strings.HasPrefix(c, "agent") {
+				t.Errorf("%q: agent listed with the safety changes: %q", tc.orig, san.Changes)
+			}
+		}
+		if f.Configs[990000]["net0"] != "virtio=BC:24:11:00:00:03,bridge="+bridge {
+			t.Errorf("net0 = %q: the copy must still be made safe", f.Configs[990000]["net0"])
+		}
+	}
+}
+
+// TestSanitizeAgentOptionOff: without EnableAgent, or for a container, the
+// agent setting stays as backed up.
+func TestSanitizeAgentOptionOff(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[vmVol] = strings.Replace(vmConf, "agent: 1\n", "", 1)
+	n := newTarget(t, f, f, nil)
+	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		t.Fatal(err)
+	}
+	san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := f.Configs[990000]["agent"]; ok || san.Agent != "" {
+		t.Errorf("agent = %q (set %v), Agent %q; want it left unset", v, ok, san.Agent)
+	}
+
+	f.BackupConfigs[ctVol] = ctConf
+	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}}
+	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
+	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
+		t.Fatal(err)
+	}
+	san, err = n.Sanitize(ctx, model.KindLXC, 990001, SanitizeOpts{EnableAgent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := f.Configs[990001]["agent"]; ok || san.Agent != "" {
+		t.Errorf("container: agent = %q (set %v), Agent %q; want nothing", v, ok, san.Agent)
+	}
+}
+
 func TestSanitizeLXCBindMount(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
@@ -686,7 +755,7 @@ func TestSanitizeLXCBindMount(t *testing.T) {
 	if _, ok := f.Configs[990001]["hostname"]; !ok || f.Configs[990001]["hostname"] != "web" {
 		t.Errorf("LXC hostname must not be renamed: %q", f.Configs[990001]["hostname"])
 	}
-	san, err := n.Sanitize(ctx, model.KindLXC, 990001)
+	san, err := n.Sanitize(ctx, model.KindLXC, 990001, SanitizeOpts{})
 	missing := san.Removed
 	if err != nil {
 		t.Fatal(err)
@@ -707,7 +776,7 @@ func TestSanitizeUnsafe(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "args") {
 		t.Fatalf("err = %v", err)
 	}
@@ -743,7 +812,7 @@ func TestSanitizeVerifiesBridge(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if err == nil || !strings.Contains(err.Error(), "net0") {
 		t.Fatalf("err = %v, want net0 verification failure", err)
 	}
@@ -766,7 +835,7 @@ func TestSanitizeVerifiesMTUCleared(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "net0") {
 		t.Fatalf("err = %v, want net0 verification failure", err)
 	}
@@ -780,7 +849,7 @@ func TestStartAfterSanitize(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Start(ctx, model.KindQEMU, 990000); err != nil {
@@ -1251,7 +1320,7 @@ func TestSanitizeReportsChanges(t *testing.T) {
 	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	got, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1287,7 +1356,7 @@ func TestSanitizeReReadFails(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-read config") {
+	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-read config") {
 		t.Fatalf("Sanitize: %v, want the re-read error", err)
 	}
 	if err := n.Start(ctx, model.KindQEMU, 990000); err == nil || !strings.Contains(err.Error(), "refusing to start") {
@@ -1325,7 +1394,7 @@ func TestStartRefusesForeignDisks(t *testing.T) {
 			if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := n.Sanitize(ctx, model.KindQEMU, 990000); err != nil {
+			if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err != nil {
 				t.Fatal(err)
 			}
 			f.Configs[990000][tc.key] = tc.val
@@ -1379,7 +1448,7 @@ func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
 	if got := f.Configs[990000]["efidisk0"]; !strings.Contains(got, "vm-137-disk-8") {
 		t.Fatalf("fake restore did not keep the unmapped line as PVE does: %q", got)
 	}
-	s, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	s, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if err != nil {
 		t.Fatalf("Sanitize: %v", err)
 	}
@@ -1419,7 +1488,7 @@ func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.ResetCalls()
-	_, err := n.Sanitize(ctx, model.KindQEMU, 990000)
+	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
 	if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "efidisk0 (lvm:vm-137-disk-8)") || !strings.Contains(err.Error(), "VM.Config.Disk") {
 		t.Fatalf("err = %v", err)
 	}

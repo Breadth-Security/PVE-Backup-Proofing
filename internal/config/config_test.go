@@ -162,6 +162,16 @@ func TestValidateErrors(t *testing.T) {
 	}
 }
 
+func TestGuestEnableAgentParses(t *testing.T) {
+	c, err := loadStr(t, strings.Replace(minimal, "sources:", "checks: {guests: [{match: {vmid: 502}, enable_guest_agent: true}, {match: {tag: x}}]}\nsources:", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := c.Checks.Guests; len(g) != 2 || !g[0].EnableGuestAgent || g[1].EnableGuestAgent {
+		t.Fatalf("guests %+v", g)
+	}
+}
+
 func TestRootSSHUserIsRejected(t *testing.T) {
 	for _, user := range []string{"root", `"root"`} {
 		_, err := loadStr(t, strings.Replace(minimal, "ssh: {known_hosts_file: /kh}", "ssh: {user: "+user+", known_hosts_file: /kh}", 1))

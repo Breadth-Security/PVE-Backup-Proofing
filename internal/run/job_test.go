@@ -136,9 +136,9 @@ func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origT
 	return t.Fake.Restore(ctx, b, vmid, origTags)
 }
 
-func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int) (target.Sanitized, error) {
+func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts target.SanitizeOpts) (target.Sanitized, error) {
 	t.rec.add(ctx, "Sanitize")
-	return t.Fake.Sanitize(ctx, kind, vmid)
+	return t.Fake.Sanitize(ctx, kind, vmid, opts)
 }
 
 func (t *recTarget) Start(ctx context.Context, kind model.GuestKind, vmid int) error {
@@ -716,6 +716,53 @@ func TestBootOutcomes(t *testing.T) {
 			}
 			if !strings.HasPrefix(f.notes(), "db01 · PBP "+string(tc.verdict)+" ") {
 				t.Errorf("notes %q", f.notes())
+			}
+		})
+	}
+}
+
+// TestGuestAgentOverride: a checks.guests entry with enable_guest_agent
+// turns the agent on for the copy of a VM whose backup has it off, and only
+// then (#123). The reason for an agent that does not answer says which.
+func TestGuestAgentOverride(t *testing.T) {
+	const turnedOn = "guest agent turned on for the proof copy (off in the backup) did not answer within 5m0s: is qemu-guest-agent installed and running?"
+	const notEnabled = "guest agent not enabled for this VM (docs/checks.md#vms-and-the-guest-agent)"
+	match := []config.GuestChecks{{Match: config.GuestMatch{Tag: "db"}, EnableGuestAgent: true}}
+	tests := []struct {
+		name    string
+		guests  []config.GuestChecks
+		kind    model.GuestKind
+		conf    string
+		boot    target.BootInfo
+		enable  bool
+		verdict model.Verdict
+		reason  string
+	}{
+		{"matched, agent answers", match, model.KindQEMU, "name: db01\ntags: prod;db\n", target.BootInfo{OS: probe.Linux}, true, model.Proven, ""},
+		{"matched, no answer", match, model.KindQEMU, "name: db01\ntags: prod;db\nagent: 0\n", target.BootInfo{OS: probe.Unknown, AgentMissing: true}, true, model.Booted, turnedOn},
+		{"not matched", nil, model.KindQEMU, "name: db01\ntags: prod;db\n", target.BootInfo{OS: probe.Unknown, AgentMissing: true}, false, model.Booted, notEnabled},
+		{"already on in the backup", match, model.KindQEMU, "name: db01\ntags: prod;db\nagent: enabled=1\n", target.BootInfo{OS: probe.Linux}, false, model.Proven, ""},
+		{"container", match, model.KindLXC, "hostname: db01\ntags: prod;db\n", target.BootInfo{OS: probe.Linux}, false, model.Proven, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.d.Cfg.Checks.Guests = tc.guests
+			f.b.Key.Kind = tc.kind
+			f.api.Backups["pbs"][0].Key.Kind = tc.kind
+			f.api.BackupConfigs[volid] = tc.conf
+			f.tgt.Boot[tmpVMID] = tc.boot
+			res := f.run(context.Background())
+			if res.Verdict != tc.verdict || (tc.reason != "" && res.Reason != tc.reason) {
+				t.Errorf("result %s %q, want %s %q", res.Verdict, res.Reason, tc.verdict, tc.reason)
+			}
+			calls := strings.Join(f.tgt.CallLog(), "\n")
+			if got := strings.Contains(calls, "enable-agent"); got != tc.enable {
+				t.Errorf("agent turned on = %v, want %v; calls:\n%s", got, tc.enable, calls)
+			}
+			logged := strings.Contains(f.logBuf.String(), "guest agent turned on for this copy")
+			if logged != tc.enable {
+				t.Errorf("logged the override = %v, want %v:\n%s", logged, tc.enable, f.logBuf.String())
 			}
 		})
 	}

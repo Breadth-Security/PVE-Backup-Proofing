@@ -393,3 +393,24 @@ func TestSanitizeQEMURawDiskRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestEnableAgent turns a qemu "agent" value on, keeping its other options
+// (#123).
+func TestEnableAgent(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                        "1",
+		"0":                       "1",
+		"1":                       "1",
+		" 0 ":                     "1",
+		"0,fstrim_cloned_disks=1": "1,fstrim_cloned_disks=1",
+		"enabled=0,type=isa":      "enabled=1,type=isa",
+		"type=isa,enabled=0":      "type=isa,enabled=1",
+		"enabled=1":               "enabled=1",
+		"type=isa":                "1,type=isa",
+		"freeze-fs-on-backup=0":   "1,freeze-fs-on-backup=0",
+	} {
+		if got := EnableAgent(in); got != want {
+			t.Errorf("EnableAgent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

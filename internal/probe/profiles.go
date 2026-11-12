@@ -45,6 +45,17 @@ func guestMatches(m config.GuestMatch, g GuestInfo) bool {
 	return false
 }
 
+// EnableGuestAgent reports whether a checks.guests entry matching g turns
+// the guest agent on for its proof copy (issue #123).
+func EnableGuestAgent(c config.Checks, g GuestInfo) bool {
+	for _, e := range c.Guests {
+		if e.EnableGuestAgent && guestMatches(e.Match, g) {
+			return true
+		}
+	}
+	return false
+}
+
 // ignoreUnits is the checks-wide unit ignore list plus those of the
 // checks.guests entries matching this guest (issue #68).
 func (in Input) ignoreUnits() []string {
