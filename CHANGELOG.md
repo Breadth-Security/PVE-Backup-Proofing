@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
+
+**Upgrade the daemon and the node helper together:** a 0.10 daemon needs a 0.10 node helper (they must share major.minor), so follow [Upgrading](docs/upgrading.md). If PBP runs on the node itself, the one package upgrade covers both. **Check your config first:** an empty, repeated or invalid storage name in `sources.storages` or `restore.storage` now stops the daemon and every `pbp` command until it is fixed (issues #119, #121). Otherwise configs need no change; `enable_guest_agent` is new and optional.
 
 - **A `checks.guests` entry can turn the guest agent on for a VM's proof copy** (issue #123, from GitHub #5): `enable_guest_agent: true`. It is for a VM with `qemu-guest-agent` installed but the VM's QEMU Guest Agent option off, which until now was always `BOOTED` ("guest agent not enabled for this VM"). Only the copy changes, in the same config write that makes it safe; the source VM and its backup do not. It is off by default and set per guest: a VM without the agent installed would otherwise wait the whole `restore.boot_timeout`. Turning the agent on for the VM itself (`qm set <vmid> --agent 1`) is still the better fix, since it also gives consistent snapshot backups. See [Checks](docs/checks.md#vms-and-the-guest-agent).
 - **A VM whose agent option is written `enabled=true`, `yes` or `on` is no longer reported as "guest agent did not answer"** without being asked. PVE accepts these, but PBP read only `1` when it waited for the agent. The run and the boot wait now read the option the same way, as PVE does.
