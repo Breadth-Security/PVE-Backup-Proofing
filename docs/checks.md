@@ -60,7 +60,21 @@ PBP looks inside a VM through the QEMU guest agent. A VM is `BOOTED`, never `PRO
 
 - `guest agent not enabled for this VM`: the VM's options do not enable the agent (Options > QEMU Guest Agent, or `qm set <vmid> --agent 1`). Enable it, and install `qemu-guest-agent` inside the guest.
 - `guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?`: the agent is enabled, but nothing answered while the copy booted. Install or start `qemu-guest-agent` in the guest (Linux: `apt install qemu-guest-agent`, then enable its service; Windows: the VirtIO guest tools).
+- `guest agent turned on for the proof copy (off in the backup) did not answer within 5m0s: …`: `enable_guest_agent` (below) turned the agent on for the copy, but nothing answered. `qemu-guest-agent` is probably not installed in the guest.
 - `the guest agent refuses to run commands`: the agent answers, but its policy disables `guest-exec`, so PBP cannot run its checks. Allow `guest-exec` in the agent's configuration.
+
+**When the agent is installed but the VM's option is off**, the best fix is to turn it on for the VM itself (`qm set <vmid> --agent 1`). Then vzdump can also freeze the guest's filesystems for a consistent snapshot backup. If you cannot change the VM, a `checks.guests` entry can turn the agent on for its proof copy only:
+
+```yaml
+checks:
+  guests:
+    - match: { vmid: 502 }        # or name / tag
+      enable_guest_agent: true
+```
+
+PBP then sets `agent` on the copy in the same config change that makes it safe. It keeps the agent's other options and logs the change (`guest agent turned on for this copy …`). The source VM and its backup are never changed, a VM whose backup already has the agent on is left as it is, and containers ignore the setting.
+
+The setting is per guest, not global, because a VM without `qemu-guest-agent` installed then waits the whole `restore.boot_timeout` for an agent that never answers, instead of being `BOOTED` at once. Turning the agent on adds one virtio-serial device. PVE always places it at the same PCI address, so NIC names inside the guest (such as `ens18`) do not change. On Windows without the VirtIO guest tools, the device has no driver; that is harmless.
 
 ## Containers without nesting
 

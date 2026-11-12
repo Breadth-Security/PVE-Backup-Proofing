@@ -48,7 +48,7 @@ The node still trusts PBP's API token (below), so protect the PBP host and its s
 | `VM.Allocate` | `/vms` | restore into a new VMID, destroy with purge |
 | `VM.Backup` | `/vms` | read the config inside a backup (`vzdump/extractconfig`), restore from a backup, and write `notes`/`protected` on backup volumes |
 | `VM.Audit` | `/vms` | list guests (PBP must see every guest in the VMID range), read configs and status |
-| `VM.Config.Network`, `VM.Config.Options`, `VM.Config.HWType` | `/vms` | sanitize: NICs, tags, name, `onboot`, `protection`, hookscript, removing `rng`/USB/PCI devices |
+| `VM.Config.Network`, `VM.Config.Options`, `VM.Config.HWType` | `/vms` | sanitize: NICs, tags, name, `onboot`, `protection`, hookscript, removing `rng`/USB/PCI devices; `agent` on the copy when `checks.guests` sets `enable_guest_agent` |
 | `VM.PowerMgmt` | `/vms` | start and stop the temporary guest |
 | `VM.GuestAgent.Audit`, `VM.GuestAgent.Unrestricted` | `/vms` | agent ping and OS info; running the checks through the agent |
 | `Datastore.AllocateSpace`, `Datastore.Audit` | the restore storage and each PBS storage | allocate restored disks; list backups and read and write their notes and `protected` flag |

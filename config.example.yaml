@@ -66,6 +66,9 @@ checks:
     #   allow_readonly_root: true  # root is read-only by design (Home Assistant OS, Fedora CoreOS)
     # - match: { vmid: 114 }
     #   ignore_units: [sep5.service]  # adds to ignore_units for this guest only (windows_ignore_services likewise)
+    # - match: { vmid: 502 }
+    #   enable_guest_agent: true  # VM with the agent installed but its option off: turn it on
+    #                             # for the proof copy only (docs/checks.md#vms-and-the-guest-agent)
 
 notify:
   when: always                 # always | problems
