@@ -323,7 +323,7 @@ func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
 	if !onNode {
 		return false, exitOK
 	}
-	if why := a.nodeGateReason(); why != "" {
+	if why := a.nodeGateReason(false); why != "" {
 		fprintf(a.stdout, "\nThis host is a Proxmox VE node, but it cannot be set up in this run (%s); run the lines below in a root shell on it.\n", why)
 		return false, exitOK
 	}
