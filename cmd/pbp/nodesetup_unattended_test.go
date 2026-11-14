@@ -45,7 +45,7 @@ func TestNodeSetupUnattendedNoTTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	rep, err := nodeproto.ReadReply(f)
 	if err != nil {
 		t.Fatal(err)
