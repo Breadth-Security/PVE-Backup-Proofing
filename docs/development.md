@@ -34,7 +34,7 @@ The signing key never goes to CI: it is the maintainer's SSH key `~/.ssh/pbp_sig
 
 The APT repository at `https://apt.breadthsecurity.com` is a public Cloudflare R2 bucket. APT cannot use the SSH release key, so it has its own OpenPGP key, which also stays on the maintainer's machine and never goes to CI.
 
-1. **Create the key:** `gpg --quick-gen-key 'PBP APT repository <…>' ed25519 sign 0`, and back it up offline. Set `PBP_APT_KEY` to its fingerprint.
+1. **Create the key:** `gpg --quick-gen-key 'PBP APT repository <security@example.com>' ed25519 sign 0`, with your own contact address in place of `security@example.com`: the user ID is published with the key. Back the key up offline, and set `PBP_APT_KEY` to its fingerprint.
 2. **Create the bucket** in R2, and give it public access on the custom domain `apt.breadthsecurity.com` (leave the `r2.dev` URL off).
 3. **Create an R2 API token** with Object Read & Write on that bucket only, and save it, mode 0600, as a file of four lines: `R2_ACCOUNT_ID=…`, `R2_ACCESS_KEY_ID=…`, `R2_SECRET_ACCESS_KEY=…` and `R2_BUCKET=…`. Set `PBP_R2_CREDENTIALS` to its path. The script reads the secret from this file and passes it to `curl` through a temporary config file, never on a command line.
 4. **Publish the key:** `packaging/apt-publish.sh --init`. It uploads `pbp-archive-keyring.gpg` and its SSH signature (`.sig`, made with the release key, so `allowed_signers` vouches for it), and writes `packaging/apt/pbp-archive-keyring.asc`; commit that file and put the fingerprint in [Install with APT](install-apt.md).
