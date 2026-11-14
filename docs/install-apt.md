@@ -36,9 +36,9 @@ It must print `Good "pbp-release" signature`. Then compare the key's fingerprint
 
 ## Upgrading
 
-`apt upgrade` installs a new PBP like any package; the service is restarted if it was running.
+A new PBP arrives with your normal `apt` updates; the service is restarted if it was running. To upgrade only PBP, `apt update && apt install --only-upgrade pbp`: on a Proxmox node, a plain `apt upgrade` also upgrades Proxmox VE's own packages.
 
-**Upgrade the node before the PBP host.** The daemon and the node helper must share major.minor ([Upgrading](upgrading.md)): a 0.11 daemon refuses a 0.10 helper, and `pbp check` and every run fail until both match. Upgrading the node first keeps that window closed. PBP on the node itself is one package, so it is never out of step.
+**Upgrade the node and the PBP host in the same sitting.** The daemon and the node helper must share major.minor, in both directions ([Upgrading](upgrading.md)): on a minor version change (0.10 to 0.11), whichever side is upgraded first refuses the other, and `pbp check` and every run fail until both match. Do both outside the schedule. A patch release (0.11.0 to 0.11.1) works in either order. PBP on the node itself is one package, so it is never out of step.
 
 For the same reason, do not add this repository to `unattended-upgrades`, which by default upgrades only Debian's own origins: an unattended upgrade of one side would stop the nightly runs until the other side is upgraded.
 

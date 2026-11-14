@@ -1,13 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
 
-- **A signed APT repository** (issue #130): `apt install pbp` and `apt upgrade` from `https://apt.breadthsecurity.com`, for amd64 and arm64, final releases from 0.10.0 on. APT verifies every download against the repository's own OpenPGP key, whose key file is signed with PBP's release key. Upgrade the node before the PBP host, since the two must share major.minor. See [Install with APT](docs/install-apt.md).
+**Upgrade the daemon and the node helper together:** a 0.11 daemon and a 0.10 node helper refuse each other (they must share major.minor, in both directions), so `pbp check` and every run fail between the two upgrades. Upgrade both in the same sitting, outside the schedule ([Upgrading](docs/upgrading.md)). If PBP runs on the node itself, the one package upgrade covers both. Configs need no change.
+
+**New: install and upgrade with APT.** From this release on, `apt upgrade` is the easiest way to stay current: add the repository once ([Install with APT](docs/install-apt.md)), and every later release arrives with the rest of your updates.
+
+- **A signed APT repository** (issue #130): `apt install pbp` and `apt upgrade` from `https://apt.breadthsecurity.com`, for amd64 and arm64, final releases from 0.10.0 on. APT verifies every download against the repository's own OpenPGP key, whose key file is signed with PBP's release key. On a minor version change, upgrade the node and the PBP host in the same sitting, since the two must share major.minor. See [Install with APT](docs/install-apt.md).
 - **Unattended setup** (issue #131): `pbp setup --unattended` takes every answer as a flag (`--address`, `--vmid-range`, `--bridge`, `--restore-storage`, `--storages`, `--schedule`, `--tz`), never prompts and never reads stdin.
   - **On the node itself,** it runs end to end; replacing an existing API token needs `--rotate-token`.
   - **For a separate PBP host,** it prints the `pbp node setup` line and exits with the new code 4; `--node-reply FILE` then finishes the setup.
   - **`pbp node setup --unattended --yes`** (and `pbp node uninstall`) runs without a terminal: only that check is lifted, so SSH forced commands, the `pbp` sudo rule and non-root stay refused. `--reply-file` writes the reply to a new 0600 file.
   - See [Unattended setup](docs/setup.md#unattended-setup).
+- **The README says what PBP may touch, and how to try it** (part of #127): a one-screen "Is it safe?" summary with what PBP cannot promise, and "Try it on one guest", a trial with PBP on the node itself.
+- **Security model correction: PBP's token can delete backups of guests.** Proxmox lets whoever may back a guest up delete its backups (`Datastore.AllocateSpace` on the storage plus `VM.Backup` on the guest), and PBP needs both rights to read and restore backups, so they cannot be withheld. PBP itself never deletes a backup. The [Security model](docs/security.md#the-api-token) said only that `Datastore.Allocate` is withheld, which suggested otherwise. Protect the token like an admin credential, and keep an off-site copy or a PBS sync of backups that must survive a stolen credential.
 - **`config.example.yaml` no longer has live sample checks.** Its sample profile (`myapp`) and per-guest check (`match: { vmid: 105 }` with `services: [postgresql]`) are now comments, like the other samples. A config copied from the example, as [Install from the .deb](docs/install-deb.md) and [Manual setup](docs/manual-setup.md) describe, used to check `postgresql` on whatever guest had VMID 105, and fail it if it had none. `pbp setup` always dropped these samples. **If you copied the example by hand,** look for that entry in `checks.guests` and remove it unless it is yours.
 
 ## v0.10.0
