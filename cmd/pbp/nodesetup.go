@@ -167,13 +167,23 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	if *unattended && !*yes {
 		return a.usageErr(sub, "--unattended requires --yes")
 	}
+	var replyF *os.File
 	if *replyFile != "" {
-		// Before anything changes: a reply that cannot be written after a
-		// token was created would cost a rotation.
-		if _, err := os.Lstat(*replyFile); err == nil {
-			fprintf(a.stderr, "pbp node %s: %s already exists; name a new file for --reply-file\n", sub, *replyFile)
+		// Created before anything changes: once a token exists, the only
+		// other place for its secret is stdout, which automation logs. A
+		// run that ends without writing it removes it again.
+		f, err := createReplyFile(*replyFile)
+		if err != nil {
+			fprintf(a.stderr, "pbp node %s: --reply-file: %v\n", sub, err)
 			return exitFail
 		}
+		replyF = f
+		defer func() {
+			if replyF != nil {
+				_ = replyF.Close()
+				_ = os.Remove(*replyFile)
+			}
+		}()
 	}
 	if *vmidRange == "" || *bridge == "" || *pubkey == "" {
 		return a.usageErr(sub, "--vmid-range, --bridge and --pubkey are required (copy the setup line from pbp setup)")
@@ -208,7 +218,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 		if res.complete {
 			fprintln(a.stdout, msgAlreadyComplete)
 		}
-		if err := writeReplyFile(*replyFile, res.reply); err != nil {
+		err := writeReply(replyF, res.reply)
+		replyF = nil // written or not, keep it: a partial file is better than a lost secret
+		if err != nil {
 			// Never lose a secret PVE will not show again: print it instead.
 			fprintf(a.stderr, "pbp node %s: write the reply file: %v; printing the reply instead\n", sub, err)
 			return a.printBlock(sub, res.reply, res.reply.TokenSecret)
@@ -376,17 +388,26 @@ func (a *app) printBlock(sub string, rep nodeproto.SetupReply, secret string) in
 	return exitOK
 }
 
-// writeReplyFile writes rep's reply block to a new file at path, mode
-// 0600: an existing file or a symlink is refused (O_EXCL, O_NOFOLLOW).
-func writeReplyFile(path string, rep nodeproto.SetupReply) error {
-	block, err := nodeproto.EncodeReply(rep)
-	if err != nil {
-		return errors.New("cannot encode the reply")
+// createReplyFile creates path as a new file, mode 0600: an existing file
+// or a symlink is refused (O_EXCL, O_NOFOLLOW).
+func createReplyFile(path string) (*os.File, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("%s already exists; name a new file", path)
 	}
 	// #nosec G304 -- the admin names the file; O_EXCL|O_NOFOLLOW refuse an existing path
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("cannot create %s (it must be a new file in an existing directory): %w", path, err)
+	}
+	return f, nil
+}
+
+// writeReply writes rep's reply block to f and closes it.
+func writeReply(f *os.File, rep nodeproto.SetupReply) error {
+	block, err := nodeproto.EncodeReply(rep)
+	if err != nil {
+		_ = f.Close()
+		return errors.New("cannot encode the reply")
 	}
 	if _, err := f.WriteString(block); err != nil {
 		_ = f.Close()

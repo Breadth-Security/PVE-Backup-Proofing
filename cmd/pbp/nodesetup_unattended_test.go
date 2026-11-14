@@ -154,3 +154,43 @@ func TestNodeUninstallUnattended(t *testing.T) {
 		}
 	}
 }
+
+// A reply file that cannot be created (here, its directory is missing)
+// is refused before the node changes: once a token exists, the only other
+// place for its secret would be stdout, and automation logs it.
+func TestNodeSetupReplyFileUnwritableRefusedFirst(t *testing.T) {
+	r := newSetupRig(t)
+	r.a.isTerminal = func() bool { return false }
+	before := r.f.snapshot()
+	p := filepath.Join(t.TempDir(), "missing-dir", "reply")
+	if code := r.mainNoStdin(t, r.setupArgs("--yes", "--unattended", "--reply-file", p)...); code != exitFail {
+		t.Errorf("exit %d; stderr %q", code, r.errOut)
+	}
+	if len(r.f.events) != 0 || r.f.snapshot() != before {
+		t.Errorf("the node was changed before the reply file failed: %v", r.f.events)
+	}
+	if strings.Contains(r.out.String(), nodeproto.ReplyBegin) || strings.Contains(r.out.String(), "secret") {
+		t.Errorf("a reply or secret was printed:\n%s", r.out)
+	}
+}
+
+// A run that fails after the reply file was created removes it again, so
+// the next run with the same path is not refused for a file it left.
+func TestNodeSetupReplyFileRemovedOnFailure(t *testing.T) {
+	r := newSetupRig(t)
+	r.a.isTerminal = func() bool { return false }
+	p := filepath.Join(t.TempDir(), "reply")
+	// A daemon version from another major.minor fails node setup's checks.
+	args := r.setupArgs("--yes", "--unattended", "--reply-file", p)
+	for i, a := range args {
+		if a == version {
+			args[i] = "99.0.0"
+		}
+	}
+	if code := r.mainNoStdin(t, args...); code == exitOK {
+		t.Fatalf("setup with a mismatched daemon version succeeded")
+	}
+	if _, err := os.Lstat(p); err == nil {
+		t.Error("the reply file was left behind after a failed run")
+	}
+}

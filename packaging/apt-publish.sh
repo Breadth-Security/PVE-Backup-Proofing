@@ -33,13 +33,14 @@
 # R2_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= and R2_BUCKET= lines (mode 0600);
 # PBP_SIGNING_KEY, the SSH release key for --init (default
 # ~/.ssh/pbp_signing). The credentials are never put on a command line.
-# PBP_APT_URL and PBP_APT_KEYRING override the repository URL and the
-# published key file, for tests.
+# PBP_APT_URL, PBP_APT_KEYRING and PBP_APT_PROTO override the repository
+# URL, the published key file and curl's --proto for it, for tests.
 set -eu
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 signers="$repo_dir/allowed_signers"
 ns=pbp-release
 base_url=${PBP_APT_URL:-https://apt.breadthsecurity.com}
+proto=${PBP_APT_PROTO:-=https}
 gh=https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download
 keyring_asc=${PBP_APT_KEYRING:-$repo_dir/packaging/apt/pbp-archive-keyring.asc}
 suite=stable
@@ -61,8 +62,14 @@ usage() { sed -n '6,8p' "$0" | sed 's/^# //' >&2; exit 2; }
 die() { echo "apt-publish: $*" >&2; exit 1; }
 
 work=$(mktemp -d)
-cleanup() { if $dry; then echo "work directory kept: $work"; else rm -rf "$work"; fi; }
+# The R2 credentials never outlive the run, a kept dry-run directory or an
+# interrupted one included.
+cleanup() {
+    rm -f "$work/curl.cfg"
+    if $dry; then echo "work directory kept: $work"; else rm -rf "$work"; fi
+}
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 sha() { sha256sum < "$1" | cut -d' ' -f1; }
 
@@ -121,17 +128,22 @@ if ! $init && grep -q PLACEHOLDER "$keyring_asc" 2>/dev/null; then
     die "$keyring_asc is a placeholder: run packaging/apt-publish.sh --init first and commit the key"
 fi
 
-# R2 credentials, read from the file without running it.
-creds=${PBP_R2_CREDENTIALS:?set PBP_R2_CREDENTIALS to the R2 credentials file}
-cred() { sed -n "s/^$1=//p" "$creds" | head -n 1; }
-account=$(cred R2_ACCOUNT_ID) bucket=$(cred R2_BUCKET)
-if [ -z "$account" ] || [ -z "$bucket" ]; then die "$creds lacks R2_ACCOUNT_ID or R2_BUCKET"; fi
-curlcfg="$work/curl.cfg"
-(umask 077 && printf 'user = "%s:%s"\n' "$(cred R2_ACCESS_KEY_ID)" "$(cred R2_SECRET_ACCESS_KEY)" > "$curlcfg")
-endpoint="https://$account.r2.cloudflarestorage.com/$bucket"
+# r2_login reads the R2 credentials from their file (without running it)
+# into a curl config that only this run can read; only an upload calls it.
+curlcfg="$work/curl.cfg" endpoint=""
+r2_login() {
+    [ -z "$endpoint" ] || return 0
+    creds=${PBP_R2_CREDENTIALS:?set PBP_R2_CREDENTIALS to the R2 credentials file}
+    cred() { sed -n "s/^$1=//p" "$creds" | head -n 1; }
+    account=$(cred R2_ACCOUNT_ID) bucket=$(cred R2_BUCKET)
+    if [ -z "$account" ] || [ -z "$bucket" ]; then die "$creds lacks R2_ACCOUNT_ID or R2_BUCKET"; fi
+    (umask 077 && printf 'user = "%s:%s"\n' "$(cred R2_ACCESS_KEY_ID)" "$(cred R2_SECRET_ACCESS_KEY)" > "$curlcfg")
+    endpoint="https://$account.r2.cloudflarestorage.com/$bucket"
+}
 
 # put KEY FILE CACHE-CONTROL uploads FILE to R2 as KEY.
 put() {
+    r2_login
     case "$1" in
         *.deb) ctype=application/vnd.debian.binary-package ;;
         *.gz) ctype=application/gzip ;;
@@ -183,7 +195,7 @@ done
 repo="$work/repo"
 dists="$repo/dists/$suite"
 mkdir -p "$dists"
-status=$(curl -sS --proto =https -o "$work/live-InRelease" -w '%{http_code}' "$base_url/dists/$suite/InRelease") \
+status=$(curl -sS --proto "$proto" -o "$work/live-InRelease" -w '%{http_code}' "$base_url/dists/$suite/InRelease") \
     || die "fetching the live InRelease failed"
 case "$status" in
     200)
@@ -191,9 +203,13 @@ case "$status" in
             || die "the live InRelease does not verify with $keyring_asc"
         sed -n 's/^ \([0-9a-f]\{64\}\) [0-9]* \(main\/binary-[a-z0-9]*\/Packages\)$/\1 \2/p' "$work/live-Release" > "$work/live-list"
         [ -s "$work/live-list" ] || die "the live Release lists no Packages files"
+        # By hash: the plain Packages may already be newer than this
+        # InRelease if an earlier upload stopped halfway; the by-hash file
+        # it names never changes.
         while read -r want path; do
             mkdir -p "$(dirname "$dists/$path")"
-            curl -fsS --proto =https -o "$dists/$path" "$base_url/dists/$suite/$path" || die "fetching $path failed"
+            curl -fsS --proto "$proto" -o "$dists/$path" "$base_url/dists/$suite/$(dirname "$path")/by-hash/SHA256/$want" \
+                || die "fetching $path (by hash) failed"
             [ "$(sha "$dists/$path")" = "$want" ] || die "the live $path does not match its hash in InRelease"
         done < "$work/live-list"
         ;;
@@ -229,16 +245,16 @@ for f in Release Release.gpg InRelease; do
 done
 
 # Read back over HTTPS.
-curl -fsS --proto =https -o "$work/back-InRelease" "$base_url/dists/$suite/InRelease" || die "reading back InRelease failed"
+curl -fsS --proto "$proto" -o "$work/back-InRelease" "$base_url/dists/$suite/InRelease" || die "reading back InRelease failed"
 cmp -s "$work/back-InRelease" "$dists/InRelease" || die "the served InRelease is not the one just uploaded (a cache?)"
 gpgv --quiet --keyring "$kr" "$work/back-InRelease" >/dev/null 2>&1 || die "the served InRelease does not verify"
 for key in $(cd "$repo" && find "dists/$suite/main" -path '*/by-hash' -prune -o -type f -name 'Packages*' -print); do
-    curl -fsS --proto =https -o "$work/back" "$base_url/$key" || die "reading back $key failed"
+    curl -fsS --proto "$proto" -o "$work/back" "$base_url/$key" || die "reading back $key failed"
     [ "$(sha "$work/back")" = "$(sha "$repo/$key")" ] || die "the served $key differs from the upload"
 done
 while read -r f; do
     key=$(cd "$repo" && find pool -name "$f")
-    curl -fsS --proto =https -o "$work/back" "$base_url/$key" || die "reading back $key failed"
+    curl -fsS --proto "$proto" -o "$work/back" "$base_url/$key" || die "reading back $key failed"
     [ "$(sha "$work/back")" = "$(sha "$repo/$key")" ] || die "the served $key differs from the upload"
 done < "$work/added-files"
 echo "published and verified:$args"

@@ -92,3 +92,37 @@ fi
 grep -q "fetching the live InRelease failed" "$tmp/unreachable.log" || { cat "$tmp/unreachable.log"; fail "unreachable repository: wrong failure"; }
 grep -q '^uploaded' "$tmp/unreachable.log" && fail "something was uploaded"
 echo "PASS: unreachable live index stops the publish before any upload"
+
+# The live repository, served over HTTP on localhost (PBP_APT_PROTO lets
+# the script fetch it without TLS, for tests only).
+port=$((20000 + $$ % 20000))
+mkdir -p "$tmp/live"
+python3 -m http.server --bind 127.0.0.1 --directory "$tmp/live" "$port" >/dev/null 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null; rm -rf "$tmp"' EXIT
+sleep 1
+live() {
+    PBP_APT_PROTO='=http' PBP_APT_URL="http://127.0.0.1:$port" PBP_APT_KEY=$fpr PBP_APT_KEYRING="$tmp/pub.asc" \
+        "$repo_dir/packaging/apt-publish.sh" "$@"
+}
+
+# An empty repository without --first is an error, not a first publish.
+if live --dry-run v0.10.0 >"$tmp/empty.log" 2>&1; then cat "$tmp/empty.log"; fail "an empty repository was taken as new without --first"; fi
+grep -q "not found (HTTP 404): pass --first" "$tmp/empty.log" || { cat "$tmp/empty.log"; fail "empty repository: wrong failure"; }
+echo "PASS: a missing InRelease without --first stops the publish"
+
+# An upload interrupted after Packages and before InRelease: the live
+# Packages is newer than the live InRelease names. A rerun still works,
+# because it reads the index by hash, which never changes. A dry run needs
+# no R2 credentials and leaves none on disk.
+rm -rf "$tmp/live"; cp -a "$tmp/repo.orig" "$tmp/live"
+printf 'Package: pbp\nVersion: 9.9.9\n' >> "$tmp/live/dists/stable/main/binary-amd64/Packages"
+if ! live --dry-run v0.10.0 >"$tmp/resume.log" 2>&1; then cat "$tmp/resume.log"; fail "a publish after an interrupted upload failed"; fi
+grep -q "dry run: nothing uploaded" "$tmp/resume.log" || { cat "$tmp/resume.log"; fail "dry run did not finish"; }
+kept=$(sed -n 's/^work directory kept: //p' "$tmp/resume.log")
+[ -d "$kept" ] || fail "dry run did not keep its work directory"
+[ ! -e "$kept/curl.cfg" ] || fail "dry run left R2 credentials on disk"
+grep -q '^Version: 0.0.1$' "$kept/repo/dists/stable/main/binary-amd64/Packages" || fail "the rebuilt index lost the published version"
+grep -q '^Version: 9.9.9$' "$kept/repo/dists/stable/main/binary-amd64/Packages" && fail "the rebuilt index took the half-uploaded Packages"
+rm -rf "$kept"
+echo "PASS: a publish after an interrupted upload reads the index by hash; a dry run keeps no credentials"
