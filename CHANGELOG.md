@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
+
+**Upgrade the daemon and the node helper together:** a 0.11 daemon needs a 0.11 node helper (they must share major.minor), so follow [Upgrading](docs/upgrading.md); upgrade the node first. If PBP runs on the node itself, the one package upgrade covers both. Configs need no change.
+
+**New: install and upgrade with APT.** From this release on, `apt upgrade` is the easiest way to stay current: add the repository once ([Install with APT](docs/install-apt.md)), and every later release arrives with the rest of your updates.
 
 - **A signed APT repository** (issue #130): `apt install pbp` and `apt upgrade` from `https://apt.breadthsecurity.com`, for amd64 and arm64, final releases from 0.10.0 on. APT verifies every download against the repository's own OpenPGP key, whose key file is signed with PBP's release key. Upgrade the node before the PBP host, since the two must share major.minor. See [Install with APT](docs/install-apt.md).
 - **Unattended setup** (issue #131): `pbp setup --unattended` takes every answer as a flag (`--address`, `--vmid-range`, `--bridge`, `--restore-storage`, `--storages`, `--schedule`, `--tz`), never prompts and never reads stdin.
