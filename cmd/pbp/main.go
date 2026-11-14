@@ -53,6 +53,10 @@ const (
 	exitFail  = 1
 	exitUsage = 2
 	exitBusy  = 3
+	// exitWaitReply: an unattended pbp setup for a separate PBP host wrote
+	// its config and printed the node line; it finishes when run again
+	// with --node-reply (issue #131).
+	exitWaitReply = 4
 	// exitConfig is the daemon's exit for a config it cannot use (sysexits
 	// EX_CONFIG). pbp.service does not restart on it: restarting cannot fix
 	// a config, and pbp setup is what finishes one.

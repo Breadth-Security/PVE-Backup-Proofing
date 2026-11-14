@@ -1,5 +1,7 @@
 # Install from the .deb
 
+> **Easier: [Install with APT](install-apt.md).** The signed APT repository installs the same package, verifies it for you, and keeps it up to date with `apt upgrade`. This page is for a manual install, or a version the repository does not carry (a pre-release).
+
 As an alternative to Docker, each release ships Debian packages (`amd64` and `arm64`) and tarballs on the [releases page](https://github.com/Breadth-Security/PVE-Backup-Proofing/releases). The package installs `/usr/bin/pbp`, a systemd unit (`pbp.service`) and the docs under `/usr/share/doc/pbp/`, and creates the `pbp` system user. The same package is also the node helper: `pbp setup` prints the line that installs it on the Proxmox node.
 
 ## Install

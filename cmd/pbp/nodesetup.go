@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
@@ -32,9 +33,11 @@ const (
 // interactively as root: not over SSH (SSH_ORIGINAL_COMMAND set, even
 // empty), not through the helper's sudo rule (SUDO_USER pbp), not as
 // another user, and not with stdin redirected. An admin's own sudo (any
-// other SUDO_USER) is allowed. --yes never lifts it.
-func (a *app) setupGate(sub string) bool {
-	why := a.nodeGateReason()
+// other SUDO_USER) is allowed. --yes never lifts it; --unattended
+// (allowNoTTY) lifts only the terminal check (issue #131), so the pbp
+// account and its key still cannot drive setup.
+func (a *app) setupGate(sub string, allowNoTTY bool) bool {
+	why := a.nodeGateReason(allowNoTTY)
 	if why == "" {
 		return true
 	}
@@ -43,7 +46,8 @@ func (a *app) setupGate(sub string) bool {
 }
 
 // nodeGateReason says why node setup may not run here, "" when it may.
-func (a *app) nodeGateReason() string {
+// allowNoTTY lifts only the "stdin is not a terminal" check.
+func (a *app) nodeGateReason(allowNoTTY bool) string {
 	_, sshSet := os.LookupEnv("SSH_ORIGINAL_COMMAND")
 	switch {
 	case sshSet:
@@ -52,7 +56,7 @@ func (a *app) nodeGateReason() string {
 		return "started through the pbp account's sudo rule"
 	case a.euid() != 0:
 		return "not root"
-	case !a.isTerminal():
+	case !allowNoTTY && !a.isTerminal():
 		return "stdin is not a terminal"
 	}
 	return ""
@@ -137,9 +141,6 @@ func termSafe(s string) string {
 // nodeSetup runs `pbp node setup`.
 func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	const sub = "setup"
-	if !a.setupGate(sub) {
-		return exitUsage
-	}
 	fs := flag.NewFlagSet("pbp node setup", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 	vmidRange := fs.String("vmid-range", "", "VMID range LO-HI for PBP's guests")
@@ -152,11 +153,37 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	dryRun := fs.Bool("dry-run", false, "show the plan, change nothing")
 	yes := fs.Bool("yes", false, "do not ask before applying")
 	replace := fs.Bool("replace", false, "replace items that differ, after a backup")
+	unattended := fs.Bool("unattended", false, "run without a terminal, for automation (requires --yes)")
+	replyFile := fs.String("reply-file", "", "write the reply block (with the token secret) to this new file, mode 0600, instead of stdout")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if !a.setupGate(sub, *unattended) {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
 		return a.usageErr(sub, "unexpected arguments %q", fs.Args())
+	}
+	if *unattended && !*yes {
+		return a.usageErr(sub, "--unattended requires --yes")
+	}
+	var replyF *os.File
+	if *replyFile != "" {
+		// Created before anything changes: once a token exists, the only
+		// other place for its secret is stdout, which automation logs. A
+		// run that ends without writing it removes it again.
+		f, err := createReplyFile(*replyFile)
+		if err != nil {
+			fprintf(a.stderr, "pbp node %s: --reply-file: %v\n", sub, err)
+			return exitFail
+		}
+		replyF = f
+		defer func() {
+			if replyF != nil {
+				_ = replyF.Close()
+				_ = os.Remove(*replyFile)
+			}
+		}()
 	}
 	if *vmidRange == "" || *bridge == "" || *pubkey == "" {
 		return a.usageErr(sub, "--vmid-range, --bridge and --pubkey are required (copy the setup line from pbp setup)")
@@ -187,6 +214,21 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	switch {
 	case code != exitOK || res.dryRun:
 		return code
+	case *replyFile != "":
+		if res.complete {
+			fprintln(a.stdout, msgAlreadyComplete)
+		}
+		err := writeReply(replyF, res.reply)
+		replyF = nil // written or not, keep it: a partial file is better than a lost secret
+		if err != nil {
+			// Never lose a secret PVE will not show again: print it instead.
+			fprintf(a.stderr, "pbp node %s: write the reply file: %v; printing the reply instead\n", sub, err)
+			return a.printBlock(sub, res.reply, res.reply.TokenSecret)
+		}
+		fprintf(a.stdout, "pbp node setup: done; the reply is in %s (mode 0600; it holds the token secret when one was created).\n"+
+			"Copy it to the PBP host over a secure channel, run pbp setup --node-reply %s there, and delete it on both hosts.\n",
+			*replyFile, *replyFile)
+		return exitOK
 	case res.complete:
 		fprintln(a.stdout, msgAlreadyComplete)
 		return a.printBlock(sub, res.reply, "")
@@ -346,19 +388,51 @@ func (a *app) printBlock(sub string, rep nodeproto.SetupReply, secret string) in
 	return exitOK
 }
 
+// createReplyFile creates path as a new file, mode 0600: an existing file
+// or a symlink is refused (O_EXCL, O_NOFOLLOW).
+func createReplyFile(path string) (*os.File, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("%s already exists; name a new file", path)
+	}
+	// #nosec G304 -- the admin names the file; O_EXCL|O_NOFOLLOW refuse an existing path
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create %s (it must be a new file in an existing directory): %w", path, err)
+	}
+	return f, nil
+}
+
+// writeReply writes rep's reply block to f and closes it.
+func writeReply(f *os.File, rep nodeproto.SetupReply) error {
+	block, err := nodeproto.EncodeReply(rep)
+	if err != nil {
+		_ = f.Close()
+		return errors.New("cannot encode the reply")
+	}
+	if _, err := f.WriteString(block); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // nodeUninstall runs `pbp node uninstall`.
 func (a *app) nodeUninstall(ctx context.Context, args []string) int {
 	const sub = "uninstall"
-	if !a.setupGate(sub) {
-		return exitUsage
-	}
 	fs := flag.NewFlagSet("pbp node uninstall", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 	removeToken := fs.Bool("remove-token", false, "also remove the API token, its ACLs, the pbp@pve user and the PBPProofer role")
 	dryRun := fs.Bool("dry-run", false, "show the plan, change nothing")
 	yes := fs.Bool("yes", false, "do not ask before removing")
+	unattended := fs.Bool("unattended", false, "run without a terminal, for automation (requires --yes)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if !a.setupGate(sub, *unattended) {
+		return exitUsage
+	}
+	if *unattended && !*yes {
+		return a.usageErr(sub, "--unattended requires --yes")
 	}
 	if fs.NArg() > 0 {
 		return a.usageErr(sub, "unexpected arguments %q", fs.Args())

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A signed APT repository** (issue #130): `apt install pbp` and `apt upgrade` from `https://apt.breadthsecurity.com`, for amd64 and arm64, final releases from 0.10.0 on. APT verifies every download against the repository's own OpenPGP key, whose key file is signed with PBP's release key. Upgrade the node before the PBP host, since the two must share major.minor. See [Install with APT](docs/install-apt.md).
+- **Unattended setup** (issue #131): `pbp setup --unattended` takes every answer as a flag (`--address`, `--vmid-range`, `--bridge`, `--restore-storage`, `--storages`, `--schedule`, `--tz`), never prompts and never reads stdin.
+  - **On the node itself,** it runs end to end; replacing an existing API token needs `--rotate-token`.
+  - **For a separate PBP host,** it prints the `pbp node setup` line and exits with the new code 4; `--node-reply FILE` then finishes the setup.
+  - **`pbp node setup --unattended --yes`** (and `pbp node uninstall`) runs without a terminal: only that check is lifted, so SSH forced commands, the `pbp` sudo rule and non-root stay refused. `--reply-file` writes the reply to a new 0600 file.
+  - See [Unattended setup](docs/setup.md#unattended-setup).
 - **`config.example.yaml` no longer has live sample checks.** Its sample profile (`myapp`) and per-guest check (`match: { vmid: 105 }` with `services: [postgresql]`) are now comments, like the other samples. A config copied from the example, as [Install from the .deb](docs/install-deb.md) and [Manual setup](docs/manual-setup.md) describe, used to check `postgresql` on whatever guest had VMID 105, and fail it if it had none. `pbp setup` always dropped these samples. **If you copied the example by hand,** look for that entry in `checks.guests` and remove it unless it is yours.
 
 ## v0.10.0

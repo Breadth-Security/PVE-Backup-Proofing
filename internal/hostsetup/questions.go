@@ -73,8 +73,8 @@ func AskWith(in io.Reader, out io.Writer, l Layout, defaultTZ, defaultAddr strin
 		},
 		func() error {
 			return q.ask("Isolated bridge on the node", defaultBridge, func(s string) error {
-				if !node.ValidBridge(s) {
-					return errors.New("not a valid bridge name (up to 15 letters, digits, '_', '.', '-'; not starting with '.' or '-')")
+				if err := checkBridge(s); err != nil {
+					return err
 				}
 				a.Bridge = s
 				return nil
@@ -96,24 +96,17 @@ func AskWith(in io.Reader, out io.Writer, l Layout, defaultTZ, defaultAddr strin
 			})
 		},
 		func() error {
-			return q.ask("Schedule (cron)", defaultSchedule, func(s string) error {
-				s = strings.Trim(s, `"'`)
-				if _, err := cron.ParseStandard(s); err != nil {
-					return fmt.Errorf("invalid cron expression %q: %v", s, err)
-				}
-				a.Schedule = s
-				return nil
+			return q.ask("Schedule (cron)", defaultSchedule, func(s string) (err error) {
+				a.Schedule, err = parseSchedule(s)
+				return err
 			})
 		},
 	}
 	if !l.Deb {
 		steps = append(steps, func() error {
 			return q.ask("Time zone for the schedule", defaultTZ, func(s string) error {
-				if s == "Local" {
-					return errors.New(`unknown time zone "Local": name a zone such as Europe/London or UTC`)
-				}
-				if _, err := time.LoadLocation(s); err != nil {
-					return fmt.Errorf("unknown time zone %q: name a zone such as Europe/London or UTC", s)
+				if err := checkTZ(s); err != nil {
+					return err
 				}
 				a.TZ = s
 				return nil
@@ -173,6 +166,34 @@ func validAddress(s string) error {
 	}
 	if strings.Contains(s, "://") || strings.ContainsAny(s, ":/[]@ ") || len(s) > 253 || !reHostname.MatchString(s) {
 		return errors.New("enter a hostname or IP address without a scheme, port or path (e.g. pve-node.example.lan)")
+	}
+	return nil
+}
+
+// checkBridge applies the bridge name rule.
+func checkBridge(s string) error {
+	if !node.ValidBridge(s) {
+		return errors.New("not a valid bridge name (up to 15 letters, digits, '_', '.', '-'; not starting with '.' or '-')")
+	}
+	return nil
+}
+
+// parseSchedule trims quotes from a cron expression and checks it.
+func parseSchedule(s string) (string, error) {
+	s = strings.Trim(s, `"'`)
+	if _, err := cron.ParseStandard(s); err != nil {
+		return "", fmt.Errorf("invalid cron expression %q: %v", s, err)
+	}
+	return s, nil
+}
+
+// checkTZ accepts a named time zone; "Local" names none.
+func checkTZ(s string) error {
+	if s == "Local" {
+		return errors.New(`unknown time zone "Local": name a zone such as Europe/London or UTC`)
+	}
+	if _, err := time.LoadLocation(s); err != nil {
+		return fmt.Errorf("unknown time zone %q: name a zone such as Europe/London or UTC", s)
 	}
 	return nil
 }

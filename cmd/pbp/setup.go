@@ -19,7 +19,9 @@ import (
 )
 
 const (
-	setupUsage     = "usage: pbp setup [--dir DIR] [--deb [--replace]]\n"
+	setupUsage = "usage: pbp setup [--dir DIR] [--deb [--replace]]\n" +
+		"       pbp setup [--dir DIR | --deb] --unattended [--address A] [--vmid-range LO-HI] [--bridge B] [--restore-storage S]\n" +
+		"                 [--storages S1,S2] [--schedule CRON] [--tz ZONE] [--node-reply FILE|-] [--rotate-token] [--replace]\n"
 	msgPasteReply  = "Paste the reply printed by pbp node setup, then press Enter:"
 	msgInterrupted = "pbp setup: interrupted; everything written so far stays; run pbp setup again to continue"
 	// msgFixStorages follows a check whose only failure is a storage
@@ -38,6 +40,17 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	dir := flags.String("dir", ".", "the Docker checkout directory to set up")
 	deb := flags.Bool("deb", false, "set up a .deb install (/etc/pbp) instead of a Docker directory")
 	replace := flags.Bool("replace", false, "when setting up this Proxmox VE node too: back up and replace node files that differ, as pbp node setup --replace")
+	unattended := flags.Bool("unattended", false, "never prompt or read stdin: take the answers from the flags below")
+	var ff hostsetup.Flags
+	flags.StringVar(&ff.Address, "address", "", "the node's hostname or IP (default 127.0.0.1 on the node itself)")
+	flags.StringVar(&ff.VMIDRange, "vmid-range", "", "VMID range LO-HI for proof guests (default 990000-990049)")
+	flags.StringVar(&ff.Bridge, "bridge", "", "the isolated bridge (default vmbr99)")
+	flags.StringVar(&ff.RestoreStorage, "restore-storage", "", "the restore storage (default local-zfs)")
+	flags.StringVar(&ff.Storages, "storages", "", "the PBS storages to prove, comma-separated (required)")
+	flags.StringVar(&ff.Schedule, "schedule", "", `cron schedule (default "0 2 * * *")`)
+	flags.StringVar(&ff.TZ, "tz", "", "time zone for the schedule, Docker only (default the host's)")
+	nodeReply := flags.String("node-reply", "", "read the node's reply from this file (- for stdin) instead of a paste")
+	rotate := flags.Bool("rotate-token", false, "on the node itself: replace an existing API token whose secret this host lacks")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -51,8 +64,22 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		fprintf(a.stderr, "pbp setup: --deb and --dir cannot be used together\n%s", setupUsage)
 		return exitUsage
 	}
+	if !*unattended && (ff != (hostsetup.Flags{}) || *nodeReply != "" || *rotate) {
+		fprintf(a.stderr, "pbp setup: the answer flags, --node-reply and --rotate-token need --unattended\n%s", setupUsage)
+		return exitUsage
+	}
 	l := hostsetup.Layout{Dir: *dir, Deb: *deb}
 	in := bufio.NewReader(a.stdin)
+	var flagAnswers *hostsetup.Flags
+	lineOut := a.stdout
+	if *unattended {
+		// Nothing is read, and stdout carries only the node line, for
+		// automation: every other message goes to stderr.
+		in = bufio.NewReader(unattendedInput{})
+		flagAnswers = &ff
+		a.stdout = a.stderr
+		defer func() { a.stdout = lineOut }()
+	}
 	fail := func(err error) int {
 		fprintf(a.stderr, "pbp setup: %v\n", err)
 		return exitFail
@@ -63,7 +90,7 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	onNode := l.Deb && a.onPVENode != nil && a.onPVENode()
 	cfg, pending, err := hostsetup.LoadState(l)
 	if errors.Is(err, fs.ErrNotExist) {
-		if code := a.askAndWrite(ctx, in, l, onNode); code != exitOK {
+		if code := a.askAndWrite(ctx, in, l, onNode, flagAnswers); code != exitOK {
 			return code
 		}
 		cfg, pending, err = hostsetup.LoadState(l)
@@ -73,6 +100,15 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	}
 	if err := l.CheckPaths(cfg); err != nil {
 		return fail(err)
+	}
+	if *unattended {
+		if diffs := hostsetup.Conflicts(cfg, ff); len(diffs) > 0 {
+			for _, d := range diffs {
+				fprintf(a.stderr, "pbp setup: %s\n", d)
+			}
+			fprintln(a.stderr, "pbp setup: an unattended run does not change an existing config.yaml: edit it, or pass flags that match")
+			return exitFail
+		}
 	}
 	fixed, err := l.SecureSecrets()
 	if err != nil {
@@ -109,12 +145,23 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	}
 
 	var rep nodeproto.SetupReply
-	if local, code := a.offerLocalNode(onNode, in); code != exitOK {
+	if local, code := a.offerLocalNode(onNode, in, *unattended); code != exitOK {
 		return code
 	} else if local {
 		var code int
-		if rep, code = a.setUpLocalNode(ctx, in, l, cfg, pub, *replace); code != exitOK {
+		if rep, code = a.setUpLocalNode(ctx, in, l, cfg, pub, *replace, *unattended, *rotate); code != exitOK {
 			return code
+		}
+	} else if *unattended {
+		if *nodeReply == "" {
+			fprintln(lineOut, hostsetup.SetupArgs(cfg, pub, version, l.HaveToken()).Line())
+			fprintln(a.stderr, "pbp setup: run the line above on the node as root (add --yes --unattended --reply-file FILE), "+
+				"then run pbp setup again with --node-reply FILE")
+			return exitWaitReply
+		}
+		var err error
+		if rep, err = a.readReplyFrom(*nodeReply); err != nil {
+			return fail(err)
 		}
 	} else {
 		fprint(a.stdout, "\n"+hostsetup.NodeLines(cfg, pub, version, l.HaveToken())+"\n")
@@ -171,14 +218,14 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 
 // askAndWrite asks the questions and writes config.yaml (and, for Docker,
 // logs/ and .env).
-func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, onNode bool) int {
+// With ff (an unattended run), the answers come from the flags instead.
+func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, onNode bool, ff *hostsetup.Flags) int {
 	if !l.Deb {
 		if fi, err := os.Stat(l.Dir); err != nil || !fi.IsDir() {
 			fprintf(a.stderr, "pbp setup: %s is not a directory\n", l.Dir)
 			return exitFail
 		}
 	}
-	fprintf(a.stdout, "No %s yet. A few questions (Enter accepts the default in brackets):\n", l.ConfigPath())
 	var ans hostsetup.Answers
 	var askErr error
 	// On the node itself, 127.0.0.1 always reaches it, whatever its name
@@ -187,9 +234,14 @@ func (a *app) askAndWrite(ctx context.Context, in *bufio.Reader, l hostsetup.Lay
 	if onNode {
 		defaultAddr = "127.0.0.1"
 	}
-	if !a.interruptible(ctx, func() { ans, askErr = hostsetup.AskWith(in, a.stdout, l, a.defaultTZ(), defaultAddr) }) {
-		fprintln(a.stderr, "\n"+msgInterrupted)
-		return exitFail
+	if ff != nil {
+		ans, askErr = hostsetup.FromFlags(*ff, l, a.defaultTZ(), defaultAddr)
+	} else {
+		fprintf(a.stdout, "No %s yet. A few questions (Enter accepts the default in brackets):\n", l.ConfigPath())
+		if !a.interruptible(ctx, func() { ans, askErr = hostsetup.AskWith(in, a.stdout, l, a.defaultTZ(), defaultAddr) }) {
+			fprintln(a.stderr, "\n"+msgInterrupted)
+			return exitFail
+		}
 	}
 	if askErr != nil {
 		fprintf(a.stderr, "pbp setup: %v\n", askErr)
@@ -319,16 +371,21 @@ func hostTZ(getenv func(string) string, timezoneFile, localtime string) string {
 // offerLocalNode asks, on a Proxmox VE node, whether to set the node up in
 // this run. It is offered only where pbp node setup itself may run (root,
 // a terminal, not over SSH); otherwise the two-shell flow follows.
-func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
+// An unattended run (issue #131) needs no terminal and takes yes.
+func (a *app) offerLocalNode(onNode bool, in *bufio.Reader, unattended bool) (bool, int) {
 	if !onNode {
 		return false, exitOK
 	}
-	if why := a.nodeGateReason(); why != "" {
+	if why := a.nodeGateReason(unattended); why != "" {
 		fprintf(a.stdout, "\nThis host is a Proxmox VE node, but it cannot be set up in this run (%s); run the lines below in a root shell on it.\n", why)
 		return false, exitOK
 	}
 	fprintln(a.stdout, "\nThis host is a Proxmox VE node. pbp setup can set it up for PBP in this run as well:\n"+
 		"the same checks, plan and confirmation as pbp node setup, with no second shell and no reply to paste.")
+	if unattended {
+		fprintln(a.stdout, "Setting this node up in this run (--unattended).")
+		return true, exitOK
+	}
 	return nodesetup.Confirm(in, a.stdout, "Set up this node here?"), exitOK
 }
 
@@ -336,12 +393,14 @@ func (a *app) offerLocalNode(onNode bool, in *bufio.Reader) (bool, int) {
 // reply, as if it had been pasted. When the API token already exists and
 // this host has no secret for it, it offers to replace the token (PVE
 // cannot show an existing secret again).
-func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string, replace bool) (nodeproto.SetupReply, int) {
+// Unattended, the plan is applied without asking, and the token is
+// replaced only with --rotate-token (rotate).
+func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.Layout, cfg config.Config, pub string, replace, unattended, rotate bool) (nodeproto.SetupReply, int) {
 	sa := hostsetup.SetupArgs(cfg, pub, version, l.HaveToken())
 	save := func(secret string) (string, error) {
 		return l.TokenPath(), l.WriteSecretFile(l.TokenPath(), []byte(secret+"\n"))
 	}
-	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in, replace: replace, local: true, saveSecret: save})
+	res, code := a.nodeSetupRun(ctx, sa, nodeRun{in: in, yes: unattended, replace: replace, local: true, saveSecret: save})
 	if code != exitOK {
 		return nodeproto.SetupReply{}, code
 	}
@@ -354,7 +413,11 @@ func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.
 	fprintf(a.stdout, "\nThe API token %s already exists on this node, and PVE cannot show its secret again.\n"+
 		"Replacing it makes a new secret; any other PBP daemon using the token loses access until it gets the new one.\n",
 		hostsetup.TokenID)
-	if !nodesetup.Confirm(in, a.stdout, "Replace the token?") {
+	switch {
+	case unattended && !rotate:
+		fprintln(a.stdout, msgNothingChanged+" on the token; pbp setup needs a token secret to finish: pass --rotate-token to replace it")
+		return nodeproto.SetupReply{}, exitFail
+	case !unattended && !nodesetup.Confirm(in, a.stdout, "Replace the token?"):
 		fprintln(a.stdout, msgNothingChanged+" on the token; pbp setup needs a token secret to finish")
 		return nodeproto.SetupReply{}, exitFail
 	}
@@ -363,4 +426,27 @@ func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.
 		return nodeproto.SetupReply{}, code
 	}
 	return res.reply, exitOK
+}
+
+// unattendedInput is stdin for an unattended run: any read fails, so a
+// prompt that was missed declines instead of waiting for input.
+type unattendedInput struct{}
+
+func (unattendedInput) Read([]byte) (int, error) {
+	return 0, errors.New("an unattended run reads no input")
+}
+
+// readReplyFrom reads the node's reply from the file path, or from stdin
+// for "-" (issue #131).
+func (a *app) readReplyFrom(path string) (nodeproto.SetupReply, error) {
+	if path == "-" {
+		return nodeproto.ReadReply(a.stdin)
+	}
+	// #nosec G304 -- the admin names the reply file
+	f, err := os.Open(path)
+	if err != nil {
+		return nodeproto.SetupReply{}, err
+	}
+	defer func() { _ = f.Close() }()
+	return nodeproto.ReadReply(f)
 }
