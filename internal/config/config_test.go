@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -33,11 +34,55 @@ func TestLoadExampleConfig(t *testing.T) {
 	if !reflect.DeepEqual(c.Checks.IgnoreUnits, DefaultIgnoreUnits()) || !reflect.DeepEqual(c.Checks.WindowsIgnoreServices, DefaultWindowsIgnore()) {
 		t.Fatal("example lists drift from defaults")
 	}
-	if len(c.Checks.Guests) == 0 || len(c.Checks.Profiles) == 0 || len(c.Checks.Profiles[0].Ports) == 0 {
-		t.Fatalf("example config lacks guests/profiles/ports: %+v", c.Checks)
+	// The example is copied as a config (install-deb.md, manual-setup.md),
+	// so its sample checks are comments: a live sample would check
+	// whatever real guest has its VMID (seen on pve1: VM 105 FAILED on a
+	// postgresql it never had).
+	if len(c.Checks.Guests) != 0 || len(c.Checks.Profiles) != 0 {
+		t.Fatalf("example config has live sample checks: profiles %+v, guests %+v", c.Checks.Profiles, c.Checks.Guests)
 	}
-	if c.Target.VMIDRange != [2]int{990000, 990049} || c.Checks.Guests[0].Match.VMID != 105 || c.Checks.Profiles[0].Ports[0] != 8080 {
+	if c.Target.VMIDRange != [2]int{990000, 990049} {
 		t.Fatalf("nested decode wrong: %+v", c)
+	}
+}
+
+// TestExampleSampleChecksDecode uncomments the example's sample profiles and
+// guest checks, as a user would, and loads them: the samples stay valid
+// config, and uncommenting them is all it takes.
+func TestExampleSampleChecksDecode(t *testing.T) {
+	raw, err := os.ReadFile("../../config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	start, end := strings.Index(s, "\n  profiles:"), strings.Index(s, "\nnotify:")
+	if start < 0 || end < start {
+		t.Fatal("example config: checks.profiles … notify not found")
+	}
+	// A sample line: "    # - key: …" or "    #   key: …"; a comment that
+	// only continues another ("    #       # …") stays a comment.
+	sample := regexp.MustCompile(`^    # (- |  )[a-z_]+:`)
+	var b strings.Builder
+	for _, ln := range strings.Split(s[start:end], "\n") {
+		if sample.MatchString(ln) {
+			ln = "    " + ln[len("    # "):]
+		} else if strings.Contains(ln, "# -") {
+			t.Errorf("sample line not uncommented (indent?): %q", ln)
+		}
+		b.WriteString(ln + "\n")
+	}
+	c, err := loadStr(t, s[:start]+b.String()+s[end:])
+	if err != nil {
+		t.Fatalf("uncommented samples do not load: %v\n%s", err, b.String())
+	}
+	p, g := c.Checks.Profiles, c.Checks.Guests
+	if len(p) != 1 || p[0].Name != "myapp" || !slices.Equal(p[0].Ports, []int{8080}) {
+		t.Errorf("sample profiles: %+v", p)
+	}
+	if len(g) != 4 || g[0].Match.VMID != 105 || !slices.Equal(g[0].Services, []string{"postgresql"}) ||
+		g[1].Match.Tag != "haos" || !g[1].AllowReadOnlyRoot ||
+		!slices.Equal(g[2].IgnoreUnits, []string{"sep5.service"}) || !g[3].EnableGuestAgent {
+		t.Errorf("sample guests: %+v", g)
 	}
 }
 

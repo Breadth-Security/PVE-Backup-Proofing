@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`config.example.yaml` no longer has live sample checks.** Its sample profile (`myapp`) and per-guest check (`match: { vmid: 105 }` with `services: [postgresql]`) are now comments, like the other samples. A config copied from the example, as [Install from the .deb](docs/install-deb.md) and [Manual setup](docs/manual-setup.md) describe, used to check `postgresql` on whatever guest had VMID 105, and fail it if it had none. `pbp setup` always dropped these samples. **If you copied the example by hand,** look for that entry in `checks.guests` and remove it unless it is yours.
+
 ## v0.10.0
 
 **Upgrade the daemon and the node helper together:** a 0.10 daemon needs a 0.10 node helper (they must share major.minor), so follow [Upgrading](docs/upgrading.md). If PBP runs on the node itself, the one package upgrade covers both. **Check your config first:** an empty or repeated entry in `sources.storages`, or a storage name PVE would reject there or in `restore.storage`, now stops the daemon and every `pbp` command until it is fixed (issues #119, #121). Otherwise configs need no change; `enable_guest_agent` is new and optional.

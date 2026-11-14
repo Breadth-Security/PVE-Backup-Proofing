@@ -54,14 +54,17 @@ checks:
   use_default_ignores: true    # default; false = use only the two lists below
   ignore_units: []             # e.g. [media-sync.service]; * and ? match like shell globs
   windows_ignore_services: []  # e.g. ["Bonjour Service"]; globs, case ignored
-  profiles:
-    - name: myapp
-      unit: "myapp*.service"
-      ports: [8080]
-      commands: ["curl -sf http://127.0.0.1:8080/health"]
-  guests:
-    - match: { vmid: 105 }
-      services: [postgresql]
+  # The samples below are comments: copied as they are, they would check
+  # real guests. Uncomment the lines of a sample and adapt it; match your
+  # own guests' VMIDs, names or tags (docs/checks.md).
+  profiles:                    # your own service checks, keyed by a unit glob
+    # - name: myapp
+    #   unit: "myapp*.service"
+    #   ports: [8080]
+    #   commands: ["curl -sf http://127.0.0.1:8080/health"]
+  guests:                      # per-guest checks: an entry checks whatever guest it matches
+    # - match: { vmid: 105 }
+    #   services: [postgresql]
     # - match: { tag: haos }
     #   allow_readonly_root: true  # root is read-only by design (Home Assistant OS, Fedora CoreOS)
     # - match: { vmid: 114 }
