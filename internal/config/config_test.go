@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -46,7 +47,8 @@ func TestLoadExampleConfig(t *testing.T) {
 }
 
 // TestExampleSampleChecksDecode uncomments the example's sample profiles and
-// guest checks and loads them, so the samples stay valid config.
+// guest checks, as a user would, and loads them: the samples stay valid
+// config, and uncommenting them is all it takes.
 func TestExampleSampleChecksDecode(t *testing.T) {
 	raw, err := os.ReadFile("../../config.example.yaml")
 	if err != nil {
@@ -57,15 +59,15 @@ func TestExampleSampleChecksDecode(t *testing.T) {
 	if start < 0 || end < start {
 		t.Fatal("example config: checks.profiles … notify not found")
 	}
+	// A sample line: "    # - key: …" or "    #   key: …"; a comment that
+	// only continues another ("    #       # …") stays a comment.
+	sample := regexp.MustCompile(`^    # (- |  )[a-z_]+:`)
 	var b strings.Builder
 	for _, ln := range strings.Split(s[start:end], "\n") {
-		switch {
-		case strings.HasPrefix(ln, "  profiles: []"):
-			ln = "  profiles:"
-		case strings.HasPrefix(ln, "  guests: []"):
-			ln = "  guests:"
-		case strings.HasPrefix(ln, "    # - "), strings.HasPrefix(ln, "    #   "):
+		if sample.MatchString(ln) {
 			ln = "    " + ln[len("    # "):]
+		} else if strings.Contains(ln, "# -") {
+			t.Errorf("sample line not uncommented (indent?): %q", ln)
 		}
 		b.WriteString(ln + "\n")
 	}
