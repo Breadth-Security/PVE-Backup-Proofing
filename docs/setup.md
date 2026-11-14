@@ -215,6 +215,55 @@ It does both halves in that one shell:
 A node file that differs from what setup writes stops it, as with `pbp node setup`; `sudo pbp setup --deb --replace` then backs it up and replaces it. The node-side rules still apply (root, an interactive terminal, not from an SSH forced command or the `pbp` sudo rule); where they do not hold, setup says so and falls back to printing the two lines. Answer no to keep the two-shell flow.
 
 
+## Unattended setup
+
+For automation (Ansible, cloud-init, a provisioning script), `pbp setup --unattended` takes every answer as a flag, never prompts and never reads stdin. Each flag goes through the same check as the question it replaces, and an answer that is missing or wrong is an error naming the flag.
+
+| Flag | Question | When left out |
+|------|----------|---------------|
+| `--address` | Node address | `127.0.0.1` on the node itself; otherwise required |
+| `--vmid-range` | VMID range | `990000-990049` |
+| `--bridge` | Isolated bridge | `vmbr99` |
+| `--restore-storage` | Restore storage | `local-zfs` |
+| `--storages` | PBS storages, comma-separated | required |
+| `--schedule` | Schedule (cron) | `0 2 * * *` |
+| `--tz` | Time zone (Docker only) | the host's |
+
+With a `config.yaml` already in place, the flags must match it: a flag that differs stops setup and names both values, since an unattended run does not change an existing config.
+
+The bridge still has to exist ([step 2](#2-create-the-isolated-bridge)); setup checks it as usual.
+
+**On the node itself** (`--deb` on a Proxmox VE node), it runs end to end: it writes the config, sets the node up with the same checks and plan as `pbp node setup`, applies the plan without asking, and runs the check.
+
+```
+pbp setup --deb --unattended --storages pbs-main
+```
+
+- **An API token** that already exists on the node while this host has no secret for it is replaced only with `--rotate-token` (a rotation cuts off any other daemon using the token).
+- **A node file** that differs from what setup writes still needs `--replace`.
+
+**On a separate PBP host**, it takes two runs, with the node in between:
+
+```
+# PBP host: writes config.yaml and the SSH key, prints the node line, exits 4
+pbp setup --deb --unattended --address pve1.example.lan --storages pbs-main
+
+# node, as root (an admin's own session or automation, not the pbp account):
+# the printed line, plus these flags
+pbp node setup … --yes --unattended --reply-file /root/pbp-reply
+
+# PBP host, after copying the reply over a secure channel:
+pbp setup --deb --unattended --address pve1.example.lan --storages pbs-main --node-reply /root/pbp-reply
+shred -u /root/pbp-reply      # on both hosts: it holds the token secret
+```
+
+- **The first run** prints only the `pbp node setup …` line on stdout, with every other message on stderr, and exits with code **4**: waiting for the node's reply. Installing the package on the node is up to your automation (for example [with APT](install-apt.md)).
+- **`--node-reply FILE`** (or `-` for stdin) reads the reply instead of a paste.
+
+**On the node,** `pbp node setup --unattended` (and `pbp node uninstall --unattended`) runs without a terminal and requires `--yes`.
+- That flag lifts only the terminal check. The other refusals stay: over an SSH forced command, through the `pbp` account's sudo rule, or not as root. So neither the `pbp` account nor a stolen PBP key can drive setup.
+- `--reply-file FILE` writes the reply block to a new file with mode 0600 instead of stdout; an existing file or a symlink is refused before anything changes.
+
 ## If something goes wrong
 
 **Interrupted, or something to fix.** Ctrl-C at any point keeps everything written so far. Run `pbp setup` again (the same command): it skips the questions, prints the node lines again and waits for the reply. When everything is in place and the check passes, it changes nothing and prints `setup has already been completed`. When the check fails (for example the node was reinstalled and has a new host key), it shows what failed and prints the node lines again (unless the only problem is a PBS storage itself, inactive or holding no backups, which the node lines cannot fix: then it says to fix the storage or `sources.storages` and run `pbp setup` again); the new reply replaces `known_hosts`, `target.node` and the fingerprint, and setup lists each value it changed.

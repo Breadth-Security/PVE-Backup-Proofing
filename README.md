@@ -79,7 +79,7 @@ PBP never logs in to the node as root. It uses an API token with a narrow role, 
 
 The quickest way to see what PBP does: on a lab or test node, install PBP on the node itself and proof one guest's newest backup. Nothing runs on a schedule during the trial.
 
-1. **Download the `.deb`, verify its signature, and install it on the node** with `apt install ./pbp_<version>_<arch>.deb` ([Install from the .deb](docs/install-deb.md)). Proxmox VE has no `sudo`; the package brings it in as a recommended package.
+1. **Install the package on the node** from the signed APT repository ([Install with APT](docs/install-apt.md)), or download and verify the `.deb` ([Install from the .deb](docs/install-deb.md)). Proxmox VE has no `sudo`; the package brings it in as a recommended package.
 2. **Choose a free VMID range and create the isolated bridge** ([Setup](docs/setup.md) steps 1 and 2).
 3. **Set PBP up**, in a root shell on the node:
    ```
@@ -118,13 +118,14 @@ The package enables the `pbp` service but does not start it, so the trial runs n
 5. **Paste the reply** back into `pbp setup`. It writes the node's host key, certificate fingerprint and token secret, and checks everything.
 6. **Start PBP**: `docker compose up -d`, or `sudo systemctl start pbp`.
 
-Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 3 to 5 in one shell, with nothing to paste: see [PBP on the Proxmox node itself](docs/setup.md#pbp-on-the-proxmox-node-itself).
+Running PBP on the Proxmox node itself? `sudo pbp setup --deb` there does steps 3 to 5 in one shell, with nothing to paste: see [PBP on the Proxmox node itself](docs/setup.md#pbp-on-the-proxmox-node-itself). Setting PBP up from automation? `pbp setup --unattended` takes every answer as a flag: see [Unattended setup](docs/setup.md#unattended-setup).
 
 ## Documentation
 
 | Document | What it covers |
 |----------|----------------|
 | [Setup (Docker or .deb)](docs/setup.md) | The guided setup step by step, PBP on the node itself, removing PBP from a node |
+| [Install with APT](docs/install-apt.md) | The signed APT repository: adding it, checking its key, upgrading node-first, pinning |
 | [Install from the .deb](docs/install-deb.md) | Downloading and installing the Debian package, upgrading and removing it |
 | [Manual setup](docs/manual-setup.md) | What `pbp setup` and `pbp node setup` do, as commands you can run by hand |
 | [Operating](docs/operating.md) | Everyday commands, a run on demand, exit codes, the health check, notifications, backup notes |

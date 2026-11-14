@@ -194,6 +194,7 @@ To avoid both, schedule outside 01:00 to 03:00 (for example `0 3 * * *` or later
 | 1 | Failure: bad config (including a malformed `selection.exclude` entry), `check` found a problem, the run's severity is `error` (any guest `FAILED`, or a run-level error), or `run --guest` found no backup or names an excluded guest |
 | 2 | Usage error (unknown subcommand or flag, or `--guest` that is not a positive integer) |
 | 3 | Busy: another run or check holds the run lock. `run` and `check` both exit 3 and print "a run is already in progress" |
+| 4 | `setup --unattended` only: setup for a separate PBP host is waiting for the node's reply; run the printed line on the node, then `pbp setup` again with `--node-reply` ([Unattended setup](setup.md#unattended-setup)) |
 | 78 | `daemon` only: the config is missing or unusable (for example a `config.yaml` that `pbp setup` has not finished, or a malformed `selection.exclude` entry), or the daemon runs as root while its state or log directory belongs to the service user. `pbp.service` does not restart on it; fix the config (run `pbp setup` again) and start the service |
 
 Subcommands take `--config PATH`. The config path otherwise defaults to `$PBP_CONFIG`, then `/etc/pbp/config.yaml`. The state directory is `/var/lib/pbp/state`, overridable with `PBP_STATE_DIR`. Errors and what to do about them: [Troubleshooting](troubleshooting.md).
