@@ -15,6 +15,12 @@ import (
 // data.tar.gz) for pbp at version and arch into dir.
 func buildDeb(t *testing.T, dir, version, arch string) string {
 	t.Helper()
+	return buildDebNamed(t, dir, "pbp", version, arch)
+}
+
+// buildDebNamed is buildDeb for the package name pkg.
+func buildDebNamed(t *testing.T, dir, pkg, version, arch string) string {
+	t.Helper()
 	tgz := func(name, content string) []byte {
 		var b bytes.Buffer
 		zw := gzip.NewWriter(&b)
@@ -32,7 +38,7 @@ func buildDeb(t *testing.T, dir, version, arch string) string {
 		data []byte
 	}{
 		{"debian-binary", []byte("2.0\n")},
-		{"control.tar.gz", tgz("./control", "Package: pbp\nVersion: "+version+"\nArchitecture: "+arch+"\nDescription: PBP\n")},
+		{"control.tar.gz", tgz("./control", "Package: "+pkg+"\nVersion: "+version+"\nArchitecture: "+arch+"\nDescription: PBP\n")},
 		{"data.tar.gz", tgz("./usr/bin/pbp", "bin")},
 	}
 	var b bytes.Buffer
@@ -98,5 +104,24 @@ func TestAptindexCLI(t *testing.T) {
 
 	if err := run([]string{"-root", root, "-date", "yesterday"}, &out); err == nil {
 		t.Error("a bad -date must be an error")
+	}
+}
+
+// A package name from a .deb's control file becomes a path in the pool, so
+// one that is not a Debian package name is refused before anything is
+// written (gosec G703).
+func TestAptindexRejectsBadPackageName(t *testing.T) {
+	src, root := t.TempDir(), t.TempDir()
+	p := buildDebNamed(t, src, "../../escape", "0.10.0", "amd64")
+	var out bytes.Buffer
+	err := run([]string{"-root", root, "-date", "Sat, 14 Nov 2026 21:00:00 UTC", p}, &out)
+	if err == nil || !strings.Contains(err.Error(), "not a valid Debian package name") {
+		t.Fatalf("err = %v", err)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("wrote %v", entries)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "escape")); err == nil {
+		t.Error("wrote outside the repository tree")
 	}
 }

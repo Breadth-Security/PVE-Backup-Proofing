@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"time"
 
@@ -25,6 +26,11 @@ import (
 
 // archs are the architectures the repository carries.
 var archs = []string{"amd64", "arm64"}
+
+// rePackage is Debian policy's package name rule (5.6.1): lower-case
+// letters, digits, '+', '-' and '.', at least two characters, starting
+// with a letter or digit.
+var rePackage = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -74,8 +80,9 @@ func run(args []string, stdout io.Writer) error {
 		if !slices.Contains(archs, arch) {
 			return fmt.Errorf("%s: architecture %q is not one of %v", path, arch, archs)
 		}
-		if pkg == "" {
-			return fmt.Errorf("%s: no Package field", path)
+		if !rePackage.MatchString(pkg) {
+			// It becomes a path in the pool (pool/main/<p>/<package>/).
+			return fmt.Errorf("%s: %q is not a valid Debian package name", path, pkg)
 		}
 		rel := filepath.ToSlash(filepath.Join("pool", "main", pkg[:1], pkg, filepath.Base(path)))
 		ix := aptrepo.Index{Stanzas: s.Packages[arch]}
@@ -85,13 +92,17 @@ func run(args []string, stdout io.Writer) error {
 		}
 		s.Packages[arch] = ix.Stanzas
 		if !added {
-			fmt.Fprintln(stdout, "present", filepath.Base(path))
+			if _, err := fmt.Fprintln(stdout, "present", filepath.Base(path)); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := copyFile(path, filepath.Join(*root, filepath.FromSlash(rel))); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, "added", filepath.Base(path))
+		if _, err := fmt.Fprintln(stdout, "added", filepath.Base(path)); err != nil {
+			return err
+		}
 	}
 	return aptrepo.WriteSuite(*root, s)
 }
@@ -106,5 +117,6 @@ func copyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { // #nosec G301 -- a public repository tree
 		return err
 	}
-	return os.WriteFile(dst, b, 0o644) // #nosec G306 -- a public repository tree
+	// #nosec G306 G703 -- a public repository tree; dst is under -root, built from a checked package name and a file's base name
+	return os.WriteFile(dst, b, 0o644)
 }
