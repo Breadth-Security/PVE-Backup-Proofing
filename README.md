@@ -18,6 +18,23 @@ PBP (PVE Backup Proofing) is a small daemon that runs in a container or directly
   - <i>If you are migrating from the VMWare ecosystem, this is comparable to the functionality provided by Live Recovery. 
   - This is also comparable to the backup validation functionality provided by XenServer / XCP-ng / XO</i>
 
+## Is it safe?
+
+PBP restores copies of your production guests and boots them on a Proxmox node, so this is the first question to ask. In short:
+
+- **The copies cannot reach your network.** Each copy is plugged into an isolated bridge: no physical ports, no IP address, IPv6 disabled. Before every run, PBP reads the bridge's live state and refuses to run if it is not isolated. A copy is created with `onboot` off, and is started only once every NIC is on that bridge; host passthrough (PCI, USB) is removed.
+- **PBP touches only its own guests.** It works in a VMID range you reserve and tags each copy `pbp`. It never creates, changes, starts, stops or destroys anything outside that range, and it refuses to run while a guest it does not own sits inside it.
+- **Backups are only annotated.** PBP never deletes or changes a backup's content. It writes one verdict line into the backup's notes, and sets `protected` during a proof so that pruning cannot remove the backup mid-proof, then puts the original value back. Its token is not given the right to delete backups.
+- **No root login.** PBP uses an API token with a narrow role for almost everything, and SSH only as an unprivileged `pbp` user locked to one helper command. That helper runs commands only in `pbp`-tagged containers inside the range.
+- **It cleans up after itself.** Every copy is destroyed with its disks when its proof ends; after a crash, the next run removes what was left behind.
+- **Releases are verifiable.** Each release's checksums are signed, and each release comes with SLSA build provenance.
+
+What it cannot promise:
+- Proxmox cannot limit the token's guest rights (`/vms`) to a VMID range, so the token could act on any guest. The range is enforced by PBP itself; protect the token and the SSH key like admin credentials.
+- While a copy runs, it holds the same data as your production guest, secrets included.
+
+The details, and what a stolen key could and could not do: [Security model](docs/security.md).
+
 ## How it works
 
 For each run, PBP:
@@ -56,6 +73,35 @@ For each run, PBP:
 - **A host for PBP** that reaches the node's API (port 8006) and SSH (port 22): any host with Docker and Compose, or a Debian-based host for the `.deb` package (amd64 or arm64). **For production, run PBP on a separate host, outside the Proxmox node or cluster it proofs** ([why](docs/security.md#where-to-run-pbp)). Running it on the node itself works and is supported for a single-node lab or a trial.
 
 PBP never logs in to the node as root. It uses an API token with a narrow role, and SSH only as an unprivileged `pbp` user that is locked to one restricted helper command. What that means, and what a stolen key could and could not do: [Security model](docs/security.md).
+
+## Try it on one guest
+
+The quickest way to see what PBP does: on a lab or test node, install PBP on the node itself and proof one guest's newest backup. Nothing runs on a schedule during the trial.
+
+1. **Install the `.deb` on the node** and verify its signature ([Install from the .deb](docs/install-deb.md)).
+2. **Choose a free VMID range and create the isolated bridge** ([Setup](docs/setup.md) steps 1 and 2).
+3. **Set PBP up**, in a root shell on the node:
+   ```
+   sudo pbp setup --deb
+   ```
+   Take the offered address `127.0.0.1`, and answer yes to `Set up this node here?`: setup does both halves in that one shell, with nothing to paste ([details](docs/setup.md#pbp-on-the-proxmox-node-itself)).
+4. **Proof one guest.** Pick one whose newest backup is small: the copy must fit on the restore storage and in the node's free RAM.
+   ```
+   sudo -u pbp PBP_CONFIG=/etc/pbp/config.yaml pbp run --guest <vmid>
+   ```
+5. **See the verdict:**
+   - the run's summary, in the terminal;
+   - a line at the top of the backup's notes, such as `web01 · PBP PROVEN 2026-11-14 07:59 · 2 checks ok`;
+   - the guest's log, with each step and check, in the run's folder under `/var/log/pbp/`;
+   - the summary notification, through the node's notification targets.
+
+   `FAILED` and `BOOTED` come with the reason ([Verdicts](#verdicts)).
+
+**Keep it:** `sudo systemctl start pbp` starts the nightly runs. For production, run PBP on a separate host ([why](docs/security.md#where-to-run-pbp)).
+
+**Remove it:** as root on the node, `pbp node uninstall --remove-token` (the helper, the API token and its role), then `apt purge pbp` (the package, and PBP's config, secrets and logs), and delete the bridge ([Removing PBP from a node](docs/setup.md#removing-pbp-from-a-node)). The verdict lines in your backups' notes stay.
+
+The package enables the `pbp` service but does not start it, so the trial runs nothing on a schedule. Once setup has written `/etc/pbp/config.yaml`, though, the enabled service starts when the node reboots; `sudo systemctl disable pbp` prevents that.
 
 ## Getting started
 
