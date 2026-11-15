@@ -33,6 +33,9 @@ func writeAr(members []arMember) []byte {
 	return b.Bytes()
 }
 
+// truncateAr drops the last n bytes of an ar archive.
+func truncateAr(b []byte, n int) []byte { return b[:len(b)-n] }
+
 // tarGz returns a gzipped tar holding files (name → content).
 func tarGz(t *testing.T, files map[string]string) []byte {
 	t.Helper()
@@ -131,6 +134,11 @@ func TestReadDebRejects(t *testing.T) {
 		{"not ar", write("a.deb", []byte("PK\x03\x04 a zip")), "not a .deb"},
 		{"no control", write("b.deb", writeAr([]arMember{{"debian-binary", []byte("2.0\n")}, {"data.tar.gz", tarGz(t, nil)}})), "no control.tar"},
 		{"xz control", write("c.deb", writeAr([]arMember{{"debian-binary", []byte("2.0\n")}, {"control.tar.xz", []byte("xz")}})), "control.tar.xz"},
+		// A member whose header claims more bytes than the file holds
+		// (issue #134): refused, never read past the end.
+		{"member past the end", write("d.deb", truncateAr(writeAr([]arMember{{"debian-binary", []byte("2.0\n")},
+			{"control.tar.gz", tarGz(t, map[string]string{"./control": controlFor("0.10.0", "amd64")})}}), 20)), "truncated"},
+		{"huge member size", write("e.deb", []byte("!<arch>\n"+fmt.Sprintf("%-16s%-12d%-6d%-6d%-8s%-10d`\n", "control.tar.gz", 0, 0, 0, "100644", int64(9999999999)))), "truncated"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

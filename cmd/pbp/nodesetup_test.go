@@ -348,6 +348,38 @@ func TestNodeSetupGateRefuses(t *testing.T) {
 	}
 }
 
+// A caller the gate refuses for who it is (not for the terminal) is refused
+// before the flags are read: it never sees flag errors or help (issue #134).
+func TestNodeSetupGateBeforeFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		mod  func(t *testing.T, r *setupRig)
+	}{
+		{"ssh original command set", func(t *testing.T, _ *setupRig) { t.Setenv("SSH_ORIGINAL_COMMAND", "") }},
+		{"sudo from pbp", func(t *testing.T, _ *setupRig) { t.Setenv("SUDO_USER", "pbp") }},
+		{"not root", func(_ *testing.T, r *setupRig) { r.a.euid = func() int { return 1000 } }},
+	}
+	for _, sub := range []string{"setup", "uninstall"} {
+		for _, tc := range cases {
+			for _, bad := range []string{"--no-such-flag", "-h"} {
+				t.Run(sub+"/"+tc.name+"/"+bad, func(t *testing.T) {
+					r := newSetupRig(t)
+					tc.mod(t, r)
+					if code := r.main("", "node", sub, "--unattended", "--yes", bad); code != exitUsage {
+						t.Errorf("exit %d, want %d", code, exitUsage)
+					}
+					if !strings.Contains(r.errOut.String(), "pbp node "+sub+": refused:") {
+						t.Errorf("not refused first: stderr %q", r.errOut)
+					}
+					if strings.Contains(r.errOut.String(), "flag provided but not defined") || strings.Contains(r.errOut.String(), "-reply-file") {
+						t.Errorf("flag parsing ran for a refused caller: stderr %q", r.errOut)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestNodeSetupGateAllowsAdminSudo(t *testing.T) {
 	for _, u := range []string{"root", "admin"} {
 		t.Run(u, func(t *testing.T) {
