@@ -172,7 +172,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 	j.restoreTried = true
 	j.log.Info(fmt.Sprintf("restore to %d …", j.vmid))
 	t0 := d.Now()
-	err = d.Target.Restore(ctx, b, j.vmid, j.orig["tags"])
+	err = d.Target.Restore(ctx, b, j.vmid, j.orig)
 	res.RestoreDuration = d.Now().Sub(t0)
 	if err != nil {
 		detail := j.stepFailed("restore", res.RestoreDuration, err)

@@ -238,7 +238,7 @@ type storeBreaksOnRestore struct {
 	dir string
 }
 
-func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
+func (a storeBreaksOnRestore) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string, mounts map[string]string) (string, error) {
 	// Remove the directory rather than chmod it: the Docker build runs the
 	// tests as root, which ignores permission bits, but cannot write into a
 	// directory that no longer exists.

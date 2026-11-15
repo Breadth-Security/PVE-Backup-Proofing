@@ -22,7 +22,10 @@ type API interface {
 	Privileges(ctx context.Context, path string) (map[string]bool, error)
 
 	Guests(ctx context.Context) ([]GuestRef, error)
-	Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (upid string, err error)
+	// Restore restores volid into vmid on storage. mounts, for a container
+	// only, gives rootfs and mpN explicitly; PVE then uses exactly those
+	// instead of the backup's (issue #129). nil restores the backup's own.
+	Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string, mounts map[string]string) (upid string, err error)
 	GuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int) (map[string]string, error)
 	SetGuestConfig(ctx context.Context, node string, kind model.GuestKind, vmid int, set map[string]string, del []string) error
 	OriginalConfig(ctx context.Context, node, volid string) (string, error)

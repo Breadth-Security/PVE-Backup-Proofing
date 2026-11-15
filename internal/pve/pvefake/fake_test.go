@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,7 +27,7 @@ func seeded() *Fake {
 func TestRestoreThenGuestConfig(t *testing.T) {
 	ctx := context.Background()
 	f := seeded()
-	upid, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch")
+	upid, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch", nil)
 	if err != nil || upid == "" {
 		t.Fatalf("upid=%q err=%v", upid, err)
 	}
@@ -51,7 +52,7 @@ func TestRestoreThenGuestConfig(t *testing.T) {
 func TestLifecycle(t *testing.T) {
 	ctx := context.Background()
 	f := seeded()
-	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch", nil); err != nil {
 		t.Fatal(err)
 	}
 	status := func() string { s, _ := f.GuestStatus(ctx, "pve1", model.KindQEMU, 9100); return s }
@@ -99,7 +100,7 @@ func TestFailInjectionAndCalls(t *testing.T) {
 	f := seeded()
 	boom := errors.New("boom")
 	f.Fail["Start"] = boom
-	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Start(ctx, "pve1", model.KindQEMU, 9100); err != boom {
@@ -147,7 +148,7 @@ func TestConcurrentUse(t *testing.T) {
 		wg.Add(1)
 		go func(vmid int) {
 			defer wg.Done()
-			if _, err := f.Restore(ctx, "pve1", model.KindQEMU, vmid, volid, "scratch"); err != nil {
+			if _, err := f.Restore(ctx, "pve1", model.KindQEMU, vmid, volid, "scratch", nil); err != nil {
 				t.Error(err)
 			}
 			if _, err := f.Start(ctx, "pve1", model.KindQEMU, vmid); err != nil {
@@ -200,7 +201,7 @@ func TestDestroyRefusesProtected(t *testing.T) {
 // Like the real API, restoring a volid that was never seeded fails and creates nothing.
 func TestRestoreUnseededVolid(t *testing.T) {
 	f := New()
-	if _, err := f.Restore(context.Background(), "pve1", model.KindQEMU, 9100, volid, "scratch"); err == nil {
+	if _, err := f.Restore(context.Background(), "pve1", model.KindQEMU, 9100, volid, "scratch", nil); err == nil {
 		t.Fatal("Restore of an unseeded volid succeeded")
 	}
 	if len(f.GuestList) != 0 || len(f.Configs) != 0 {
@@ -211,7 +212,7 @@ func TestRestoreUnseededVolid(t *testing.T) {
 func TestSetGuestConfigRecordsArguments(t *testing.T) {
 	ctx := context.Background()
 	f := seeded()
-	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); err != nil {
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch", nil); err != nil {
 		t.Fatal(err)
 	}
 	f.ResetCalls()
@@ -287,16 +288,19 @@ func TestFailOnOtherMethods(t *testing.T) {
 	f := seeded()
 	f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 100}, Status: "stopped"}}
 	calls := map[string]func() error{
-		"Version":         func() error { _, err := f.Version(ctx); return err },
-		"ListBackups":     func() error { _, err := f.ListBackups(ctx, "pve1", "PBS"); return err },
-		"VolumeNotes":     func() error { _, err := f.VolumeNotes(ctx, "pve1", "PBS", volid); return err },
-		"SetVolumeAttrs":  func() error { return f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil) },
-		"StorageStatus":   func() error { _, err := f.StorageStatus(ctx, "pve1", "scratch"); return err },
-		"NodeMemory":      func() error { _, err := f.NodeMemory(ctx, "pve1"); return err },
-		"NetIface":        func() error { _, err := f.NetIface(ctx, "pve1", "vmbr0"); return err },
-		"WaitTask":        func() error { return f.WaitTask(ctx, "pve1", "u") },
-		"Guests":          func() error { _, err := f.Guests(ctx); return err },
-		"Restore":         func() error { _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch"); return err },
+		"Version":        func() error { _, err := f.Version(ctx); return err },
+		"ListBackups":    func() error { _, err := f.ListBackups(ctx, "pve1", "PBS"); return err },
+		"VolumeNotes":    func() error { _, err := f.VolumeNotes(ctx, "pve1", "PBS", volid); return err },
+		"SetVolumeAttrs": func() error { return f.SetVolumeAttrs(ctx, "pve1", "PBS", volid, nil, nil) },
+		"StorageStatus":  func() error { _, err := f.StorageStatus(ctx, "pve1", "scratch"); return err },
+		"NodeMemory":     func() error { _, err := f.NodeMemory(ctx, "pve1"); return err },
+		"NetIface":       func() error { _, err := f.NetIface(ctx, "pve1", "vmbr0"); return err },
+		"WaitTask":       func() error { return f.WaitTask(ctx, "pve1", "u") },
+		"Guests":         func() error { _, err := f.Guests(ctx); return err },
+		"Restore": func() error {
+			_, err := f.Restore(ctx, "pve1", model.KindQEMU, 9100, volid, "scratch", nil)
+			return err
+		},
 		"GuestConfig":     func() error { _, err := f.GuestConfig(ctx, "pve1", model.KindQEMU, 100); return err },
 		"SetGuestConfig":  func() error { return f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 100, nil, nil) },
 		"OriginalConfig":  func() error { _, err := f.OriginalConfig(ctx, "pve1", volid); return err },
@@ -346,7 +350,7 @@ func TestSetVolumeAttrsLogsGuest(t *testing.T) {
 func TestBehavesLikePVE(t *testing.T) {
 	ctx := context.Background()
 	f := seeded()
-	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9000, volid, "scratch"); err != nil {
+	if _, err := f.Restore(ctx, "pve1", model.KindQEMU, 9000, volid, "scratch", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.SetGuestConfig(ctx, "pve1", model.KindQEMU, 9000, map[string]string{"tags": "pbp;web", "name": "pbp-9000"}, nil); err != nil {
@@ -406,5 +410,39 @@ func TestPrivilegesDefaultToRole(t *testing.T) {
 	}
 	if got, _ := f.Privileges(ctx, "/nodes/pve1"); len(got) != len(privs.RolePrivs) {
 		t.Errorf("unlisted /nodes/pve1 = %v, want the role", got)
+	}
+}
+
+// Like PVE for a token: a container backup with a bind mount restores only
+// with explicit mount points, which replace the backup's (issue #129).
+func TestRestoreLXCBindMount(t *testing.T) {
+	ctx := context.Background()
+	const ctVol = "PBS:backup/ct/129/2026-11-14T02:00:00Z"
+	f := New()
+	f.BackupConfigs[ctVol] = "hostname: jellyfin\nrootfs: local-zfs:subvol-129-disk-0,size=8G\n" +
+		"mp0: /nfs/music,mp=/nfs/music\nmp1: local-zfs:subvol-129-disk-1,mp=/data,size=1G\nunprivileged: 1\n"
+	_, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", nil)
+	if err == nil || !strings.Contains(err.Error(), "restoring 'mp0' to bind mount is only possible for root") {
+		t.Fatalf("restore without mount points: err %v", err)
+	}
+	if _, ok := f.Configs[9200]; ok {
+		t.Fatal("a refused restore created a guest")
+	}
+	mounts := map[string]string{"rootfs": "scratch:8", "mp1": "scratch:1,mp=/data"}
+	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", mounts); err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.Configs[9200]
+	if cfg["rootfs"] != "scratch:subvol-9200-disk-0,size=8G" || cfg["mp1"] != "scratch:subvol-9200-disk-1,mp=/data,size=1G" {
+		t.Errorf("mount points rootfs %q mp1 %q", cfg["rootfs"], cfg["mp1"])
+	}
+	if _, ok := cfg["mp0"]; ok {
+		t.Errorf("the bind mount came back: %q", cfg["mp0"])
+	}
+	if cfg["hostname"] != "jellyfin" || cfg["unprivileged"] != "1" {
+		t.Errorf("the rest of the config was not merged: %v", cfg)
+	}
+	if calls := f.CallLog(); !slices.Contains(calls, "Restore pve1 lxc 9200 "+ctVol+" scratch map[mp1:scratch:1,mp=/data rootfs:scratch:8]") {
+		t.Errorf("calls %q", calls)
 	}
 }

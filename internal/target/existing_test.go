@@ -433,10 +433,10 @@ const (
 	ctConf = "hostname: web\nostype: debian\nrootfs: local-lvm:subvol-201-disk-0,size=8G\nmp0: /srv/share,mp=/mnt/share\nnet0: name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=dhcp\n"
 )
 
-// origTags is the tags of the backup's original config, as the run passes
-// them to Restore.
-func origTags(f *pvefake.Fake, volid string) string {
-	return sanitize.ParseConfigText(f.BackupConfigs[volid])["tags"]
+// origConfig is the backup's original config, as the run passes it to
+// Restore.
+func origConfig(f *pvefake.Fake, volid string) map[string]string {
+	return sanitize.ParseConfigText(f.BackupConfigs[volid])
 }
 
 func vmBackup() model.Backup {
@@ -449,7 +449,7 @@ func TestRestoreTagsOwnershipBeforeSanitize(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	cfg := f.Configs[990000]
@@ -495,7 +495,7 @@ func TestRestoreClearsProtection(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["protection"]; got != "0" {
@@ -534,7 +534,7 @@ func TestSanitizeVerifiesProtectionCleared(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "protection: 1\n"
 	n := newTarget(t, protectionKeepingAPI{f}, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -548,7 +548,7 @@ func TestRestoreFailures(t *testing.T) {
 	t.Run("out of range", func(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 101, origTags(f, vmVol))
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 101, origConfig(f, vmVol))
 		if !errors.Is(err, ErrOutOfRange) {
 			t.Errorf("err = %v", err)
 		}
@@ -560,7 +560,7 @@ func TestRestoreFailures(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
 		f.Fail["WaitTask"] = &pve.TaskError{UPID: "x", ExitStatus: "error", Log: []string{"decryption failed: missing key"}}
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol))
 		var te *pve.TaskError
 		if !errors.As(err, &te) {
 			t.Fatalf("err = %v, want TaskError", err)
@@ -581,7 +581,7 @@ func TestRestoreFailures(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
 		f.Fail["Restore"] = &pve.APIError{Status: 500, Path: "/nodes/pve1/qemu", Message: "unable to create VM 990000 - VM 990000 already exists"}
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol))
 		if !errors.Is(err, ErrRestoreNotStarted) {
 			t.Fatalf("err = %v, want ErrRestoreNotStarted", err)
 		}
@@ -597,14 +597,14 @@ func TestRestoreFailures(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
 		f.Fail["Restore"] = errors.New("read tcp: connection reset by peer")
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol))
 		if err == nil || errors.Is(err, ErrRestoreNotStarted) {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("out of range is not started", func(t *testing.T) {
 		f := healthyFake()
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 100, "")
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 100, nil)
 		if !errors.Is(err, ErrRestoreNotStarted) || !errors.Is(err, ErrOutOfRange) {
 			t.Errorf("err = %v", err)
 		}
@@ -613,7 +613,7 @@ func TestRestoreFailures(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = vmConf
 		f.Fail["SetGuestConfig"] = errors.New("403 permission denied")
-		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origTags(f, vmVol))
+		err := newTarget(t, f, f, nil).Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol))
 		if err == nil || errors.Is(err, ErrRestoreNotStarted) {
 			t.Errorf("err = %v", err)
 		}
@@ -628,7 +628,7 @@ func TestRestoreKeepsOriginalTags(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "tags: development;web\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["tags"]; got != "development;web;pbp" {
@@ -647,7 +647,7 @@ func TestSanitize(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -685,7 +685,7 @@ func TestSanitizeEnablesAgent(t *testing.T) {
 		f := healthyFake()
 		f.BackupConfigs[vmVol] = strings.Replace(vmConf, "agent: 1\n", tc.orig, 1)
 		n := newTarget(t, f, f, nil)
-		if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+		if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 			t.Fatal(err)
 		}
 		san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{EnableAgent: true})
@@ -716,7 +716,7 @@ func TestSanitizeAgentOptionOff(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = strings.Replace(vmConf, "agent: 1\n", "", 1)
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	san, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -730,7 +730,7 @@ func TestSanitizeAgentOptionOff(t *testing.T) {
 	f.BackupConfigs[ctVol] = ctConf
 	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}}
 	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
-	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
+	if err := n.Restore(ctx, b, 990001, origConfig(f, ctVol)); err != nil {
 		t.Fatal(err)
 	}
 	san, err = n.Sanitize(ctx, model.KindLXC, 990001, SanitizeOpts{EnableAgent: true})
@@ -742,29 +742,79 @@ func TestSanitizeAgentOptionOff(t *testing.T) {
 	}
 }
 
-func TestSanitizeLXCBindMount(t *testing.T) {
+// A container with a bind mount is restored without it (issue #129): the
+// restore passes rootfs (and any volume mount point) explicitly on the
+// restore storage, which needs VM.Config.Disk on the copy.
+func TestRestoreLXCWithoutBindMount(t *testing.T) {
 	ctx := context.Background()
 	f := healthyFake()
 	f.BackupConfigs[ctVol] = ctConf
-	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}} // removing mp0 needs it
+	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}}
 	n := newTarget(t, f, f, nil)
 	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
-	if err := n.Restore(ctx, b, 990001, origTags(f, ctVol)); err != nil {
+	if err := n.Restore(ctx, b, 990001, origConfig(f, ctVol)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.Configs[990001]["hostname"]; !ok || f.Configs[990001]["hostname"] != "web" {
+	if !slices.Contains(f.CallLog(), "Restore pve1 lxc 990001 "+ctVol+" "+store+" map[rootfs:"+store+":8]") {
+		t.Errorf("calls = %q", f.CallLog())
+	}
+	if f.Configs[990001]["hostname"] != "web" {
 		t.Errorf("LXC hostname must not be renamed: %q", f.Configs[990001]["hostname"])
 	}
+	if _, ok := f.Configs[990001]["mp0"]; ok {
+		t.Error("bind mount mp0 was restored")
+	}
+	if got := f.Configs[990001]["rootfs"]; got != store+":subvol-990001-disk-0,size=8G" {
+		t.Errorf("rootfs = %q", got)
+	}
 	san, err := n.Sanitize(ctx, model.KindLXC, 990001, SanitizeOpts{})
-	missing := san.Removed
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.Configs[990001]["mp0"]; ok {
-		t.Error("bind mount mp0 still present")
+	if len(san.Removed) != 0 {
+		t.Errorf("Removed = %+v; the bind mount is reported from the original config", san.Removed)
 	}
-	if len(missing) != 1 || missing[0].Kind != "bind-mount" || missing[0].Path != "/mnt/share" {
-		t.Errorf("missing = %+v", missing)
+}
+
+// Without VM.Config.Disk, a container with a bind mount ends before any
+// restore, with a reason that names the grant and the bind mounts.
+func TestRestoreLXCBindMountNeedsConfigDisk(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[ctVol] = ctConf
+	n := newTarget(t, f, f, nil)
+	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
+	err := n.Restore(ctx, b, 990001, origConfig(f, ctVol))
+	if !errors.Is(err, ErrRestoreNotStarted) || !errors.Is(err, ErrNeedsGrant) {
+		t.Fatalf("err = %v; want a refusal before the restore", err)
+	}
+	for _, want := range []string{"mp0 (/mnt/share)", "VM.Config.Disk", "root@pam", "docs/security.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err %q lacks %q", err, want)
+		}
+	}
+	if ClassifyRestoreError(err) != model.Error {
+		t.Errorf("verdict %v, want ERROR", ClassifyRestoreError(err))
+	}
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "Restore ") {
+			t.Errorf("the restore was called: %q", c)
+		}
+	}
+}
+
+// A backed-up config the mount points cannot be built from (no size) ends
+// before any restore too.
+func TestRestoreLXCBindMountBadConfig(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[ctVol] = strings.Replace(ctConf, ",size=8G", "", 1)
+	f.Privs = map[string][]string{"/vms/990001": {"VM.Config.Disk"}}
+	n := newTarget(t, f, f, nil)
+	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
+	err := n.Restore(ctx, b, 990001, origConfig(f, ctVol))
+	if !errors.Is(err, ErrRestoreNotStarted) || !strings.Contains(err.Error(), "rootfs has no size") || ClassifyRestoreError(err) != model.Error {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -773,7 +823,7 @@ func TestSanitizeUnsafe(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf + "args: -device foo\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -809,7 +859,7 @@ func TestSanitizeVerifiesBridge(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, bridgeIgnoringAPI{f}, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -832,7 +882,7 @@ func TestSanitizeVerifiesMTUCleared(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = strings.Replace(vmConf, "bridge=vmbr0,tag=2", "bridge="+bridge+",mtu=1500", 1)
 	n := newTarget(t, bridgeIgnoringAPI{f}, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -846,7 +896,7 @@ func TestStartAfterSanitize(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err != nil {
@@ -1317,7 +1367,7 @@ func TestSanitizeReportsChanges(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = "name: vm100\nmemory: 2048\nagent: 1\nscsi0: local-lvm:vm-101-disk-0,size=32G\nnet0: virtio=AA:BB,bridge=vmbr0,tag=2\nonboot: 1\nusb0: host=1-1\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{})
@@ -1342,7 +1392,7 @@ func TestSanitizeReReadFails(t *testing.T) {
 	f := healthyFake()
 	f.BackupConfigs[vmVol] = vmConf
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("boom")
@@ -1391,7 +1441,7 @@ func TestStartRefusesForeignDisks(t *testing.T) {
 			f := healthyFake()
 			f.BackupConfigs[vmVol] = vmConf
 			n := newTarget(t, f, f, nil)
-			if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+			if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := n.Sanitize(ctx, model.KindQEMU, 990000, SanitizeOpts{}); err != nil {
@@ -1442,7 +1492,7 @@ func TestSanitizeRemovesDrivesNotInTheBackup(t *testing.T) {
 		"#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:lvm:raw:\n"
 	f.Privs = map[string][]string{"/vms/990000": {"VM.Config.Disk"}}
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Configs[990000]["efidisk0"]; !strings.Contains(got, "vm-137-disk-8") {
@@ -1484,7 +1534,7 @@ func TestSanitizeWithoutDiskPrivilegeRefuses(t *testing.T) {
 		"efidisk0: lvm:vm-137-disk-8,efitype=4m,size=528K\nscsi0: lvm:vm-137-disk-6,size=72G\n" +
 		"net0: virtio=BC:24:11:00:00:03,bridge=vmbr0\n#qmdump#map:scsi0:drive-scsi0:lvm:raw:\n"
 	n := newTarget(t, f, f, nil)
-	if err := n.Restore(ctx, vmBackup(), 990000, origTags(f, vmVol)); err != nil {
+	if err := n.Restore(ctx, vmBackup(), 990000, origConfig(f, vmVol)); err != nil {
 		t.Fatal(err)
 	}
 	f.ResetCalls()

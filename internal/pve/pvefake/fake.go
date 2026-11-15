@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -298,11 +299,18 @@ func (f *Fake) Guests(ctx context.Context) ([]pve.GuestRef, error) {
 }
 
 // Restore creates a guest whose config is parsed from BackupConfigs[volid]; like
-// the real API it fails for a volid that was not seeded.
-func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string) (string, error) {
+// the real API it fails for a volid that was not seeded. Like PVE for a
+// token, a container backup with a bind mount restores only with explicit
+// mounts, which replace the backup's rootfs and mpN as new volumes on
+// their storage (issue #129).
+func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string, mounts map[string]string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("Restore", node, kind, vmid, volid, storage); err != nil {
+	args := []any{node, kind, vmid, volid, storage}
+	if len(mounts) > 0 {
+		args = append(args, mounts)
+	}
+	if err := f.begin("Restore", args...); err != nil {
 		return "", err
 	}
 	if err := f.at(node); err != nil {
@@ -316,6 +324,17 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 		return "", fmt.Errorf("volume %s does not exist", volid)
 	}
 	cfg := parseConfig(raw)
+	if kind == model.KindLXC {
+		if mounts == nil {
+			for _, k := range sortedKeys(cfg) {
+				if strings.HasPrefix(k, "mp") && strings.HasPrefix(cfg[k], "/") {
+					return "", fmt.Errorf("unable to restore CT %d - restoring '%s' to bind mount is only possible for root", vmid, k)
+				}
+			}
+		} else {
+			explicitMounts(cfg, mounts, vmid)
+		}
+	}
 	// Like PVE, the restore creates new volumes named after the new VMID.
 	// When the backup has #qmdump#map lines, only the drives they list are
 	// restored: a backup=0 drive is commented out, and any other drive
@@ -603,4 +622,46 @@ func (f *Fake) Privileges(ctx context.Context, path string) (map[string]bool, er
 		out[p] = true
 	}
 	return out, nil
+}
+
+// explicitMounts replaces cfg's rootfs and mpN with mounts, each a new
+// volume ("STORAGE:GiB,opts" becomes "STORAGE:subvol-VMID-disk-N,opts,
+// size=GiBG"), numbered rootfs first; the backup's own are never used.
+func explicitMounts(cfg, mounts map[string]string, vmid int) {
+	for k := range cfg {
+		if k == "rootfs" || reMountKey.MatchString(k) {
+			delete(cfg, k)
+		}
+	}
+	keys := sortedKeys(mounts)
+	slices.SortStableFunc(keys, func(a, b string) int {
+		if a == "rootfs" {
+			return -1
+		}
+		if b == "rootfs" {
+			return 1
+		}
+		return 0
+	})
+	for i, k := range keys {
+		alloc, opts, _ := strings.Cut(mounts[k], ",")
+		storage, gib, _ := strings.Cut(alloc, ":")
+		v := fmt.Sprintf("%s:subvol-%d-disk-%d", storage, vmid, i)
+		if opts != "" {
+			v += "," + opts
+		}
+		cfg[k] = v + ",size=" + gib + "G"
+	}
+}
+
+var reMountKey = regexp.MustCompile(`^mp\d+$`)
+
+// sortedKeys returns m's keys, sorted.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }

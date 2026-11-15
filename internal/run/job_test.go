@@ -125,15 +125,15 @@ type recTarget struct {
 	onBoot func(ctx context.Context) error
 	// panicDestroy makes Destroy panic.
 	panicDestroy bool
-	// origTags and destroyRec are what Restore and Destroy were last given.
-	origTags   string
+	// orig and destroyRec are what Restore and Destroy were last given.
+	orig       map[string]string
 	destroyRec target.Recorded
 }
 
-func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
+func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	t.rec.add(ctx, "Restore")
-	t.origTags = origTags
-	return t.Fake.Restore(ctx, b, vmid, origTags)
+	t.orig = orig
+	return t.Fake.Restore(ctx, b, vmid, orig)
 }
 
 func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts target.SanitizeOpts) (target.Sanitized, error) {
@@ -261,8 +261,8 @@ func TestHappyPath(t *testing.T) {
 	if want := (target.Recorded{VolID: volid, Name: "db01"}); f.tgt.destroyRec != want {
 		t.Errorf("Destroy got %+v, want %+v", f.tgt.destroyRec, want)
 	}
-	if f.tgt.origTags != "prod;db" {
-		t.Errorf("Restore got tags %q", f.tgt.origTags)
+	if f.tgt.orig["tags"] != "prod;db" {
+		t.Errorf("Restore got tags %q", f.tgt.orig["tags"])
 	}
 	if f.protected() {
 		t.Error("backup left protected")

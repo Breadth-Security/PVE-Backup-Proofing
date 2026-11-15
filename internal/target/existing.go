@@ -183,15 +183,34 @@ func (n *ExistingNode) AllocateVMID(ctx context.Context, inUse map[int]bool) (in
 
 // Restore restores b into vmid and, as soon as the restore task succeeds,
 // tags the guest "pbp" so it stays destroyable even if Sanitize then fails.
-// The tag goes on in the first config call, built from origTags, so no read
-// precedes it. Until then the guest is PBP's only by the caller's state
+// The tag goes on in the first config call, built from orig's tags, so no
+// read precedes it. Until then the guest is PBP's only by the caller's state
 // record (see Destroy).
-func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
+//
+// PVE lets only root@pam restore a container's bind mounts. A container
+// with any is restored without them instead, with its rootfs and volume
+// mount points passed explicitly (sanitize.RestoreMounts, issue #129),
+// which needs VM.Config.Disk on the copy; without it, Restore refuses
+// before the node is asked.
+func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	if err := n.guard(vmid); err != nil {
 		return notStarted{err}
 	}
 	kind := b.Key.Kind
-	upid, err := n.api.Restore(ctx, n.node, kind, vmid, b.VolID, n.store)
+	var mounts map[string]string
+	if kind == model.KindLXC {
+		m, bind, err := sanitize.RestoreMounts(orig, n.store)
+		if err != nil {
+			return notStarted{fmt.Errorf("restore %s without its bind mounts: %w", b.VolID, err)}
+		}
+		if len(bind) > 0 {
+			if err := n.mayRestoreWithoutBindMounts(ctx, vmid, bind); err != nil {
+				return notStarted{err}
+			}
+		}
+		mounts = m
+	}
+	upid, err := n.api.Restore(ctx, n.node, kind, vmid, b.VolID, n.store, mounts)
 	if err != nil {
 		err = fmt.Errorf("restore %s to %d: %w", b.VolID, vmid, err)
 		// Only an API error response counts as a refusal (a transport
@@ -213,7 +232,7 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	// same call, so the guest is destroyable from here on, and onboot again
 	// (the restore already overrode it), so a copy that Sanitize never
 	// reaches can still not autostart on its production NICs.
-	set := map[string]string{"tags": sanitize.AddTag(origTags, OwnerTag), "protection": "0", "onboot": "0"}
+	set := map[string]string{"tags": sanitize.AddTag(orig["tags"], OwnerTag), "protection": "0", "onboot": "0"}
 	// LXC has no "name"; renaming its hostname would change the guest itself.
 	if kind == model.KindQEMU {
 		set["name"] = fmt.Sprintf("pbp-%d-%s", b.Key.VMID, b.Time.UTC().Format("200601021504"))
@@ -556,7 +575,7 @@ func ClassifyRestoreError(err error) model.Verdict {
 		return ""
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
-		errors.Is(err, ErrOutOfRange) || errors.Is(err, ErrUnsafe) {
+		errors.Is(err, ErrOutOfRange) || errors.Is(err, ErrUnsafe) || errors.Is(err, ErrNeedsGrant) {
 		return model.Error
 	}
 	text := err.Error()
@@ -676,6 +695,29 @@ func bootDrives(cfg map[string]string) map[string]bool {
 		out[d] = true
 	}
 	return out
+}
+
+// mayRestoreWithoutBindMounts checks that PBP's token may pass a
+// container's mount points to the restore: PVE asks for VM.Config.Disk on
+// the copy for that. Without it the container cannot be restored at all
+// (its bind mounts are root@pam's), so the guest ends ERROR before the
+// node is asked, naming the bind mounts and the grant.
+func (n *ExistingNode) mayRestoreWithoutBindMounts(ctx context.Context, vmid int, bind []model.MissingPiece) error {
+	path := "/vms/" + strconv.Itoa(vmid)
+	privs, err := n.api.Privileges(ctx, path)
+	if err != nil {
+		return fmt.Errorf("read the token's privileges on %s: %w", path, err)
+	}
+	if privs[privConfigDisk] {
+		return nil
+	}
+	mps := make([]string, len(bind))
+	for i, p := range bind {
+		mps[i] = fmt.Sprintf("%s (%s)", p.Key, p.Path)
+	}
+	return fmt.Errorf("%w: bind mounts %s, which only root@pam can restore; PBP restores the container without them, "+
+		"which needs %s, and its token lacks it: grant it, or see docs/security.md#guests-pbp-cannot-proof",
+		ErrNeedsGrant, strings.Join(mps, ", "), privConfigDisk)
 }
 
 // mayRemoveDrives checks, when plan removes drives (a host disk, or one the

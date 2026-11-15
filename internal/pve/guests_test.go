@@ -53,7 +53,7 @@ func TestGuests(t *testing.T) {
 
 func TestRestoreQEMU(t *testing.T) {
 	c, got := capture(t, `{"data":"UPID:pve1:1:qmrestore"}`)
-	upid, err := c.Restore(context.Background(), "pve1", model.KindQEMU, 9100, "PBS:backup/vm/100/2026-07-26T06:00:03Z", "scratch")
+	upid, err := c.Restore(context.Background(), "pve1", model.KindQEMU, 9100, "PBS:backup/vm/100/2026-07-26T06:00:03Z", "scratch", nil)
 	if err != nil || upid != "UPID:pve1:1:qmrestore" {
 		t.Fatalf("upid=%q err=%v", upid, err)
 	}
@@ -68,12 +68,27 @@ func TestRestoreQEMU(t *testing.T) {
 
 func TestRestoreLXC(t *testing.T) {
 	c, got := capture(t, `{"data":"UPID:pve1:2:vzrestore"}`)
-	if _, err := c.Restore(context.Background(), "pve1", model.KindLXC, 9101, "PBS:backup/ct/101/x", "scratch"); err != nil {
+	if _, err := c.Restore(context.Background(), "pve1", model.KindLXC, 9101, "PBS:backup/ct/101/x", "scratch", nil); err != nil {
 		t.Fatal(err)
 	}
 	want := url.Values{"ostemplate": {"PBS:backup/ct/101/x"}, "vmid": {"9101"}, "storage": {"scratch"}, "restore": {"1"}, "unique": {"1"}, "onboot": {"0"}}
 	if got.method != "POST" || got.path != "/api2/json/nodes/pve1/lxc" || !reflect.DeepEqual(got.form, want) {
 		t.Errorf("request = %+v", got)
+	}
+}
+
+// A container with bind mounts is restored with explicit mount points
+// (issue #129): the restore uses exactly those, never the backup's.
+func TestRestoreLXCMounts(t *testing.T) {
+	c, got := capture(t, `{"data":"UPID:pve1:3:vzrestore"}`)
+	mounts := map[string]string{"rootfs": "scratch:8", "mp1": "scratch:0.5,mp=/data,acl=1"}
+	if _, err := c.Restore(context.Background(), "pve1", model.KindLXC, 9101, "PBS:backup/ct/101/x", "scratch", mounts); err != nil {
+		t.Fatal(err)
+	}
+	want := url.Values{"ostemplate": {"PBS:backup/ct/101/x"}, "vmid": {"9101"}, "storage": {"scratch"}, "restore": {"1"}, "unique": {"1"}, "onboot": {"0"},
+		"rootfs": {"scratch:8"}, "mp1": {"scratch:0.5,mp=/data,acl=1"}}
+	if !reflect.DeepEqual(got.form, want) {
+		t.Errorf("form = %v", got.form)
 	}
 }
 

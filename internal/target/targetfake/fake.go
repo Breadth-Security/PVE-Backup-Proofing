@@ -191,7 +191,7 @@ func (f *Fake) AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error
 	return 0, target.ErrNoFreeVMID
 }
 
-func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
+func (f *Fake) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Restore %d %s", vmid, b.VolID)
