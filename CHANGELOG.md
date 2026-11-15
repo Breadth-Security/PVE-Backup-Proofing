@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`pbp setup` exits with code 5 when the node's API token must be replaced** (issue #134): the token exists on the node and this host has no secret for it, or the node rejects this host's secret. It used to exit 1, like any other failure. For a separate PBP host, an unattended run then prints only the `pbp node setup … --rotate-token` line on stdout, as exit 4 does with the node line; on the node itself, stdout is empty and `--rotate-token` is the remedy. See [Exit codes](docs/operating.md#exit-codes).
+- **A token secret the node rejects can now be replaced** (issue #134). Setup prints the `--rotate-token` line and takes its reply in the same run (pasted, or `--node-reply` when unattended); on the node itself it offers to replace the token (`--rotate-token` when unattended). Before, it stopped at the failed check, so every run after rotating the token stopped there again and the new reply was never read.
+- **`pbp setup --rotate-token` is refused on a separate PBP host** (usage error, before anything is written) instead of being ignored: only `pbp node setup --rotate-token` on the node can replace the token.
+- **`pbp node setup` and `pbp node uninstall` refuse a caller they never run for before reading its flags**: over an SSH forced command, through the `pbp` account's sudo rule, or not as root. Such a caller used to see flag errors or help first. Nothing changed on the node either way.
+- **Security model: no expiry on the APT index (accepted).** [Security model](docs/security.md#the-apt-repository-key) explains why the repository's `Release` carries no `Valid-Until`, what that leaves open (an old, validly signed index could be served to hold back an update; no package can be added or changed), and how to notice it.
+- **For maintainers, `packaging/apt-publish.sh` is stricter** (issue #134): it reads back the by-hash index files APT fetches, stops before signing when the index tool fails, has `--first` check the bucket itself instead of trusting a public 404, and `--init --dry-run` no longer writes the key file. Its round-trip test now runs real publishes against a local stand-in for R2.
 - **The APT repository's address now opens a page** (`https://apt.breadthsecurity.com`): what the repository is, the setup commands, the key's fingerprint and the upgrade cautions, with links to the docs. It used to answer 404. The page loads no scripts and nothing from elsewhere. For maintainers, `packaging/apt-publish.sh --page` publishes it alone, and every publish updates it when it changed.
 
 ## v0.11.0

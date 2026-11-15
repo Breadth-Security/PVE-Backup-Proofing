@@ -35,7 +35,10 @@ const (
 // another user, and not with stdin redirected. An admin's own sudo (any
 // other SUDO_USER) is allowed. --yes never lifts it; --unattended
 // (allowNoTTY) lifts only the terminal check (issue #131), so the pbp
-// account and its key still cannot drive setup.
+// account and its key still cannot drive setup. Callers run it twice:
+// with allowNoTTY true before parsing the flags, so a caller refused for
+// who it is never sees flag errors or help (issue #134), and with the
+// parsed --unattended after, for the terminal check.
 func (a *app) setupGate(sub string, allowNoTTY bool) bool {
 	why := a.nodeGateReason(allowNoTTY)
 	if why == "" {
@@ -155,6 +158,9 @@ func (a *app) nodeSetup(ctx context.Context, args []string) int {
 	replace := fs.Bool("replace", false, "replace items that differ, after a backup")
 	unattended := fs.Bool("unattended", false, "run without a terminal, for automation (requires --yes)")
 	replyFile := fs.String("reply-file", "", "write the reply block (with the token secret) to this new file, mode 0600, instead of stdout")
+	if !a.setupGate(sub, true) {
+		return exitUsage
+	}
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -425,6 +431,9 @@ func (a *app) nodeUninstall(ctx context.Context, args []string) int {
 	dryRun := fs.Bool("dry-run", false, "show the plan, change nothing")
 	yes := fs.Bool("yes", false, "do not ask before removing")
 	unattended := fs.Bool("unattended", false, "run without a terminal, for automation (requires --yes)")
+	if !a.setupGate(sub, true) {
+		return exitUsage
+	}
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

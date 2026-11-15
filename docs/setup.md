@@ -239,7 +239,7 @@ The bridge still has to exist ([step 2](#2-create-the-isolated-bridge)); setup c
 pbp setup --deb --unattended --storages pbs-main
 ```
 
-- **An API token** that already exists on the node while this host has no secret for it is replaced only with `--rotate-token` (a rotation cuts off any other daemon using the token).
+- **An API token** that already exists on the node while this host has no secret for it is replaced only with `--rotate-token` (a rotation cuts off any other daemon using the token). Without it, setup exits with code **5**.
 - **A node file** that differs from what setup writes still needs `--replace`.
 
 **On a separate PBP host**, it takes two runs, with the node in between:
@@ -259,6 +259,7 @@ shred -u /root/pbp-reply      # on both hosts: it holds the token secret
 
 - **The first run** prints only the `pbp node setup …` line on stdout, with every other message on stderr, and exits with code **4**: waiting for the node's reply. Installing the package on the node is up to your automation (for example [with APT](install-apt.md)).
 - **`--node-reply FILE`** (or `-` for stdin) reads the reply instead of a paste.
+- **A token that must be replaced** (it exists on the node and the reply carries no secret, or the node rejects this host's secret) ends the run with code **5**, and stdout holds only the `pbp node setup … --rotate-token` line: run it on the node with the flags above, then `pbp setup` again with its reply in `--node-reply`. `pbp setup --rotate-token` itself is refused on a separate host (code 2), since only the node can replace its token.
 
 **On the node,** `pbp node setup --unattended` (and `pbp node uninstall --unattended`) runs without a terminal and requires `--yes`.
 - That flag lifts only the terminal check. The other refusals stay: over an SSH forced command, through the `pbp` account's sudo rule, or not as root. So neither the `pbp` account nor a stolen PBP key can drive setup.
@@ -272,7 +273,7 @@ shred -u /root/pbp-reply      # on both hosts: it holds the token secret
 
 If the token already exists on the node but this host has no secret for it (a rebuilt PBP host, a deleted `secrets/` directory, or a node an earlier setup created the token on), PVE cannot show the secret again. Setup writes nothing, explains this, and prints the `pbp node setup` line again with `--rotate-token`. Run it on the node, then `pbp setup` again and paste the new reply. Any other daemon using that token loses access until it gets the new secret.
 
-The same applies when this host has a secret but the node rejects it (HTTP 401: the token was replaced from elsewhere, or the file holds the wrong value): setup says so and prints the `--rotate-token` line.
+When this host has a secret but the node rejects it (HTTP 401: the token was replaced from elsewhere, or the file holds the wrong value), setup says so, prints the `--rotate-token` line and waits for that line's reply in the same run: paste it, or in an unattended run pass it with `--node-reply`. On the node itself, setup offers to replace the token (unattended: `--rotate-token`). A reply without a new secret changes nothing.
 
 **Other errors** are listed in [Troubleshooting](troubleshooting.md).
 
