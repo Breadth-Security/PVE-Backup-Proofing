@@ -147,7 +147,8 @@ if ! $init && grep -q PLACEHOLDER "$keyring_asc" 2>/dev/null; then
 fi
 
 # r2_login reads the R2 credentials from their file (without running it)
-# into a curl config that only this run can read; only an upload calls it.
+# into a curl config that only this run can read; only an upload and its
+# read-back call it.
 curlcfg="$work/curl.cfg" endpoint=""
 r2_login() {
     [ -z "$endpoint" ] || return 0
@@ -177,19 +178,17 @@ put() {
 immutable="public, max-age=31536000, immutable"
 
 # served_page FILE: FILE, as the domain served it, is the landing page.
-# Markup a CDN inserted right before the page's </body> line is allowed
-# (Cloudflare's bot detection adds a script there); any other difference
-# is not. What R2 stores is checked byte for byte instead (r2_get).
+# One difference is allowed, the one Cloudflare's bot detection makes: the
+# page's </body> line served as <script>...</script></body>. Any other
+# difference, an extra or a missing line included, is not. What R2 stores
+# is checked byte for byte instead (r2_get).
 served_page() {
+    [ -s "$1" ] || return 1
     cmp -s "$1" "$page" && return 0
     n=$(grep -n '^</body>$' "$page" | head -n 1 | cut -d: -f1)
     [ -n "$n" ] || return 1
-    after=$(( $(wc -l < "$page") - n ))
-    head -n $((n - 1)) "$page" > "$work/page-head"; head -n $((n - 1)) "$1" > "$work/served-head"
-    tail -n "$after" "$page" > "$work/page-tail"; tail -n "$after" "$1" > "$work/served-tail"
-    cmp -s "$work/page-head" "$work/served-head" && cmp -s "$work/page-tail" "$work/served-tail" || return 1
-    [ "$(wc -l < "$1")" -ge "$(wc -l < "$page")" ] || return 1
-    tail -n $((after + 1)) "$1" | head -n 1 | grep -q '</body>$'
+    sed "${n}s#^<script>.*</script></body>\$#</body>#" "$1" > "$work/served-plain"
+    cmp -s "$work/served-plain" "$page"
 }
 
 # r2_get KEY FILE downloads KEY from R2 itself, past the CDN, into FILE.
