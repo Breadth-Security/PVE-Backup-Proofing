@@ -96,10 +96,98 @@ grep -q '^uploaded' "$tmp/unreachable.log" && fail "something was uploaded"
 echo "PASS: unreachable live index stops the publish before any upload"
 
 # The live repository, served over HTTP on localhost (PBP_APT_PROTO lets
-# the script fetch it without TLS, for tests only).
+# the script fetch it without TLS, for tests only), by a stand-in for R2
+# behind Cloudflare: the tree in $tmp/live is public at the root (/ serves
+# index.html, as the Cloudflare rewrite does), and under /bucket it takes
+# signed PUT, GET and ListObjectsV2 requests, as R2 does
+# (PBP_R2_ENDPOINT points the script at it, for tests only). Marker files
+# in the tree make it misbehave: .public-404 hides the public side,
+# .inject adds a script before </body> of HTML as Cloudflare's bot
+# detection does, and .corrupt-byhash spoils by-hash uploads.
+cat > "$tmp/fake_r2.py" <<'EOF'
+import http.server, os, sys, urllib.parse
+root, port = sys.argv[1], int(sys.argv[2])
+BUCKET = "/bucket"
+
+def marker(name):
+    return os.path.exists(os.path.join(root, name))
+
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def send(self, code, body=b"", ctype="application/octet-stream"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def file(self, rel):
+        base = os.path.realpath(root)
+        full = os.path.realpath(os.path.join(base, urllib.parse.unquote(rel)))
+        if not full.startswith(base + os.sep):
+            return None
+        return full
+
+    def signed(self):
+        return self.headers.get("Authorization", "").startswith("AWS4-HMAC-SHA256 ")
+
+    def do_GET(self):
+        u = urllib.parse.urlsplit(self.path)
+        if u.path in (BUCKET, BUCKET + "/"):
+            q = urllib.parse.parse_qs(u.query)
+            if not self.signed() or q.get("list-type") != ["2"]:
+                return self.send(403)
+            prefix, limit = q.get("prefix", [""])[0], int(q.get("max-keys", ["1000"])[0])
+            n = 0
+            for d, _, files in os.walk(root):
+                for f in files:
+                    rel = os.path.relpath(os.path.join(d, f), root)
+                    if not rel.startswith(".") and rel.startswith(prefix):
+                        n += 1
+            body = "<?xml version='1.0' encoding='UTF-8'?><ListBucketResult><KeyCount>%d</KeyCount></ListBucketResult>" % min(n, limit)
+            return self.send(200, body.encode(), "application/xml")
+        if u.path.startswith(BUCKET + "/"):
+            if not self.signed():
+                return self.send(403)
+            rel, public = u.path[len(BUCKET) + 1:], False
+        else:
+            if marker(".public-404"):
+                return self.send(404)
+            rel, public = (u.path.lstrip("/") or "index.html"), True
+        full = self.file(rel)
+        if full is None or not os.path.isfile(full):
+            return self.send(404)
+        with open(full, "rb") as f:
+            body = f.read()
+        if public and rel.endswith(".html") and marker(".inject"):
+            body = body.replace(b"\n</body>\n", b"\n<script>(function(){cdn()})();</script></body>\n")
+        self.send(200, body, "text/html" if rel.endswith(".html") else "application/octet-stream")
+
+    def do_PUT(self):
+        u = urllib.parse.urlsplit(self.path)
+        if not u.path.startswith(BUCKET + "/") or not self.signed():
+            return self.send(403)
+        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        rel = u.path[len(BUCKET) + 1:]
+        if "/by-hash/" in rel and marker(".corrupt-byhash"):
+            data += b"x"
+        full = self.file(rel)
+        if full is None:
+            return self.send(400)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(data)
+        self.send(200)
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+EOF
 port=$((20000 + $$ % 20000))
 mkdir -p "$tmp/live"
-python3 -m http.server --bind 127.0.0.1 --directory "$tmp/live" "$port" >/dev/null 2>&1 &
+python3 -I "$tmp/fake_r2.py" "$tmp/live" "$port" >"$tmp/fake_r2.log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null; rm -rf "$tmp"' EXIT
 sleep 1
@@ -206,3 +294,77 @@ grep -q "only the landing page failed" "$tmp/badpub.log" || { cat "$tmp/badpub.l
 kept_rm "$tmp/badpub.log"
 live_page="$tmp/page.html"
 echo "PASS: a page with the wrong fingerprint is refused; a publish says only the page failed"
+
+# A failure of the index tool stops the publish before anything is signed:
+# the live index already lists pbp 0.10.0 amd64 with other content.
+d="$tmp/pkg-conflict"
+mkdir -p "$d/DEBIAN"
+printf 'Package: pbp\nVersion: 0.10.0\nArchitecture: amd64\nMaintainer: Test <test@example.invalid>\nDescription: PBP conflicting test\n' > "$d/DEBIAN/control"
+dpkg-deb -Zgzip --root-owner-group --build "$d" "$tmp/pbp_0.10.0_amd64.deb" >/dev/null
+rm -rf "$tmp/live"
+"$repo_dir/packaging/apt-publish.sh" --local "$tmp/live" --key-file "$tmp/key.asc" "$tmp/pbp_0.10.0_amd64.deb" >/dev/null
+if live --dry-run v0.10.0 >"$tmp/conflict.log" 2>&1; then cat "$tmp/conflict.log"; fail "a publish whose index tool failed succeeded"; fi
+grep -q "the index tool failed" "$tmp/conflict.log" || { cat "$tmp/conflict.log"; fail "an index tool failure was not reported as such"; }
+kept_rm "$tmp/conflict.log"
+echo "PASS: an index tool failure stops the publish before signing"
+
+# r2 runs the script against the stand-in for R2.
+r2() { PBP_R2_CREDENTIALS="$tmp/creds" PBP_R2_ENDPOINT="http://127.0.0.1:$port/bucket" live "$@"; }
+
+# --first checks the bucket itself: an empty one is a first publish, but a
+# public 404 in front of a bucket that holds an index is not.
+rm -rf "$tmp/live"; mkdir -p "$tmp/live"
+r2 --first --dry-run v0.10.0 >"$tmp/first.log" 2>&1 || { cat "$tmp/first.log"; fail "--first on an empty bucket failed"; }
+grep -q "dry run: nothing uploaded" "$tmp/first.log" || { cat "$tmp/first.log"; fail "--first on an empty bucket did not finish"; }
+kept_rm "$tmp/first.log"
+cp -a "$tmp/repo.orig/." "$tmp/live/"
+touch "$tmp/live/.public-404"
+if r2 --first --dry-run v0.10.0 >"$tmp/first.log" 2>&1; then cat "$tmp/first.log"; fail "--first went ahead although the bucket holds an index"; fi
+grep -q "the bucket already holds" "$tmp/first.log" || { cat "$tmp/first.log"; fail "--first: wrong failure for a non-empty bucket"; }
+kept_rm "$tmp/first.log"
+rm "$tmp/live/.public-404"
+echo "PASS: --first trusts the bucket, not the public 404"
+
+# A real publish and page upload against the stand-in: everything is read
+# back, the page from the bucket byte for byte and through the domain with
+# the injected script.
+rm -rf "$tmp/live"; cp -a "$tmp/repo.orig" "$tmp/live"; cp "$live_page" "$tmp/live/index.html"
+r2 v0.10.0 >"$tmp/pub.log" 2>&1 || { cat "$tmp/pub.log"; fail "a publish to the stand-in failed"; }
+grep -q "^published and verified: v0.10.0$" "$tmp/pub.log" || { cat "$tmp/pub.log"; fail "publish: no verified line"; }
+[ -f "$tmp/live/pool/main/p/pbp/pbp_0.10.0_amd64.deb" ] || fail "publish: the package is not in the bucket"
+grep -q "^landing page is current$" "$tmp/pub.log" || { cat "$tmp/pub.log"; fail "publish: the page was not current"; }
+rm "$tmp/live/index.html"; touch "$tmp/live/.inject"
+r2 --page >"$tmp/pageup.log" 2>&1 || { cat "$tmp/pageup.log"; fail "--page against the stand-in failed"; }
+grep -q "^uploaded index.html$" "$tmp/pageup.log" || { cat "$tmp/pageup.log"; fail "--page did not upload"; }
+grep -q "warning" "$tmp/pageup.log" && { cat "$tmp/pageup.log"; fail "--page warned about the root"; }
+cmp -s "$tmp/live/index.html" "$live_page" || fail "--page stored another page"
+rm "$tmp/live/.inject"
+echo "PASS: a publish and a page upload are read back"
+
+# A by-hash file that arrives spoiled fails the read-back.
+touch "$tmp/live/.corrupt-byhash"
+if r2 v0.10.0 >"$tmp/byhash.log" 2>&1; then cat "$tmp/byhash.log"; fail "a spoiled by-hash upload passed the read-back"; fi
+grep -q "by-hash" "$tmp/byhash.log" || { cat "$tmp/byhash.log"; fail "a spoiled by-hash upload failed for another reason"; }
+rm "$tmp/live/.corrupt-byhash"
+echo "PASS: the read-back checks the by-hash files"
+
+# --init, from a copy of the script beside its own allowed_signers (a
+# throwaway release key): a dry run writes no key file and uploads
+# nothing; a real run uploads the keyring and its signature and writes it.
+mkdir -p "$tmp/initrepo/packaging"
+cp "$repo_dir/packaging/apt-publish.sh" "$tmp/initrepo/packaging/"
+ssh-keygen -q -t ed25519 -N '' -C test -f "$tmp/sshkey"
+printf 'pbp-release namespaces="pbp-release" %s\n' "$(cut -d' ' -f1,2 "$tmp/sshkey.pub")" > "$tmp/initrepo/allowed_signers"
+init() {
+    PBP_APT_KEY=$fpr PBP_SIGNING_KEY="$tmp/sshkey" PBP_R2_CREDENTIALS="$tmp/creds" \
+        PBP_R2_ENDPOINT="http://127.0.0.1:$port/bucket" PBP_APT_PROTO='=http' "$tmp/initrepo/packaging/apt-publish.sh" "$@"
+}
+rm -rf "$tmp/live"; mkdir -p "$tmp/live"
+init --init --dry-run >"$tmp/init.log" 2>&1 || { cat "$tmp/init.log"; fail "--init --dry-run failed"; }
+[ ! -e "$tmp/initrepo/packaging/apt/pbp-archive-keyring.asc" ] || fail "--init --dry-run wrote the key file"
+grep -q '^uploaded' "$tmp/init.log" && fail "--init --dry-run uploaded something"
+kept_rm "$tmp/init.log"
+init --init >"$tmp/init.log" 2>&1 || { cat "$tmp/init.log"; fail "--init failed"; }
+[ -s "$tmp/initrepo/packaging/apt/pbp-archive-keyring.asc" ] || fail "--init wrote no key file"
+if [ ! -s "$tmp/live/pbp-archive-keyring.gpg" ] || [ ! -s "$tmp/live/pbp-archive-keyring.gpg.sig" ]; then fail "--init uploaded no keyring or signature"; fi
+echo "PASS: --init --dry-run changes nothing; --init uploads and writes the key"

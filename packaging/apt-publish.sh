@@ -32,6 +32,7 @@
 #
 # --init exports the APT key's public half (packaging/apt/, to commit),
 # signs the binary keyring with the SSH release key, and uploads both.
+# With --dry-run it uploads nothing and writes nothing into packaging/.
 #
 # --local builds into DIR from DEB files, signed with the secret key in FILE
 # (a throwaway, in a temporary GNUPGHOME), adds the landing page, and
@@ -42,6 +43,8 @@
 # R2_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= and R2_BUCKET= lines (mode 0600);
 # PBP_SIGNING_KEY, the SSH release key for --init (default
 # ~/.ssh/pbp_signing). The credentials are never put on a command line.
+# PBP_R2_ENDPOINT replaces the R2 endpoint (with PBP_APT_PROTO's --proto),
+# for packaging/apt_roundtrip_test.sh's stand-in for R2.
 # PBP_APT_URL, PBP_APT_KEYRING, PBP_APT_PAGE and PBP_APT_PROTO override the
 # repository URL, the published key file, the landing page and curl's
 # --proto for the repository, for tests.
@@ -147,9 +150,9 @@ if ! $init && grep -q PLACEHOLDER "$keyring_asc" 2>/dev/null; then
 fi
 
 # r2_login reads the R2 credentials from their file (without running it)
-# into a curl config that only this run can read; only an upload and its
-# read-back call it.
-curlcfg="$work/curl.cfg" endpoint=""
+# into a curl config that only this run can read; only an upload, its
+# read-back and --first's look at the bucket call it.
+curlcfg="$work/curl.cfg" endpoint="" r2proto='=https'
 r2_login() {
     [ -z "$endpoint" ] || return 0
     creds=${PBP_R2_CREDENTIALS:?set PBP_R2_CREDENTIALS to the R2 credentials file}
@@ -158,6 +161,17 @@ r2_login() {
     if [ -z "$account" ] || [ -z "$bucket" ]; then die "$creds lacks R2_ACCOUNT_ID or R2_BUCKET"; fi
     (umask 077 && printf 'user = "%s:%s"\n' "$(cred R2_ACCESS_KEY_ID)" "$(cred R2_SECRET_ACCESS_KEY)" > "$curlcfg")
     endpoint="https://$account.r2.cloudflarestorage.com/$bucket"
+    if [ -n "${PBP_R2_ENDPOINT:-}" ]; then endpoint=$PBP_R2_ENDPOINT r2proto=$proto; fi
+}
+
+# r2_keys PREFIX prints how many keys (0 or 1) the bucket has under PREFIX.
+r2_keys() {
+    r2_login
+    curl -sS --fail --proto "$r2proto" -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -o "$work/list.xml" \
+        "$endpoint?list-type=2&max-keys=1&prefix=$(printf %s "$1" | sed 's#/#%2F#g')" || die "listing $1 in R2 failed"
+    n=$(sed -n 's/.*<KeyCount>\([0-9]*\)<\/KeyCount>.*/\1/p' "$work/list.xml")
+    [ -n "$n" ] || die "listing $1 in R2: no KeyCount in the reply"
+    echo "$n"
 }
 
 # put KEY FILE CACHE-CONTROL uploads FILE to R2 as KEY.
@@ -170,7 +184,7 @@ put() {
         *.html) ctype="text/html; charset=utf-8" ;;
         *) ctype=text/plain ;;
     esac
-    curl -sS --fail --proto =https -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -T "$2" \
+    curl -sS --fail --proto "$r2proto" -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -T "$2" \
         -H "Cache-Control: $3" -H "Content-Type: $ctype" "$endpoint/$1" -o /dev/null \
         || die "upload of $1 failed"
     echo "uploaded $1"
@@ -194,7 +208,7 @@ served_page() {
 # r2_get KEY FILE downloads KEY from R2 itself, past the CDN, into FILE.
 r2_get() {
     r2_login
-    curl -sS --fail --proto =https -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -o "$2" "$endpoint/$1" \
+    curl -sS --fail --proto "$r2proto" -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -o "$2" "$endpoint/$1" \
         || die "reading back $1 from R2 failed"
 }
 
@@ -238,10 +252,12 @@ if $page_only; then
 fi
 
 if $init; then
-    if ! $dry; then
-        put pbp-archive-keyring.gpg "$work/init/pbp-archive-keyring.gpg" no-cache
-        put pbp-archive-keyring.gpg.sig "$work/init/pbp-archive-keyring.gpg.sig" no-cache
+    if $dry; then
+        echo "dry run: the keyring and its signature verify; nothing uploaded, $keyring_asc not written"
+        exit 0
     fi
+    put pbp-archive-keyring.gpg "$work/init/pbp-archive-keyring.gpg" no-cache
+    put pbp-archive-keyring.gpg.sig "$work/init/pbp-archive-keyring.gpg.sig" no-cache
     mkdir -p "$(dirname "$keyring_asc")"
     cp "$work/init/pbp-archive-keyring.asc" "$keyring_asc"
     echo "wrote $keyring_asc: commit it; the key's fingerprint is $PBP_APT_KEY"
@@ -295,12 +311,17 @@ case "$status" in
         ;;
     404)
         $first || die "the live InRelease is not found (HTTP 404): pass --first only for an empty repository"
+        # A 404 can also come from a wrong domain or a cache in front of
+        # the bucket: --first starts an index only in an empty one.
+        [ "$(r2_keys dists/)" = 0 ] \
+            || die "the bucket already holds dists/ files, although the public InRelease is 404 (domain or cache?): not a first publish"
         ;;
     *) die "fetching the live InRelease: HTTP $status" ;;
 esac
 
 # shellcheck disable=SC2086 # the .deb paths, split on purpose
-build_index "$repo" $debs | tee "$work/added"
+build_index "$repo" $debs > "$work/added" || die "the index tool failed (above): nothing was signed or uploaded"
+cat "$work/added"
 sign_release "$repo" "$PBP_APT_KEY" "$kr"
 
 if $dry; then
@@ -325,13 +346,19 @@ for f in Release Release.gpg InRelease; do
     put "dists/$suite/$f" "$dists/$f" no-cache
 done
 
-# Read back over HTTPS.
+# Read back through the domain.
 curl -fsS --proto "$proto" -o "$work/back-InRelease" "$base_url/dists/$suite/InRelease" || die "reading back InRelease failed"
 cmp -s "$work/back-InRelease" "$dists/InRelease" || die "the served InRelease is not the one just uploaded (a cache?)"
 gpgv --quiet --keyring "$kr" "$work/back-InRelease" >/dev/null 2>&1 || die "the served InRelease does not verify"
 for key in $(cd "$repo" && find "dists/$suite/main" -path '*/by-hash' -prune -o -type f -name 'Packages*' -print); do
     curl -fsS --proto "$proto" -o "$work/back" "$base_url/$key" || die "reading back $key failed"
     [ "$(sha "$work/back")" = "$(sha "$repo/$key")" ] || die "the served $key differs from the upload"
+done
+# The by-hash files are what APT fetches (Acquire-By-Hash): each must be
+# served with the hash it is named after.
+for key in $(cd "$repo" && find "dists/$suite" -path '*/by-hash/SHA256/*' -type f); do
+    curl -fsS --proto "$proto" -o "$work/back" "$base_url/$key" || die "reading back $key failed"
+    [ "$(sha "$work/back")" = "${key##*/}" ] || die "the served $key does not match its hash"
 done
 while read -r f; do
     key=$(cd "$repo" && find pool -name "$f")
