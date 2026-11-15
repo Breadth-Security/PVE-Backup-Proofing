@@ -152,6 +152,38 @@ grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log"
 kept_rm "$tmp/page.log"
 echo "PASS: the landing page is compared with the live one; --page works alone"
 
+# A CDN's markup right before </body> (Cloudflare's bot detection adds a
+# script there) still counts as the page, at /index.html and at the root;
+# markup anywhere else does not.
+sed 's#^</body>$#<script>(function(){cdn()})();</script></body>#' "$live_page" > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a page with CDN markup failed"; }
+grep -q "^landing page is current$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: CDN markup before </body> made the page differ"; }
+grep -q "warning" "$tmp/page.log" && { cat "$tmp/page.log"; fail "--page: CDN markup before </body> made the root warn"; }
+kept_rm "$tmp/page.log"
+sed 's#^<body>$#<body><script>cdn()</script>#' "$live_page" > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a page with markup after <body> failed"; }
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: markup elsewhere than before </body> was accepted"; }
+kept_rm "$tmp/page.log"
+differs() { # $1: what the served page is, for the message
+    live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on $1 failed"; }
+    grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: $1 was taken as current"; }
+    kept_rm "$tmp/page.log"
+}
+{ cat "$live_page"; printf '<p>extra</p>\n'; } > "$tmp/live/index.html"
+differs "a page with markup after </html>"
+# An older page with one more line before </body> (a footer since removed).
+sed 's#^</body>$#<p>old footer</p>\n<script>cdn()</script></body>#' "$live_page" > "$tmp/live/index.html"
+differs "an older page with an extra line before </body>"
+sed 's#^</body>$#<p>old footer</p></body>#' "$live_page" > "$tmp/live/index.html"
+differs "a page with non-script markup before </body>"
+sed 's#^</body>$#<script>cdn()</script></body><p>after</p>#' "$live_page" > "$tmp/live/index.html"
+differs "a page with markup after </body>"
+grep -v '^</body>$' "$live_page" > "$tmp/live/index.html"
+differs "a page without </body>"
+: > "$tmp/live/index.html"
+differs "an empty page"
+echo "PASS: CDN markup right before </body> is tolerated, nowhere else"
+
 # --page refuses every other mode, before doing any of their work.
 for combo in "v0.10.0" "--init" "--first" "--local $tmp/x --key-file $tmp/key.asc" "--key-file $tmp/key.asc"; do
     rc=0
