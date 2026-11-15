@@ -201,7 +201,7 @@ func (n *ExistingNode) Restore(ctx context.Context, b model.Backup, vmid int, or
 	if kind == model.KindLXC {
 		m, bind, err := sanitize.RestoreMounts(orig, n.store)
 		if err != nil {
-			return notStarted{fmt.Errorf("restore %s without its bind mounts: %w", b.VolID, err)}
+			return notStarted{fmt.Errorf("the backup's config cannot be restored without its bind mounts: %w", err)}
 		}
 		if len(bind) > 0 {
 			if err := n.mayRestoreWithoutBindMounts(ctx, vmid, bind); err != nil {

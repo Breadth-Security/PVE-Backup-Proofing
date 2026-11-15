@@ -77,7 +77,7 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 		case kind == model.KindLXC && reDev.MatchString(k):
 			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 		case kind == model.KindLXC && reMP.MatchString(k):
-			if strings.HasPrefix(firstField(v), "/") {
+			if hostPathMount(v) {
 				path, _ := optValue(v, "mp")
 				p.remove(k, model.MissingPiece{Kind: "bind-mount", Key: k, Path: path})
 			}

@@ -429,6 +429,13 @@ func TestRestoreLXCBindMount(t *testing.T) {
 		t.Fatal("a refused restore created a guest")
 	}
 	mounts := map[string]string{"rootfs": "scratch:8", "mp1": "scratch:1,mp=/data"}
+	// Like PVE: explicit mount points need VM.Config.Disk on the guest.
+	_, err = f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", mounts)
+	var ae *pve.APIError
+	if !errors.As(err, &ae) || ae.Status != 403 || !strings.Contains(err.Error(), "Permission check failed (/vms/9200, VM.Config.Disk)") {
+		t.Fatalf("restore without VM.Config.Disk: err %v", err)
+	}
+	f.Privs = map[string][]string{"/vms/9200": {"VM.Config.Disk"}}
 	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", mounts); err != nil {
 		t.Fatal(err)
 	}
@@ -444,5 +451,57 @@ func TestRestoreLXCBindMount(t *testing.T) {
 	}
 	if calls := f.CallLog(); !slices.Contains(calls, "Restore pve1 lxc 9200 "+ctVol+" scratch map[mp1:scratch:1,mp=/data rootfs:scratch:8]") {
 		t.Errorf("calls %q", calls)
+	}
+}
+
+// The fake refuses what PVE refuses in an explicit-mount restore, so a
+// malformed request from PBP fails the tests instead of passing them.
+func TestRestoreLXCMountsValidated(t *testing.T) {
+	ctx := context.Background()
+	const ctVol = "PBS:backup/ct/129/2026-11-14T02:00:00Z"
+	for _, tc := range []struct {
+		name   string
+		mounts map[string]string
+		want   string
+	}{
+		{"no rootfs", map[string]string{"mp1": "scratch:1,mp=/data"}, "'rootfs' not set"},
+		{"host path", map[string]string{"rootfs": "scratch:8", "mp0": "/nfs/music,mp=/nfs/music"}, "only root can pass arbitrary filesystem paths"},
+		{"not a new allocation", map[string]string{"rootfs": "scratch:8G"}, "not a new allocation"},
+		{"no mount path", map[string]string{"rootfs": "scratch:8", "mp1": "scratch:1"}, "mp1 has no mp="},
+		{"other key", map[string]string{"rootfs": "scratch:8", "net0": "name=eth0"}, "net0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := New()
+			f.BackupConfigs[ctVol] = "rootfs: local-zfs:subvol-129-disk-0,size=8G\nmp0: /nfs/music,mp=/nfs/music\n"
+			f.Privs = map[string][]string{"/vms/9200": {"VM.Config.Disk"}}
+			_, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", tc.mounts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	// Datastore.AllocateSpace on the storage, too.
+	f := New()
+	f.BackupConfigs[ctVol] = "rootfs: local-zfs:subvol-129-disk-0,size=8G\nmp0: /nfs/music,mp=/nfs/music\n"
+	f.Privs = map[string][]string{"/vms/9200": {"VM.Config.Disk"}, "/storage/scratch": {}}
+	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", map[string]string{"rootfs": "scratch:8"}); err == nil ||
+		!strings.Contains(err.Error(), "Permission check failed (/storage/scratch, Datastore.AllocateSpace)") {
+		t.Errorf("without Datastore.AllocateSpace: err %v", err)
+	}
+	// Disks are numbered in mount point order (mp2 before mp10), and sizes
+	// read as PVE writes them.
+	f = New()
+	f.BackupConfigs[ctVol] = "rootfs: local-zfs:subvol-129-disk-0,size=8G\nmp0: volume=/nfs/music,mp=/nfs/music\n"
+	f.Privs = map[string][]string{"/vms/9200": {"VM.Config.Disk"}}
+	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", nil); err == nil {
+		t.Error("a volume= bind mount restored without explicit mount points")
+	}
+	mounts := map[string]string{"rootfs": "scratch:8", "mp2": "scratch:0.5,mp=/a", "mp10": "scratch:0,mp=/b"}
+	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9200, ctVol, "scratch", mounts); err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.Configs[9200]
+	if cfg["mp2"] != "scratch:subvol-9200-disk-1,mp=/a,size=512M" || cfg["mp10"] != "scratch:subvol-9200-disk-2,mp=/b,size=0T" {
+		t.Errorf("mp2 %q mp10 %q", cfg["mp2"], cfg["mp10"])
 	}
 }

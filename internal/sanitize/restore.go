@@ -26,15 +26,12 @@ import (
 // A container without bind mounts gets nil, nil, nil: it is restored as
 // before, from the backup's own mount points.
 func RestoreMounts(orig map[string]string, storage string) (mounts map[string]string, bind []model.MissingPiece, err error) {
+	bind = BindMounts(orig)
 	var volumeKeys []string
 	for _, k := range mountKeys(orig) {
-		v := orig[k]
-		if hostPathMount(v) {
-			path, _ := optValue(v, "mp")
-			bind = append(bind, model.MissingPiece{Kind: "bind-mount", Key: k, Path: path})
-			continue
+		if !hostPathMount(orig[k]) {
+			volumeKeys = append(volumeKeys, k)
 		}
-		volumeKeys = append(volumeKeys, k)
 	}
 	if len(bind) == 0 {
 		return nil, nil, nil
@@ -51,6 +48,19 @@ func RestoreMounts(orig map[string]string, storage string) (mounts map[string]st
 		mounts[k] = v
 	}
 	return mounts, bind, nil
+}
+
+// BindMounts returns a container config's bind (and device) mount points,
+// in mount point order: the ones only root@pam may restore.
+func BindMounts(cfg map[string]string) []model.MissingPiece {
+	var out []model.MissingPiece
+	for _, k := range mountKeys(cfg) {
+		if v := cfg[k]; hostPathMount(v) {
+			path, _ := optValue(v, "mp")
+			out = append(out, model.MissingPiece{Kind: "bind-mount", Key: k, Path: path})
+		}
+	}
+	return out
 }
 
 // mountKeys returns orig's mpN keys in numeric order.
@@ -121,7 +131,9 @@ var reSize = regexp.MustCompile(`^(\d+(?:\.\d+)?)([KMGT]?)$`)
 
 // gibSize converts a PVE disk size (bytes, or K/M/G/T, binary) to the GiB
 // a new allocation takes (STORAGE:GiB): a plain decimal, rounded up to a
-// whole MiB, since PVE allocates int(GiB*1024) MiB.
+// whole MiB, since PVE allocates int(GiB*1024) MiB. Size 0 is an unlimited
+// subvolume (dir, ZFS, btrfs), which PVE's own restore passes as
+// STORAGE:0; so does this.
 func gibSize(size string) (string, error) {
 	m := reSize.FindStringSubmatch(size)
 	if m == nil {
@@ -130,6 +142,9 @@ func gibSize(size string) (string, error) {
 	n, err := strconv.ParseFloat(m[1], 64)
 	if err != nil {
 		return "", fmt.Errorf("size %q: %w", size, err)
+	}
+	if n == 0 {
+		return "0", nil
 	}
 	exp := map[string]float64{"": 0, "K": 1, "M": 2, "G": 3, "T": 4}[m[2]]
 	mib := math.Ceil(n * math.Pow(1024, exp) / (1 << 20))

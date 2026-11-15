@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -67,6 +68,13 @@ func (c *Client) Guests(ctx context.Context) ([]GuestRef, error) {
 
 // Restore starts restoring a backup into a new guest and returns the task UPID.
 func (c *Client) Restore(ctx context.Context, node string, kind model.GuestKind, vmid int, volid, storage string, mounts map[string]string) (string, error) {
+	// Only rootfs and mpN, each a storage volume: a host path is
+	// root@pam's to pass, and PBP never sends one (issue #129).
+	for k, v := range mounts {
+		if kind != model.KindLXC || (k != "rootfs" && !reMountKey.MatchString(k)) || strings.HasPrefix(v, "/") || strings.Contains(v, "volume=/") {
+			return "", fmt.Errorf("restore %s: refusing mount point %s=%q", volid, k, v)
+		}
+	}
 	// onboot=0 overrides the backup's own value from the first moment the
 	// copy exists: until it is sanitized it still has its production NICs,
 	// and a node reboot must never autostart it (accepted for both kinds).
@@ -231,3 +239,5 @@ func (c *Client) AgentExecStatus(ctx context.Context, node string, vmid, pid int
 	}
 	return AgentExecStatus{Exited: bool(r.Exited), ExitCode: int(r.ExitCode), OutData: r.OutData, ErrData: r.ErrData}, nil
 }
+
+var reMountKey = regexp.MustCompile(`^mp\d+$`)

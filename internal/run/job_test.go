@@ -1040,6 +1040,27 @@ func TestRestoreNeedsGrantReason(t *testing.T) {
 	if res.Verdict != model.Error || res.Reason != reason {
 		t.Errorf("verdict %s reason %q\nwant ERROR %q", res.Verdict, res.Reason, reason)
 	}
+	if strings.Contains(f.logBuf.String(), "restored without") {
+		t.Errorf("logged a restore that did not happen:\n%s", f.logBuf)
+	}
+}
+
+// Many bind mounts: the reason lists a few and counts the rest, so the
+// grant and the docs pointer stay within the notes line.
+func TestRestoreNeedsGrantReasonManyMounts(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	conf := "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\n"
+	for i := 0; i < 15; i++ {
+		conf += fmt.Sprintf("mp%d: /srv/share%d,mp=/mnt/share%d\n", i, i, i)
+	}
+	f.api.BackupConfigs[volid] = conf
+	f.tgt.RestoreErr = map[int]error{tmpVMID: notStartedErr{fmt.Errorf("%w: many", target.ErrNeedsGrant)}}
+	res := f.run(context.Background())
+	want := "restore without bind mounts mp0, mp1, mp2 and 12 more: PBP's token lacks VM.Config.Disk (docs/security.md#guests-pbp-cannot-proof)"
+	if res.Reason != want {
+		t.Errorf("reason %q\nwant %q", res.Reason, want)
+	}
 }
 
 // A container with bind mounts is restored without them, and the run log
@@ -1050,7 +1071,7 @@ func TestRestoreWithoutBindMountsLogged(t *testing.T) {
 	f.api.BackupConfigs[volid] = "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\n" +
 		"mp0: /srv/share,mp=/mnt/share\nmp1: s:subvol-101-disk-1,mp=/data,backup=1,size=1G\nmp2: /dev/sdb1,mp=/mnt/disk\n"
 	f.run(context.Background())
-	want := "restoring without its bind mounts mp0 (/mnt/share), mp2 (/mnt/disk): only root@pam can restore them, and the backup does not hold them"
+	want := "restored without its bind mounts mp0 (/mnt/share), mp2 (/mnt/disk): only root@pam can restore them, and the backup does not hold them"
 	if !strings.Contains(f.logBuf.String(), want) {
 		t.Errorf("log lacks %q:\n%s", want, f.logBuf)
 	}

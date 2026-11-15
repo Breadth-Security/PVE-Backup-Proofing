@@ -451,3 +451,12 @@ func TestEnableAgentReadsAsOn(t *testing.T) {
 		}
 	}
 }
+
+// A bind mount written in the volume= form is still a bind mount: the
+// restored config's safety net removes it like the positional form.
+func TestSanitizeBindMountVolumeForm(t *testing.T) {
+	p := Sanitize(model.KindLXC, map[string]string{"mp0": "mp=/x,volume=/host/path"}, "vmbr99")
+	if !slices.Contains(p.Delete, "mp0") {
+		t.Errorf("mp0 not removed: %+v", p)
+	}
+}

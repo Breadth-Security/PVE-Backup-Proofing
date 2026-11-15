@@ -170,15 +170,11 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 	j.restoreTried = true
-	// A container's bind mounts are root@pam's alone to restore: the copy
-	// is restored without them (issue #129), and the log says which.
+	// A container's bind mounts are root@pam's alone to restore: the target
+	// restores the copy without them (issue #129).
 	var bind []model.MissingPiece
 	if kind == model.KindLXC {
-		_, bind, _ = sanitize.RestoreMounts(j.orig, d.Cfg.Restore.Storage)
-		if len(bind) > 0 {
-			j.log.Info("restoring without its bind mounts " + pieceList(bind, true) +
-				": only root@pam can restore them, and the backup does not hold them")
-		}
+		bind = sanitize.BindMounts(j.orig)
 	}
 	j.log.Info(fmt.Sprintf("restore to %d …", j.vmid))
 	t0 := d.Now()
@@ -199,7 +195,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		// (stage restored) makes it PBP's, and teardown removes it.
 		switch priv, ok := permissionDenied(err); {
 		case errors.Is(err, target.ErrNeedsGrant) && len(bind) > 0:
-			fail(model.Error, "%s", lacksPrivilege("restore without bind mounts "+pieceList(bind, false), "VM.Config.Disk"))
+			fail(model.Error, "%s", lacksPrivilege("restore without bind mounts "+keyList(bind, 3), "VM.Config.Disk"))
 		case ok:
 			fail(model.Error, "%s", lacksPrivilege("restore refused", priv))
 		default:
@@ -208,6 +204,10 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 	j.log.Info("restore done in " + report.Dur(res.RestoreDuration))
+	if len(bind) > 0 {
+		j.log.Info("restored without its bind mounts " + pieceList(bind) +
+			": only root@pam can restore them, and the backup does not hold them")
+	}
 
 	guest := j.originalIdentity()
 	// checks.guests may turn the agent on for a VM copy whose backup has it
@@ -384,17 +384,27 @@ func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
 	return out
 }
 
-// pieceList lists mount points as "mp0, mp1", or with their paths as
-// "mp0 (/a), mp1 (/b)".
-func pieceList(pieces []model.MissingPiece, paths bool) string {
+// pieceList lists mount points with their paths: "mp0 (/a), mp1 (/b)".
+func pieceList(pieces []model.MissingPiece) string {
 	out := make([]string, len(pieces))
 	for i, p := range pieces {
-		out[i] = p.Key
-		if paths {
-			out[i] += " (" + p.Path + ")"
-		}
+		out[i] = p.Key + " (" + p.Path + ")"
 	}
 	return strings.Join(out, ", ")
+}
+
+// keyList lists the keys of pieces, at most max of them and a count of
+// the rest ("mp0, mp1, mp2 and 12 more"), for a reason that must fit the
+// notes line.
+func keyList(pieces []model.MissingPiece, max int) string {
+	var keys []string
+	for i, p := range pieces {
+		if i == max {
+			return strings.Join(keys, ", ") + fmt.Sprintf(" and %d more", len(pieces)-max)
+		}
+		keys = append(keys, p.Key)
+	}
+	return strings.Join(keys, ", ")
 }
 
 // originalIdentity is the guest's name and tags from the config stored in

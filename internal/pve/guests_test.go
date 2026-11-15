@@ -92,6 +92,24 @@ func TestRestoreLXCMounts(t *testing.T) {
 	}
 }
 
+// Only rootfs and mpN, never a host path, reach the restore: PVE would
+// refuse a host path for the token anyway (defence in depth).
+func TestRestoreLXCMountsRefused(t *testing.T) {
+	for _, mounts := range []map[string]string{
+		{"rootfs": "scratch:8", "hookscript": "local:snippets/x"},
+		{"rootfs": "scratch:8", "mp0": "/srv/share,mp=/mnt/share"},
+		{"rootfs": "/dev/sdb1"},
+	} {
+		c, got := capture(t, `{"data":"UPID:pve1:3:vzrestore"}`)
+		if _, err := c.Restore(context.Background(), "pve1", model.KindLXC, 9101, "PBS:backup/ct/101/x", "scratch", mounts); err == nil {
+			t.Errorf("%v: no error", mounts)
+		}
+		if got.method != "" {
+			t.Errorf("%v: request sent: %+v", mounts, got)
+		}
+	}
+}
+
 func TestGuestConfigStringifies(t *testing.T) {
 	c, got := capture(t, `{"data":{"cores":4,"memory":"16500","onboot":1,"digest":"zzz","template":true}}`)
 	cfg, err := c.GuestConfig(context.Background(), "pve1", model.KindQEMU, 100)

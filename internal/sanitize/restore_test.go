@@ -88,7 +88,6 @@ func TestRestoreMountsErrors(t *testing.T) {
 		{"rootfs without size", map[string]string{"rootfs": "s:vm-1-disk-0", "mp0": bindOnly}, "rootfs has no size"},
 		{"mount point without size", map[string]string{"rootfs": "s:d,size=1G", "mp0": bindOnly, "mp1": "s:d1,mp=/a"}, "mp1 has no size"},
 		{"bad size", map[string]string{"rootfs": "s:d,size=1X", "mp0": bindOnly}, `rootfs: size "1X"`},
-		{"zero size", map[string]string{"rootfs": "s:d,size=0", "mp0": bindOnly}, `rootfs: size "0"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := RestoreMounts(tc.cfg, "s")
@@ -107,15 +106,33 @@ func TestGiBSize(t *testing.T) {
 		"8G": "8", "512M": "0.5", "8.5G": "8.5", "1T": "1024", "1.5T": "1536",
 		"1048576": "0.0009765625", "1": "0.0009765625", "1025K": "0.001953125",
 		"100M": "0.09765625", "0.1G": "0.1005859375",
+		// size 0 is an unlimited subvolume (dir, ZFS, btrfs): PVE's own
+		// restore passes STORAGE:0 for it, and so does PBP.
+		"0": "0", "0T": "0", "0.0G": "0",
 	} {
 		got, err := gibSize(in)
 		if err != nil || got != want {
 			t.Errorf("gibSize(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", "G", "1X", "-1G", "1e3", "0", "0M", "1.G"} {
+	for _, bad := range []string{"", "G", "1X", "-1G", "1e3", "1.G"} {
 		if got, err := gibSize(bad); err == nil {
 			t.Errorf("gibSize(%q) = %q, want an error", bad, got)
 		}
+	}
+}
+
+func TestRestoreMountsUnlimitedSubvol(t *testing.T) {
+	mounts, _, err := RestoreMounts(map[string]string{"rootfs": "local:101/subvol-101-disk-0.subvol,size=0T", "mp0": "/x,mp=/x"}, "s")
+	if err != nil || mounts["rootfs"] != "s:0" {
+		t.Errorf("mounts %v, err %v; want rootfs s:0", mounts, err)
+	}
+}
+
+func TestBindMounts(t *testing.T) {
+	got := BindMounts(map[string]string{"mp10": "/b,mp=/b", "mp2": "volume=/a,mp=/a", "mp1": "s:v,mp=/v,size=1G", "rootfs": "s:r"})
+	want := []model.MissingPiece{{Kind: "bind-mount", Key: "mp2", Path: "/a"}, {Kind: "bind-mount", Key: "mp10", Path: "/b"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }

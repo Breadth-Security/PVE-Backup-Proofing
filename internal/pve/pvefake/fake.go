@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -326,12 +327,15 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	cfg := parseConfig(raw)
 	if kind == model.KindLXC {
 		if mounts == nil {
-			for _, k := range sortedKeys(cfg) {
-				if strings.HasPrefix(k, "mp") && strings.HasPrefix(cfg[k], "/") {
+			for _, k := range mountKeys(cfg) {
+				if fakeHostPath(cfg[k]) {
 					return "", fmt.Errorf("unable to restore CT %d - restoring '%s' to bind mount is only possible for root", vmid, k)
 				}
 			}
 		} else {
+			if err := f.checkMounts(node, vmid, mounts); err != nil {
+				return "", err
+			}
 			explicitMounts(cfg, mounts, vmid)
 		}
 	}
@@ -624,25 +628,66 @@ func (f *Fake) Privileges(ctx context.Context, path string) (map[string]bool, er
 	return out, nil
 }
 
+// checkMounts refuses, as PVE does, an explicit-mount restore that is
+// malformed or that the token may not make: rootfs missing, a key other
+// than rootfs/mpN, a host path (root@pam's), a value that is not a new
+// allocation (STORAGE:GiB), an mpN without mp=, or a missing
+// VM.Config.Disk on the guest or Datastore.AllocateSpace on a storage. The
+// fake is locked.
+func (f *Fake) checkMounts(node string, vmid int, mounts map[string]string) error {
+	if _, ok := mounts["rootfs"]; !ok {
+		return fmt.Errorf("mount points configured, but 'rootfs' not set")
+	}
+	path := fmt.Sprintf("/vms/%d", vmid)
+	if !f.hasPriv(path, "VM.Config.Disk") {
+		return &pve.APIError{Status: 403, Path: "/nodes/" + node + "/lxc", Message: "Permission check failed (" + path + ", VM.Config.Disk)"}
+	}
+	for _, k := range sortedKeys(mounts) {
+		v := mounts[k]
+		if k != "rootfs" && !reMountKey.MatchString(k) {
+			return fmt.Errorf("fake: unexpected restore parameter %s", k)
+		}
+		if fakeHostPath(v) {
+			return fmt.Errorf("only root can pass arbitrary filesystem paths: %s", k)
+		}
+		alloc, opts, _ := strings.Cut(v, ",")
+		m := reNewDisk.FindStringSubmatch(alloc)
+		if m == nil {
+			return fmt.Errorf("fake: %s=%q is not a new allocation", k, v)
+		}
+		if k != "rootfs" {
+			if _, ok := optValueOf(opts, "mp"); !ok {
+				return fmt.Errorf("fake: %s has no mp=", k)
+			}
+		}
+		if sp := "/storage/" + m[1]; !f.hasPriv(sp, "Datastore.AllocateSpace") {
+			return &pve.APIError{Status: 403, Path: "/nodes/" + node + "/lxc", Message: "Permission check failed (" + sp + ", Datastore.AllocateSpace)"}
+		}
+	}
+	return nil
+}
+
+// hasPriv reports whether the token holds priv on path (see Privs). The
+// fake is locked.
+func (f *Fake) hasPriv(path, priv string) bool {
+	granted, listed := f.Privs[path]
+	if !listed {
+		granted = privs.RolePrivs
+	}
+	return slices.Contains(granted, priv)
+}
+
 // explicitMounts replaces cfg's rootfs and mpN with mounts, each a new
 // volume ("STORAGE:GiB,opts" becomes "STORAGE:subvol-VMID-disk-N,opts,
-// size=GiBG"), numbered rootfs first; the backup's own are never used.
+// size=…" as PVE writes it), numbered rootfs first, then in mount point
+// order; the backup's own are never used.
 func explicitMounts(cfg, mounts map[string]string, vmid int) {
 	for k := range cfg {
 		if k == "rootfs" || reMountKey.MatchString(k) {
 			delete(cfg, k)
 		}
 	}
-	keys := sortedKeys(mounts)
-	slices.SortStableFunc(keys, func(a, b string) int {
-		if a == "rootfs" {
-			return -1
-		}
-		if b == "rootfs" {
-			return 1
-		}
-		return 0
-	})
+	keys := append([]string{"rootfs"}, mountKeys(mounts)...)
 	for i, k := range keys {
 		alloc, opts, _ := strings.Cut(mounts[k], ",")
 		storage, gib, _ := strings.Cut(alloc, ":")
@@ -650,11 +695,60 @@ func explicitMounts(cfg, mounts map[string]string, vmid int) {
 		if opts != "" {
 			v += "," + opts
 		}
-		cfg[k] = v + ",size=" + gib + "G"
+		cfg[k] = v + ",size=" + pveSize(gib)
 	}
 }
 
-var reMountKey = regexp.MustCompile(`^mp\d+$`)
+// pveSize writes a GiB decimal as PVE writes a volume's size: whole GiB as
+// "8G", otherwise MiB ("512M"); 0 (unlimited) as "0T".
+func pveSize(gib string) string {
+	g, _ := strconv.ParseFloat(gib, 64)
+	mib := int(g * 1024)
+	switch {
+	case mib == 0:
+		return "0T"
+	case mib%1024 == 0:
+		return strconv.Itoa(mib/1024) + "G"
+	}
+	return strconv.Itoa(mib) + "M"
+}
+
+// mountKeys returns cfg's mpN keys in numeric order.
+func mountKeys(cfg map[string]string) []string {
+	var keys []string
+	for k := range cfg {
+		if reMountKey.MatchString(k) {
+			keys = append(keys, k)
+		}
+	}
+	slices.SortFunc(keys, func(a, b string) int {
+		x, _ := strconv.Atoi(a[2:])
+		y, _ := strconv.Atoi(b[2:])
+		return x - y
+	})
+	return keys
+}
+
+// fakeHostPath reports whether a mount point value is a host path, in the
+// positional or the volume= form.
+func fakeHostPath(v string) bool {
+	return strings.HasPrefix(v, "/") || strings.Contains(","+v, ",volume=/")
+}
+
+// optValueOf returns the value of key in comma-separated opts.
+func optValueOf(opts, key string) (string, bool) {
+	for _, f := range strings.Split(opts, ",") {
+		if k, v, ok := strings.Cut(f, "="); ok && k == key {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+var (
+	reMountKey = regexp.MustCompile(`^mp\d+$`)
+	reNewDisk  = regexp.MustCompile(`^([^:\s]+):(\d+(\.\d+)?)$`)
+)
 
 // sortedKeys returns m's keys, sorted.
 func sortedKeys(m map[string]string) []string {
