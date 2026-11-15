@@ -30,6 +30,8 @@ done
 
 "$repo_dir/packaging/apt-publish.sh" --local "$tmp/repo" --key-file "$tmp/key.asc" \
     "$tmp/pbp_0.0.1_amd64.deb" "$tmp/pbp_0.0.1_arm64.deb"
+cmp -s "$tmp/repo/index.html" "$repo_dir/packaging/apt/index.html" || fail "--local did not add the landing page"
+echo "PASS: --local adds the landing page"
 
 mkdir -p "$tmp/apt/state/lists/partial" "$tmp/apt/cache/archives/partial" "$tmp/apt/etc" "$tmp/dl"
 echo "deb [signed-by=$tmp/repo/pbp-archive-keyring.gpg] file://$tmp/repo stable main" > "$tmp/apt/etc/sources.list"
@@ -101,14 +103,21 @@ python3 -m http.server --bind 127.0.0.1 --directory "$tmp/live" "$port" >/dev/nu
 server=$!
 trap 'kill "$server" 2>/dev/null; rm -rf "$tmp"' EXIT
 sleep 1
+# The landing page with the throwaway key's fingerprint, as the script
+# requires the page to name the key it publishes with.
+sed "s/\(id=\"fingerprint\">\)[^<]*/\1$fpr/" "$repo_dir/packaging/apt/index.html" > "$tmp/page.html"
+live_page="$tmp/page.html"
 live() {
     PBP_APT_PROTO='=http' PBP_APT_URL="http://127.0.0.1:$port" PBP_APT_KEY=$fpr PBP_APT_KEYRING="$tmp/pub.asc" \
-        "$repo_dir/packaging/apt-publish.sh" "$@"
+        PBP_APT_PAGE="$live_page" "$repo_dir/packaging/apt-publish.sh" "$@"
 }
+# kept_rm removes the work directory a dry run kept, named in log $1.
+kept_rm() { d=$(sed -n 's/^work directory kept: //p' "$1"); [ -z "$d" ] || rm -rf "$d"; }
 
 # An empty repository without --first is an error, not a first publish.
 if live --dry-run v0.10.0 >"$tmp/empty.log" 2>&1; then cat "$tmp/empty.log"; fail "an empty repository was taken as new without --first"; fi
 grep -q "not found (HTTP 404): pass --first" "$tmp/empty.log" || { cat "$tmp/empty.log"; fail "empty repository: wrong failure"; }
+kept_rm "$tmp/empty.log"
 echo "PASS: a missing InRelease without --first stops the publish"
 
 # An upload interrupted after Packages and before InRelease: the live
@@ -116,6 +125,7 @@ echo "PASS: a missing InRelease without --first stops the publish"
 # because it reads the index by hash, which never changes. A dry run needs
 # no R2 credentials and leaves none on disk.
 rm -rf "$tmp/live"; cp -a "$tmp/repo.orig" "$tmp/live"
+cp "$live_page" "$tmp/live/index.html"
 printf 'Package: pbp\nVersion: 9.9.9\n' >> "$tmp/live/dists/stable/main/binary-amd64/Packages"
 if ! live --dry-run v0.10.0 >"$tmp/resume.log" 2>&1; then cat "$tmp/resume.log"; fail "a publish after an interrupted upload failed"; fi
 grep -q "dry run: nothing uploaded" "$tmp/resume.log" || { cat "$tmp/resume.log"; fail "dry run did not finish"; }
@@ -126,3 +136,41 @@ grep -q '^Version: 0.0.1$' "$kept/repo/dists/stable/main/binary-amd64/Packages" 
 grep -q '^Version: 9.9.9$' "$kept/repo/dists/stable/main/binary-amd64/Packages" && fail "the rebuilt index took the half-uploaded Packages"
 rm -rf "$kept"
 echo "PASS: a publish after an interrupted upload reads the index by hash; a dry run keeps no credentials"
+
+# The landing page: a publish compares it with the live one, and --page
+# handles it alone. Dry runs only: an upload needs R2.
+grep -q "^landing page is current$" "$tmp/resume.log" || { cat "$tmp/resume.log"; fail "publish: the live landing page was not found current"; }
+grep -q "warning" "$tmp/resume.log" && { cat "$tmp/resume.log"; fail "publish: the root serves the page, yet it warned"; }
+rm "$tmp/live/index.html"
+if ! live --page --dry-run >"$tmp/page.log" 2>&1; then cat "$tmp/page.log"; fail "--page --dry-run failed"; fi
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: a missing live page was not reported"; }
+grep -q '^uploaded' "$tmp/page.log" && fail "--page --dry-run uploaded something"
+kept_rm "$tmp/page.log"
+printf 'stale page\n' > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a stale page failed"; }
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: a stale live page was not reported"; }
+kept_rm "$tmp/page.log"
+echo "PASS: the landing page is compared with the live one; --page works alone"
+
+# --page refuses every other mode, before doing any of their work.
+for combo in "v0.10.0" "--init" "--first" "--local $tmp/x --key-file $tmp/key.asc" "--key-file $tmp/key.asc"; do
+    rc=0
+    # shellcheck disable=SC2086 # the options, split on purpose
+    live --page $combo >"$tmp/combo.log" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || { cat "$tmp/combo.log"; fail "--page $combo: exit $rc, want 2 (usage)"; }
+done
+[ ! -e "$tmp/x" ] || fail "--page --local built a repository"
+echo "PASS: --page with another mode is a usage error"
+
+# A page that does not name the publishing key is never uploaded, and a
+# publish says that only the page failed.
+printf 'stale page\n' > "$tmp/live/index.html"
+live_page="$repo_dir/packaging/apt/index.html"
+if live --page --dry-run >"$tmp/badpage.log" 2>&1; then cat "$tmp/badpage.log"; fail "--page accepted a page with another key's fingerprint"; fi
+grep -q "fingerprint" "$tmp/badpage.log" || { cat "$tmp/badpage.log"; fail "--page: wrong failure for a wrong fingerprint"; }
+kept_rm "$tmp/badpage.log"
+if live --dry-run v0.10.0 >"$tmp/badpub.log" 2>&1; then cat "$tmp/badpub.log"; fail "a publish with a wrong page succeeded"; fi
+grep -q "only the landing page failed" "$tmp/badpub.log" || { cat "$tmp/badpub.log"; fail "publish: a page failure was not told apart"; }
+kept_rm "$tmp/badpub.log"
+live_page="$tmp/page.html"
+echo "PASS: a page with the wrong fingerprint is refused; a publish says only the page failed"
