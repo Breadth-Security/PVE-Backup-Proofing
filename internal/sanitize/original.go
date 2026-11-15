@@ -3,7 +3,6 @@ package sanitize
 import (
 	"regexp"
 	"sort"
-	"strings"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
@@ -11,9 +10,11 @@ import (
 var reDisk = regexp.MustCompile(`^(scsi|virtio|sata|ide)\d+$`)
 
 // MissingFromOriginal reports pieces the backup excludes, judged from the
-// original (live) config: qemu disks with backup=0, and storage-backed LXC
-// mount points without backup=1. Bind mounts are not reported here; Sanitize
-// reports them via Removed, so the two sets stay disjoint.
+// original (live) config: qemu disks with backup=0, storage-backed LXC
+// mount points without backup=1, and LXC bind (or device) mount points,
+// which the copy is restored without (RestoreMounts, issue #129). Sanitize
+// would report a bind mount still in the restored config too; the run
+// drops such duplicates.
 //
 // An unrecognised backup= value counts as excluded for both kinds: reporting
 // a piece that was in fact backed up is safer than claiming it was.
@@ -35,7 +36,11 @@ func MissingFromOriginal(kind model.GuestKind, original map[string]string) []mod
 				out = append(out, model.MissingPiece{Kind: "excluded-disk", Key: k, Detail: "backup=0"})
 			}
 		case kind == model.KindLXC && reMP.MatchString(k):
-			if strings.HasPrefix(firstField(v), "/") {
+			if hostPathMount(v) {
+				// PBP restores the copy without it (RestoreMounts, issue
+				// #129), so the restored config never shows it.
+				path, _ := optValue(v, "mp")
+				out = append(out, model.MissingPiece{Kind: "bind-mount", Key: k, Path: path})
 				continue
 			}
 			if !backupEnabled(v, false) {

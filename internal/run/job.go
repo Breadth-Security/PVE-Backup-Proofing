@@ -170,9 +170,15 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 	j.restoreTried = true
+	// A container's bind mounts are root@pam's alone to restore: the target
+	// restores the copy without them (issue #129).
+	var bind []model.MissingPiece
+	if kind == model.KindLXC {
+		bind = sanitize.BindMounts(j.orig)
+	}
 	j.log.Info(fmt.Sprintf("restore to %d …", j.vmid))
 	t0 := d.Now()
-	err = d.Target.Restore(ctx, b, j.vmid, j.orig["tags"])
+	err = d.Target.Restore(ctx, b, j.vmid, j.orig)
 	res.RestoreDuration = d.Now().Sub(t0)
 	if err != nil {
 		detail := j.stepFailed("restore", res.RestoreDuration, err)
@@ -187,14 +193,21 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		}
 		// Otherwise a guest may exist, untagged; the InFlight entry
 		// (stage restored) makes it PBP's, and teardown removes it.
-		if priv, ok := permissionDenied(err); ok {
+		switch priv, ok := permissionDenied(err); {
+		case errors.Is(err, target.ErrNeedsGrant) && len(bind) > 0:
+			fail(model.Error, "%s", lacksPrivilege("restore without bind mounts "+keyList(bind, 3), "VM.Config.Disk"))
+		case ok:
 			fail(model.Error, "%s", lacksPrivilege("restore refused", priv))
-		} else {
+		default:
 			fail(target.ClassifyRestoreError(err), "restore failed: %s", scrub(detail, j.vmid, j.b.Key.Label()))
 		}
 		return
 	}
 	j.log.Info("restore done in " + report.Dur(res.RestoreDuration))
+	if len(bind) > 0 {
+		j.log.Info("restored without its bind mounts " + pieceList(bind) +
+			": only root@pam can restore them, and the backup does not hold them")
+	}
 
 	guest := j.originalIdentity()
 	// checks.guests may turn the agent on for a VM copy whose backup has it
@@ -360,7 +373,38 @@ func (j *job) logProbe(r model.GuestResult, os probe.OSFamily) {
 // missingPieces is what the proof cannot cover: the pieces Sanitize removed,
 // then those the backup excludes, judged from its original config.
 func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
-	return append(slices.Clone(removed), sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig)...)
+	out := slices.Clone(removed)
+	for _, p := range sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig) {
+		// A bind mount is reported from the original; Sanitize reports it
+		// too when the copy still had it. Count it once.
+		if !slices.ContainsFunc(out, func(q model.MissingPiece) bool { return q.Kind == p.Kind && q.Key == p.Key }) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// pieceList lists mount points with their paths: "mp0 (/a), mp1 (/b)".
+func pieceList(pieces []model.MissingPiece) string {
+	out := make([]string, len(pieces))
+	for i, p := range pieces {
+		out[i] = p.Key + " (" + p.Path + ")"
+	}
+	return strings.Join(out, ", ")
+}
+
+// keyList lists the keys of pieces, at most max of them and a count of
+// the rest ("mp0, mp1, mp2 and 12 more"), for a reason that must fit the
+// notes line.
+func keyList(pieces []model.MissingPiece, max int) string {
+	var keys []string
+	for i, p := range pieces {
+		if i == max {
+			return strings.Join(keys, ", ") + fmt.Sprintf(" and %d more", len(pieces)-max)
+		}
+		keys = append(keys, p.Key)
+	}
+	return strings.Join(keys, ", ")
 }
 
 // originalIdentity is the guest's name and tags from the config stored in

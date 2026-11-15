@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -125,15 +126,15 @@ type recTarget struct {
 	onBoot func(ctx context.Context) error
 	// panicDestroy makes Destroy panic.
 	panicDestroy bool
-	// origTags and destroyRec are what Restore and Destroy were last given.
-	origTags   string
+	// orig and destroyRec are what Restore and Destroy were last given.
+	orig       map[string]string
 	destroyRec target.Recorded
 }
 
-func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error {
+func (t *recTarget) Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error {
 	t.rec.add(ctx, "Restore")
-	t.origTags = origTags
-	return t.Fake.Restore(ctx, b, vmid, origTags)
+	t.orig = orig
+	return t.Fake.Restore(ctx, b, vmid, orig)
 }
 
 func (t *recTarget) Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts target.SanitizeOpts) (target.Sanitized, error) {
@@ -261,8 +262,8 @@ func TestHappyPath(t *testing.T) {
 	if want := (target.Recorded{VolID: volid, Name: "db01"}); f.tgt.destroyRec != want {
 		t.Errorf("Destroy got %+v, want %+v", f.tgt.destroyRec, want)
 	}
-	if f.tgt.origTags != "prod;db" {
-		t.Errorf("Restore got tags %q", f.tgt.origTags)
+	if f.tgt.orig["tags"] != "prod;db" {
+		t.Errorf("Restore got tags %q", f.tgt.orig["tags"])
 	}
 	if f.protected() {
 		t.Error("backup left protected")
@@ -1016,5 +1017,78 @@ func TestNoNestingOnlyUnprivileged(t *testing.T) {
 		if got := noNesting(tc.kind, tc.cfg); got != tc.want {
 			t.Errorf("%s %v: %v, want %v", tc.kind, tc.cfg, got, tc.want)
 		}
+	}
+}
+
+// notStartedErr stands for the target's refusal before a restore: it
+// matches target.ErrRestoreNotStarted.
+type notStartedErr struct{ error }
+
+func (e notStartedErr) Is(t error) bool { return t == target.ErrRestoreNotStarted }
+func (e notStartedErr) Unwrap() error   { return e.error }
+
+// A container with bind mounts and a token without VM.Config.Disk (issue
+// #129): ERROR, with the target's reason as it is, and no restore tried.
+func TestRestoreNeedsGrantReason(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	f.api.BackupConfigs[volid] = "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\nmp0: /srv/share,mp=/mnt/share\n"
+	reason := "restore without bind mounts mp0: PBP's token lacks VM.Config.Disk (docs/security.md#guests-pbp-cannot-proof)"
+	f.tgt.RestoreErr = map[int]error{tmpVMID: notStartedErr{fmt.Errorf("%w: restoring this container without its bind mounts mp0 (/mnt/share), "+
+		"which only root@pam can restore, needs VM.Config.Disk (docs/security.md#guests-pbp-cannot-proof)", target.ErrNeedsGrant)}}
+	res := f.run(context.Background())
+	if res.Verdict != model.Error || res.Reason != reason {
+		t.Errorf("verdict %s reason %q\nwant ERROR %q", res.Verdict, res.Reason, reason)
+	}
+	if strings.Contains(f.logBuf.String(), "restored without") {
+		t.Errorf("logged a restore that did not happen:\n%s", f.logBuf)
+	}
+}
+
+// Many bind mounts: the reason lists a few and counts the rest, so the
+// grant and the docs pointer stay within the notes line.
+func TestRestoreNeedsGrantReasonManyMounts(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	conf := "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\n"
+	for i := 0; i < 15; i++ {
+		conf += fmt.Sprintf("mp%d: /srv/share%d,mp=/mnt/share%d\n", i, i, i)
+	}
+	f.api.BackupConfigs[volid] = conf
+	f.tgt.RestoreErr = map[int]error{tmpVMID: notStartedErr{fmt.Errorf("%w: many", target.ErrNeedsGrant)}}
+	res := f.run(context.Background())
+	want := "restore without bind mounts mp0, mp1, mp2 and 12 more: PBP's token lacks VM.Config.Disk (docs/security.md#guests-pbp-cannot-proof)"
+	if res.Reason != want {
+		t.Errorf("reason %q\nwant %q", res.Reason, want)
+	}
+}
+
+// A container with bind mounts is restored without them, and the run log
+// says which (issue #129).
+func TestRestoreWithoutBindMountsLogged(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	f.api.BackupConfigs[volid] = "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\n" +
+		"mp0: /srv/share,mp=/mnt/share\nmp1: s:subvol-101-disk-1,mp=/data,backup=1,size=1G\nmp2: /dev/sdb1,mp=/mnt/disk\n"
+	f.run(context.Background())
+	want := "restored without its bind mounts mp0 (/mnt/share), mp2 (/mnt/disk): only root@pam can restore them, and the backup does not hold them"
+	if !strings.Contains(f.logBuf.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, f.logBuf)
+	}
+}
+
+// A bind mount reported both from the original config and by Sanitize (a
+// copy that still had it) is not covered once, not twice.
+func TestMissingPiecesDeduplicated(t *testing.T) {
+	j := &job{b: model.Backup{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}},
+		orig: map[string]string{"mp0": "/srv/share,mp=/mnt/share", "mp1": "s:subvol-101-disk-1,mp=/x,size=1G"}}
+	got := j.missingPieces([]model.MissingPiece{{Kind: "bind-mount", Key: "mp0", Path: "/mnt/share"}, {Kind: "passthrough", Key: "dev0"}})
+	want := []model.MissingPiece{
+		{Kind: "bind-mount", Key: "mp0", Path: "/mnt/share"},
+		{Kind: "passthrough", Key: "dev0"},
+		{Kind: "excluded-mountpoint", Key: "mp1", Path: "/x", Detail: "backup not enabled"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
 	}
 }

@@ -19,6 +19,9 @@ import (
 var (
 	// ErrUnsafe: the restored guest cannot be made safe to start.
 	ErrUnsafe = errors.New("guest cannot be sanitized safely")
+	// ErrNeedsGrant: restoring this guest needs a privilege PBP's token
+	// lacks and that pbp node setup does not grant by default.
+	ErrNeedsGrant = errors.New("PBP's token lacks an optional privilege")
 	// ErrNoFreeVMID: every VMID in the reserved range is taken.
 	ErrNoFreeVMID = errors.New("no free VMID in range")
 	// ErrNotIsolated: the configured bridge has uplinks or addresses.
@@ -127,10 +130,11 @@ type Target interface {
 	// is not in inUse, or ErrNoFreeVMID.
 	AllocateVMID(ctx context.Context, inUse map[int]bool) (int, error)
 	// Restore restores b into vmid (not started) and tags it "pbp", keeping
-	// origTags (the "tags" of the config stored in the backup). An error
+	// the tags of orig (the config stored in the backup). A container whose
+	// orig has bind mounts is restored without them (issue #129). An error
 	// matching ErrRestoreNotStarted means no guest was created; any other
 	// error may have left one.
-	Restore(ctx context.Context, b model.Backup, vmid int, origTags string) error
+	Restore(ctx context.Context, b model.Backup, vmid int, orig map[string]string) error
 	// Sanitize makes the restored guest safe to start and verifies it. It
 	// returns the pieces it removed, which the proof cannot cover.
 	Sanitize(ctx context.Context, kind model.GuestKind, vmid int, opts SanitizeOpts) (Sanitized, error)

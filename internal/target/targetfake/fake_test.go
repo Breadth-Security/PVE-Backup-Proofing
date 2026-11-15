@@ -26,7 +26,7 @@ func TestScriptedLifecycle(t *testing.T) {
 		t.Fatalf("allocate = %d, %v (990000 is a leftover owned guest)", v, err)
 	}
 	b := model.Backup{VolID: "vol", Key: model.GuestKey{Kind: model.KindQEMU, VMID: 101}}
-	if err := f.Restore(ctx, b, v, ""); err != nil {
+	if err := f.Restore(ctx, b, v, nil); err != nil {
 		t.Fatal(err)
 	}
 	if bi, _ := f.WaitBooted(ctx, model.KindQEMU, v, 0); bi.OS != probe.Linux {
@@ -62,7 +62,7 @@ func TestScriptedLifecycle(t *testing.T) {
 
 func TestZeroValueRestore(t *testing.T) {
 	f := &Fake{Range: [2]int{1, 1}}
-	if err := f.Restore(context.Background(), model.Backup{}, 1, ""); err != nil {
+	if err := f.Restore(context.Background(), model.Backup{}, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -90,7 +90,7 @@ func TestContracts(t *testing.T) {
 		f := New(990000, 990002)
 		const out = 101
 		checks := map[string]error{
-			"Restore":          f.Restore(ctx, b, out, ""),
+			"Restore":          f.Restore(ctx, b, out, nil),
 			"Start":            f.Start(ctx, model.KindQEMU, out),
 			"Destroy":          f.Destroy(ctx, model.KindQEMU, out, target.Recorded{}),
 			"Destroy recorded": f.Destroy(ctx, model.KindQEMU, out, target.Recorded{VolID: "vol"}),
@@ -113,7 +113,7 @@ func TestContracts(t *testing.T) {
 
 	t.Run("start needs a successful sanitize", func(t *testing.T) {
 		f := New(990000, 990002)
-		if err := f.Restore(ctx, b, 990000, ""); err != nil {
+		if err := f.Restore(ctx, b, 990000, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.Start(ctx, model.KindQEMU, 990000); err == nil {
@@ -139,7 +139,7 @@ func TestContracts(t *testing.T) {
 		f := New(990000, 990002)
 		f.RestoreErr = map[int]error{990000: errors.New("task failed")}
 		f.RestoreLeaves = map[int]bool{990000: true}
-		if err := f.Restore(ctx, b, 990000, ""); err == nil {
+		if err := f.Restore(ctx, b, 990000, nil); err == nil {
 			t.Fatal("want restore error")
 		}
 		if _, ok := f.Live[990000]; !ok {
@@ -168,7 +168,7 @@ func TestContracts(t *testing.T) {
 	t.Run("taken VMID is not started", func(t *testing.T) {
 		f := New(990000, 990002)
 		f.OwnedGuests = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990000}}}
-		if err := f.Restore(ctx, b, 990000, ""); !errors.Is(err, target.ErrRestoreNotStarted) {
+		if err := f.Restore(ctx, b, 990000, nil); !errors.Is(err, target.ErrRestoreNotStarted) {
 			t.Errorf("Restore onto existing guest = %v, want ErrRestoreNotStarted", err)
 		}
 	})
