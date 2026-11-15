@@ -5,6 +5,7 @@
 #
 # usage: packaging/apt-publish.sh [--dry-run] [--first] TAG...
 #        packaging/apt-publish.sh --init
+#        packaging/apt-publish.sh [--dry-run] --page
 #        packaging/apt-publish.sh --local DIR --key-file FILE DEB...
 #
 # For each TAG (final releases only) it downloads the GitHub release's
@@ -18,14 +19,20 @@
 # and Release.gpg), and uploads to Cloudflare R2 in this order: the new
 # packages, the by-hash index files, Packages, and last Release, Release.gpg
 # and InRelease, so a client never sees an index before the files it names.
-# Last, it reads everything back over HTTPS and checks it. --dry-run stops
-# before the upload and keeps the work directory.
+# Last, it reads everything back over HTTPS and checks it, then publishes
+# the landing page as --page does. --dry-run stops before the upload and
+# keeps the work directory.
+#
+# --page publishes only the landing page (packaging/apt/index.html, served
+# at the domain's root through a Cloudflare rewrite of / to /index.html),
+# when it differs from the live one, so a fix to it needs no release.
 #
 # --init exports the APT key's public half (packaging/apt/, to commit),
 # signs the binary keyring with the SSH release key, and uploads both.
 #
 # --local builds into DIR from DEB files, signed with the secret key in FILE
-# (a throwaway, in a temporary GNUPGHOME), and uploads nothing: for
+# (a throwaway, in a temporary GNUPGHOME), adds the landing page, and
+# uploads nothing: for
 # packaging/apt_roundtrip_test.sh.
 #
 # Environment: PBP_APT_KEY, the APT signing key's fingerprint (in the
@@ -43,14 +50,16 @@ base_url=${PBP_APT_URL:-https://apt.breadthsecurity.com}
 proto=${PBP_APT_PROTO:-=https}
 gh=https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download
 keyring_asc=${PBP_APT_KEYRING:-$repo_dir/packaging/apt/pbp-archive-keyring.asc}
+page=$repo_dir/packaging/apt/index.html
 suite=stable
 
-dry=false first=false init=false local_dir="" key_file="" args=""
+dry=false first=false init=false page_only=false local_dir="" key_file="" args=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) dry=true ;;
         --first) first=true ;;
         --init) init=true ;;
+        --page) page_only=true ;;
         --local) local_dir=${2:?--local needs a directory}; shift ;;
         --key-file) key_file=${2:?--key-file needs a file}; shift ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
@@ -58,7 +67,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-usage() { sed -n '6,8p' "$0" | sed 's/^# //' >&2; exit 2; }
+usage() { sed -n '6,9p' "$0" | sed 's/^# //' >&2; exit 2; }
 die() { echo "apt-publish: $*" >&2; exit 1; }
 
 work=$(mktemp -d)
@@ -106,10 +115,13 @@ if [ -n "$local_dir" ]; then
     # shellcheck disable=SC2086 # the .deb paths, split on purpose
     build_index "$local_dir" $args
     sign_release "$local_dir" "$fpr" "$local_dir/pbp-archive-keyring.gpg"
+    cp "$page" "$local_dir/index.html"
     exit 0
 fi
 
-[ -n "${PBP_APT_KEY:-}" ] || die "set PBP_APT_KEY to the APT signing key's fingerprint"
+if ! $page_only; then
+    [ -n "${PBP_APT_KEY:-}" ] || die "set PBP_APT_KEY to the APT signing key's fingerprint"
+fi
 
 if $init; then
     [ -z "$args" ] || usage
@@ -123,7 +135,10 @@ if $init; then
         < "$work/init/pbp-archive-keyring.gpg" >/dev/null || die "the keyring's SSH signature does not verify with allowed_signers"
 fi
 
-[ -n "$args" ] || $init || usage
+if $page_only; then
+    if [ -n "$args" ] || $init || $first; then usage; fi
+fi
+[ -n "$args" ] || $init || $page_only || usage
 if ! $init && grep -q PLACEHOLDER "$keyring_asc" 2>/dev/null; then
     die "$keyring_asc is a placeholder: run packaging/apt-publish.sh --init first and commit the key"
 fi
@@ -148,6 +163,7 @@ put() {
         *.deb) ctype=application/vnd.debian.binary-package ;;
         *.gz) ctype=application/gzip ;;
         *.gpg) ctype=application/pgp-keys ;;
+        *.html) ctype="text/html; charset=utf-8" ;;
         *) ctype=text/plain ;;
     esac
     curl -sS --fail --proto =https -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -T "$2" \
@@ -156,6 +172,27 @@ put() {
     echo "uploaded $1"
 }
 immutable="public, max-age=31536000, immutable"
+
+# publish_page uploads the landing page when the live one differs (or is
+# missing), and reads it back; a dry run only reports.
+publish_page() {
+    pstatus=$(curl -sS --proto "$proto" -o "$work/live-index.html" -w '%{http_code}' "$base_url/index.html") \
+        || die "fetching the live landing page failed"
+    case "$pstatus" in
+        200) if cmp -s "$work/live-index.html" "$page"; then echo "landing page is current"; return 0; fi ;;
+        404) ;;
+        *) die "fetching the live landing page: HTTP $pstatus" ;;
+    esac
+    if $dry; then echo "landing page differs from the live one: would upload"; return 0; fi
+    put index.html "$page" "public, max-age=300"
+    curl -fsS --proto "$proto" -o "$work/back-index.html" "$base_url/index.html" || die "reading back index.html failed"
+    cmp -s "$work/back-index.html" "$page" || die "the served index.html differs from the upload (a cache?)"
+}
+
+if $page_only; then
+    publish_page
+    exit 0
+fi
 
 if $init; then
     if ! $dry; then
@@ -224,6 +261,7 @@ build_index "$repo" $debs | tee "$work/added"
 sign_release "$repo" "$PBP_APT_KEY" "$kr"
 
 if $dry; then
+    publish_page
     echo "dry run: nothing uploaded"
     exit 0
 fi
@@ -258,3 +296,4 @@ while read -r f; do
     [ "$(sha "$work/back")" = "$(sha "$repo/$key")" ] || die "the served $key differs from the upload"
 done < "$work/added-files"
 echo "published and verified:$args"
+publish_page

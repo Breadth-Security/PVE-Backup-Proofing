@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The APT repository's address now opens a page** (`https://apt.breadthsecurity.com`): what the repository is, the setup commands, the key's fingerprint and the upgrade cautions, with links to the docs. It used to answer 404. The page loads no scripts and nothing from elsewhere. For maintainers, `packaging/apt-publish.sh --page` publishes it alone, and every publish updates it when it changed.
+
 ## v0.11.0
 
 **Upgrade the daemon and the node helper together:** a 0.11 daemon and a 0.10 node helper refuse each other (they must share major.minor, in both directions), so `pbp check` and every run fail between the two upgrades. Upgrade both in the same sitting, outside the schedule ([Upgrading](docs/upgrading.md)). If PBP runs on the node itself, the one package upgrade covers both. Configs need no change.

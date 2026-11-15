@@ -30,6 +30,8 @@ done
 
 "$repo_dir/packaging/apt-publish.sh" --local "$tmp/repo" --key-file "$tmp/key.asc" \
     "$tmp/pbp_0.0.1_amd64.deb" "$tmp/pbp_0.0.1_arm64.deb"
+cmp -s "$tmp/repo/index.html" "$repo_dir/packaging/apt/index.html" || fail "--local did not add the landing page"
+echo "PASS: --local adds the landing page"
 
 mkdir -p "$tmp/apt/state/lists/partial" "$tmp/apt/cache/archives/partial" "$tmp/apt/etc" "$tmp/dl"
 echo "deb [signed-by=$tmp/repo/pbp-archive-keyring.gpg] file://$tmp/repo stable main" > "$tmp/apt/etc/sources.list"
@@ -126,3 +128,16 @@ grep -q '^Version: 0.0.1$' "$kept/repo/dists/stable/main/binary-amd64/Packages" 
 grep -q '^Version: 9.9.9$' "$kept/repo/dists/stable/main/binary-amd64/Packages" && fail "the rebuilt index took the half-uploaded Packages"
 rm -rf "$kept"
 echo "PASS: a publish after an interrupted upload reads the index by hash; a dry run keeps no credentials"
+
+# The landing page: a publish compares it with the live one, and --page
+# handles it alone. Dry runs only: an upload needs R2.
+grep -q "^landing page is current$" "$tmp/resume.log" || { cat "$tmp/resume.log"; fail "publish: the live landing page was not found current"; }
+rm "$tmp/live/index.html"
+if ! live --page --dry-run >"$tmp/page.log" 2>&1; then cat "$tmp/page.log"; fail "--page --dry-run failed"; fi
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: a missing live page was not reported"; }
+grep -q '^uploaded' "$tmp/page.log" && fail "--page --dry-run uploaded something"
+rm -rf "$(sed -n 's/^work directory kept: //p' "$tmp/page.log")"
+printf 'stale page\n' > "$tmp/live/index.html"
+live --page --dry-run 2>&1 | grep -q "^landing page differs from the live one: would upload$" || fail "--page: a stale live page was not reported"
+if live --page v0.10.0 >/dev/null 2>&1; then fail "--page with a tag was accepted"; fi
+echo "PASS: the landing page is compared with the live one; --page works alone"

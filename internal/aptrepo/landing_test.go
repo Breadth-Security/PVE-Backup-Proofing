@@ -1,7 +1,8 @@
 package aptrepo
 
 import (
-	"crypto/sha1" //nolint:gosec // OpenPGP v4 fingerprints are SHA-1 by definition (RFC 4880 12.2)
+	// #nosec G505 -- OpenPGP v4 fingerprints are SHA-1 by definition (RFC 4880 12.2)
+	"crypto/sha1" //nolint:gosec // see the line above
 	"encoding/base64"
 	"encoding/hex"
 	"html"
@@ -24,6 +25,7 @@ const (
 
 func readFile(t *testing.T, p string) string {
 	t.Helper()
+	// #nosec G304 -- fixed paths in this repository
 	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +86,8 @@ func v4Fingerprint(t *testing.T, armored string) string {
 	if tag != 6 || len(data) < hdr+n || data[hdr] != 4 {
 		t.Fatalf("first packet is not a v4 public key (tag %d)", tag)
 	}
-	h := sha1.New() //nolint:gosec // see the import
+	// #nosec G401 -- the v4 fingerprint is SHA-1 by definition
+	h := sha1.New() //nolint:gosec // see the line above
 	h.Write([]byte{0x99, byte(n >> 8), byte(n)})
 	h.Write(data[hdr : hdr+n])
 	return strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
