@@ -194,3 +194,78 @@ func TestSetupRotateTokenRefusedWhenGateRefuses(t *testing.T) {
 		t.Errorf("the node changed: %v", r.f.events[before:])
 	}
 }
+
+// A rejected secret on a separate host: the first run prints only the
+// --rotate-token line and exits 5; the run with that line's reply
+// finishes (issue #134).
+func TestSetupUnattendedRejectedSecret(t *testing.T) {
+	e := newSetupEnv(t)
+	if code := e.runReader(noReadStdin{t}, sepFlags...); code != exitWaitReply {
+		t.Fatalf("first run: exit %d; stderr %q", code, e.errOut)
+	}
+	p := filepath.Join(t.TempDir(), "reply")
+	if err := os.WriteFile(p, []byte(e.reply(nil)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.runReader(noReadStdin{t}, append(sepFlags, "--node-reply", p)...); code != exitOK {
+		t.Fatalf("setup: exit %d; stderr %q", code, e.errOut)
+	}
+	tokenPath := filepath.Join(e.dir, "secrets", "pve_token")
+	rejectSecret(e.a, tokenPath, setupSecret)
+
+	code := e.runReader(noReadStdin{t}, sepFlags...)
+	if code != exitNeedRotate {
+		t.Fatalf("rejected: exit %d, want %d; stderr %q", code, exitNeedRotate, e.errOut)
+	}
+	cfg, _, err := hostsetup.LoadState(hostsetup.Layout{Dir: e.dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := rotateLine(cfg, e.pub) + "\n"; e.out.String() != want {
+		t.Errorf("stdout %q\nwant only the rotate line %q", e.out, want)
+	}
+
+	if err := os.WriteFile(p, []byte(e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "rotated-secret" })), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.runReader(noReadStdin{t}, append(sepFlags, "--node-reply", p)...); code != exitOK {
+		t.Fatalf("with the new secret: exit %d; stdout %q; stderr %q", code, e.out, e.errOut)
+	}
+	if b, _ := os.ReadFile(tokenPath); string(b) != "rotated-secret\n" {
+		t.Errorf("token file %q", b)
+	}
+}
+
+// On the node, a rejected secret is replaced with --rotate-token; without
+// it the run exits 5 with nothing on stdout (the remedy is the flag, not a
+// line to run elsewhere).
+func TestSetupUnattendedOnNodeRejectedSecret(t *testing.T) {
+	r := newLocalRig(t)
+	r.f.complete()
+	r.a.isTerminal = func() bool { return false }
+	args := []string{"setup", "--deb", "--unattended", "--storages", "pbs1"}
+	if code := r.mainNoStdin(t, append(args, "--rotate-token")...); code != exitOK {
+		t.Fatalf("setup: exit %d:\n%s%s", code, r.out, r.errOut)
+	}
+	tokenPath := filepath.Join(r.deb, "secrets", "pve_token")
+	if err := os.WriteFile(tokenPath, []byte("stale-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rejectSecret(r.a, tokenPath, "stale-secret")
+
+	if code := r.mainNoStdin(t, args...); code != exitNeedRotate {
+		t.Fatalf("rejected: exit %d, want %d:\n%s%s", code, exitNeedRotate, r.out, r.errOut)
+	}
+	if r.out.String() != "" {
+		t.Errorf("stdout %q, want nothing", r.out)
+	}
+	if !strings.Contains(r.errOut.String(), "--rotate-token") {
+		t.Errorf("stderr does not name --rotate-token: %q", r.errOut)
+	}
+	if code := r.mainNoStdin(t, append(args, "--rotate-token")...); code != exitOK {
+		t.Fatalf("with --rotate-token: exit %d:\n%s%s", code, r.out, r.errOut)
+	}
+	if b, _ := os.ReadFile(tokenPath); string(b) != fakeSecret+"\n" {
+		t.Errorf("token file %q", b)
+	}
+}

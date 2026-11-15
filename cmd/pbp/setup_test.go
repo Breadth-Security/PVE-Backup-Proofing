@@ -477,26 +477,49 @@ func TestSetupRefusesOtherConfigPaths(t *testing.T) {
 	}
 }
 
+// rejectSecret makes the node reject the token secret secret (HTTP 401),
+// as when the token was replaced elsewhere: connect reads the secret file
+// at path, and any other secret reaches the node as before.
+func rejectSecret(a *app, path, secret string) {
+	orig := a.connect
+	a.connect = func(cfg config.Config) wiring {
+		if b, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(b)) == secret {
+			api := pvefake.New()
+			api.Fail["Version"] = &pve.APIError{Status: 401, Path: "/version", Message: "authentication failure"}
+			return wiring{api: api, target: targetfake.New(990000, 990009), notifier: &fakeNotifier{}, close: func() {}}
+		}
+		return orig(cfg)
+	}
+}
+
 // A token secret on this host that the node rejects (401: rotated
-// elsewhere, or a wrong file) cannot be fixed by any reply without a new
-// secret: setup prints the --rotate-token line instead of looping (code
-// review 3.6).
+// elsewhere, or a wrong file) cannot be fixed by a reply without a new
+// secret: setup prints the --rotate-token line and, in the same run, takes
+// the reply that line prints on the node (code review 3.6, issue #134).
 func TestSetupTokenRejectedOffersRotate(t *testing.T) {
 	e := newSetupEnv(t)
 	if code := e.run(answers + e.reply(nil)); code != exitOK {
 		t.Fatalf("first run: exit %d err %s", code, e.errOut)
 	}
-	api := pvefake.New()
-	api.Fail["Version"] = &pve.APIError{Status: 401, Path: "/version", Message: "authentication failure"}
-	e.a.connect = func(cfg config.Config) wiring {
-		return wiring{api: api, target: e.tgt, notifier: &fakeNotifier{}, close: func() {}}
-	}
-	code := e.run("")
+	tokenPath := filepath.Join(e.dir, "secrets", "pve_token")
+	rejectSecret(e.a, tokenPath, setupSecret)
+
+	// A reply without a new secret cannot help: exit 5, nothing written.
+	code := e.run(e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "" }))
 	out := e.out.String()
 	if code != exitNeedRotate || !strings.Contains(out, "rejects this host's token secret") || !strings.Contains(out, "--rotate-token") {
 		t.Errorf("exit %d, out:\n%s", code, out)
 	}
-	if strings.Contains(out, msgPasteReply) {
-		t.Errorf("asked for a reply that cannot help:\n%s", out)
+	if b, _ := os.ReadFile(tokenPath); string(b) != setupSecret+"\n" {
+		t.Errorf("token file changed: %q", b)
+	}
+
+	// The reply of the --rotate-token line carries a new secret: done.
+	code = e.run(e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "rotated-secret" }))
+	if code != exitOK {
+		t.Fatalf("with the new secret: exit %d\nout %s\nerr %s", code, e.out, e.errOut)
+	}
+	if b, _ := os.ReadFile(tokenPath); string(b) != "rotated-secret\n" {
+		t.Errorf("token file %q", b)
 	}
 }
