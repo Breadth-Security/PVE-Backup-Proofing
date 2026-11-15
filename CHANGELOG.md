@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.11.1
+
+**A patch release: upgrade the daemon and the node helper in either order** (they share major.minor 0.11). With APT, `apt update && apt install --only-upgrade pbp` on each host. Configs need no change. Two things to check:
+- **To proof containers with bind mounts**, grant the token `VM.Config.Disk` on `/vms` (optional; see the first entry). Without it they keep ending `ERROR`, now with a reason that names the grant.
+- **Scripts around `pbp setup`:** a token that must be replaced now exits with code 5 instead of 1.
 
 - **Containers with bind mounts can be proofed** (issue #129). PVE lets only `root@pam` restore a bind mount, so such a container always ended `ERROR` (`restoring 'mp0' to bind mount is only possible for root`). PBP now restores the copy without its bind mounts, which vzdump never backs up anyway: it passes the container's rootfs and every volume mount point to the restore, each as a new volume of its size on `restore.storage` with its options, and leaves the bind mounts out. The run log names them, and the guest's log lists them under "not covered by the proof". This needs `VM.Config.Disk` on `/vms`, the same optional grant as for VMs with a drive the backup does not hold; without it, such a container still ends `ERROR`, now with a reason that names the grant. Containers without bind mounts are restored as before. See [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof).
 - **`pbp setup` exits with code 5 when the node's API token must be replaced** (issue #134): the token exists on the node and this host has no secret for it, or the node rejects this host's secret. It used to exit 1, like any other failure. For a separate PBP host, an unattended run then prints only the `pbp node setup … --rotate-token` line on stdout, as exit 4 does with the node line; on the node itself, stdout is empty and `--rotate-token` is the remedy. See [Exit codes](docs/operating.md#exit-codes).
