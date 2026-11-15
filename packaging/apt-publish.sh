@@ -25,23 +25,25 @@
 #
 # --page publishes only the landing page (packaging/apt/index.html, served
 # at the domain's root through a Cloudflare rewrite of / to /index.html),
-# when it differs from the live one, so a fix to it needs no release.
+# when it differs from the live one, so a fix to it needs no release. The
+# page must name the published key's fingerprint, and the script warns
+# when the root does not serve it.
 #
 # --init exports the APT key's public half (packaging/apt/, to commit),
 # signs the binary keyring with the SSH release key, and uploads both.
 #
 # --local builds into DIR from DEB files, signed with the secret key in FILE
 # (a throwaway, in a temporary GNUPGHOME), adds the landing page, and
-# uploads nothing: for
-# packaging/apt_roundtrip_test.sh.
+# uploads nothing: for packaging/apt_roundtrip_test.sh.
 #
 # Environment: PBP_APT_KEY, the APT signing key's fingerprint (in the
 # default GNUPGHOME); PBP_R2_CREDENTIALS, a file of R2_ACCOUNT_ID=,
 # R2_ACCESS_KEY_ID=, R2_SECRET_ACCESS_KEY= and R2_BUCKET= lines (mode 0600);
 # PBP_SIGNING_KEY, the SSH release key for --init (default
 # ~/.ssh/pbp_signing). The credentials are never put on a command line.
-# PBP_APT_URL, PBP_APT_KEYRING and PBP_APT_PROTO override the repository
-# URL, the published key file and curl's --proto for it, for tests.
+# PBP_APT_URL, PBP_APT_KEYRING, PBP_APT_PAGE and PBP_APT_PROTO override the
+# repository URL, the published key file, the landing page and curl's
+# --proto for the repository, for tests.
 set -eu
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 signers="$repo_dir/allowed_signers"
@@ -50,7 +52,7 @@ base_url=${PBP_APT_URL:-https://apt.breadthsecurity.com}
 proto=${PBP_APT_PROTO:-=https}
 gh=https://github.com/Breadth-Security/PVE-Backup-Proofing/releases/download
 keyring_asc=${PBP_APT_KEYRING:-$repo_dir/packaging/apt/pbp-archive-keyring.asc}
-page=$repo_dir/packaging/apt/index.html
+page=${PBP_APT_PAGE:-$repo_dir/packaging/apt/index.html}
 suite=stable
 
 dry=false first=false init=false page_only=false local_dir="" key_file="" args=""
@@ -69,6 +71,9 @@ while [ $# -gt 0 ]; do
 done
 usage() { sed -n '6,9p' "$0" | sed 's/^# //' >&2; exit 2; }
 die() { echo "apt-publish: $*" >&2; exit 1; }
+if $page_only; then
+    if [ -n "$args" ] || $init || $first || [ -n "$local_dir" ] || [ -n "$key_file" ]; then usage; fi
+fi
 
 work=$(mktemp -d)
 # The R2 credentials never outlive the run, a kept dry-run directory or an
@@ -135,9 +140,6 @@ if $init; then
         < "$work/init/pbp-archive-keyring.gpg" >/dev/null || die "the keyring's SSH signature does not verify with allowed_signers"
 fi
 
-if $page_only; then
-    if [ -n "$args" ] || $init || $first; then usage; fi
-fi
 [ -n "$args" ] || $init || $page_only || usage
 if ! $init && grep -q PLACEHOLDER "$keyring_asc" 2>/dev/null; then
     die "$keyring_asc is a placeholder: run packaging/apt-publish.sh --init first and commit the key"
@@ -173,20 +175,36 @@ put() {
 }
 immutable="public, max-age=31536000, immutable"
 
+# check_root warns when the domain's root does not serve the landing page:
+# the Cloudflare rewrite of / to /index.html is missing.
+check_root() {
+    if curl -fsS --proto "$proto" -o "$work/root.html" "$base_url/" 2>/dev/null && cmp -s "$work/root.html" "$page"; then
+        return 0
+    fi
+    echo "apt-publish: warning: $base_url/ does not serve the landing page: add the Cloudflare rewrite of / to /index.html (docs/development.md)" >&2
+}
+
 # publish_page uploads the landing page when the live one differs (or is
-# missing), and reads it back; a dry run only reports.
+# missing), and reads it back; a dry run only reports. The page must name
+# the fingerprint of the key in $keyring_asc.
 publish_page() {
+    want=$(gpg --batch --with-colons --show-keys "$keyring_asc" 2>/dev/null | awk -F: '/^fpr/ {print $10; exit}')
+    got=$(sed -n 's/.*id="fingerprint"[^>]*>\([^<]*\)<.*/\1/p' "$page" | tr -d ' ')
+    if [ -z "$want" ] || [ "$got" != "$want" ]; then
+        die "the landing page's fingerprint (${got:-none}) is not the key's (${want:-unreadable}) in $keyring_asc"
+    fi
     pstatus=$(curl -sS --proto "$proto" -o "$work/live-index.html" -w '%{http_code}' "$base_url/index.html") \
         || die "fetching the live landing page failed"
     case "$pstatus" in
-        200) if cmp -s "$work/live-index.html" "$page"; then echo "landing page is current"; return 0; fi ;;
+        200) if cmp -s "$work/live-index.html" "$page"; then echo "landing page is current"; check_root; return 0; fi ;;
         404) ;;
         *) die "fetching the live landing page: HTTP $pstatus" ;;
     esac
     if $dry; then echo "landing page differs from the live one: would upload"; return 0; fi
-    put index.html "$page" "public, max-age=300"
+    put index.html "$page" no-cache
     curl -fsS --proto "$proto" -o "$work/back-index.html" "$base_url/index.html" || die "reading back index.html failed"
     cmp -s "$work/back-index.html" "$page" || die "the served index.html differs from the upload (a cache?)"
+    check_root
 }
 
 if $page_only; then
@@ -261,7 +279,7 @@ build_index "$repo" $debs | tee "$work/added"
 sign_release "$repo" "$PBP_APT_KEY" "$kr"
 
 if $dry; then
-    publish_page
+    ( publish_page ) || die "dry run: the index built and signed; only the landing page failed (above)"
     echo "dry run: nothing uploaded"
     exit 0
 fi
@@ -296,4 +314,4 @@ while read -r f; do
     [ "$(sha "$work/back")" = "$(sha "$repo/$key")" ] || die "the served $key differs from the upload"
 done < "$work/added-files"
 echo "published and verified:$args"
-publish_page
+( publish_page ) || die "the packages are published and verified; only the landing page failed (above): fix it, then run --page"
