@@ -13,8 +13,10 @@
 # repository's allowed_signers. It fetches the live InRelease, verifies it
 # with the published APT key (packaging/apt/pbp-archive-keyring.asc), and
 # fetches and checks the Packages files it lists. --first allows an empty
-# repository (InRelease not found); otherwise any failure to fetch aborts,
-# so a run never publishes an index without the earlier versions. It then
+# repository: InRelease not found, and the bucket itself (listed with the
+# R2 credentials, even for --dry-run) holds no dists/ files. Otherwise any
+# failure to fetch aborts, so a run never publishes an index without the
+# earlier versions. It then
 # adds the packages with tools/aptindex, signs Release with gpg (InRelease
 # and Release.gpg), and uploads to Cloudflare R2 in this order: the new
 # packages, the by-hash index files, Packages, and last Release, Release.gpg
@@ -155,6 +157,10 @@ fi
 curlcfg="$work/curl.cfg" endpoint="" r2proto='=https'
 r2_login() {
     [ -z "$endpoint" ] || return 0
+    case "${PBP_R2_ENDPOINT:-}" in
+        ""|http://127.0.0.1:*|http://localhost:*) ;;
+        *) die "PBP_R2_ENDPOINT is a test hook for a local stand-in (http://127.0.0.1:PORT/...), not $PBP_R2_ENDPOINT" ;;
+    esac
     creds=${PBP_R2_CREDENTIALS:?set PBP_R2_CREDENTIALS to the R2 credentials file}
     cred() { sed -n "s/^$1=//p" "$creds" | head -n 1; }
     account=$(cred R2_ACCOUNT_ID) bucket=$(cred R2_BUCKET)
@@ -313,7 +319,8 @@ case "$status" in
         $first || die "the live InRelease is not found (HTTP 404): pass --first only for an empty repository"
         # A 404 can also come from a wrong domain or a cache in front of
         # the bucket: --first starts an index only in an empty one.
-        [ "$(r2_keys dists/)" = 0 ] \
+        n=$(r2_keys dists/) || exit 1
+        [ "$n" = 0 ] \
             || die "the bucket already holds dists/ files, although the public InRelease is 404 (domain or cache?): not a first publish"
         ;;
     *) die "fetching the live InRelease: HTTP $status" ;;

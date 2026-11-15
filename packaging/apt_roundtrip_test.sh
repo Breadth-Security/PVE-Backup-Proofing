@@ -103,7 +103,8 @@ echo "PASS: unreachable live index stops the publish before any upload"
 # (PBP_R2_ENDPOINT points the script at it, for tests only). Marker files
 # in the tree make it misbehave: .public-404 hides the public side,
 # .inject adds a script before </body> of HTML as Cloudflare's bot
-# detection does, and .corrupt-byhash spoils by-hash uploads.
+# detection does, .corrupt-byhash spoils by-hash uploads, and .list-fail
+# fails bucket listings.
 cat > "$tmp/fake_r2.py" <<'EOF'
 import http.server, os, sys, urllib.parse
 root, port = sys.argv[1], int(sys.argv[2])
@@ -141,6 +142,8 @@ class H(http.server.BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(u.query)
             if not self.signed() or q.get("list-type") != ["2"]:
                 return self.send(403)
+            if marker(".list-fail"):
+                return self.send(500)
             prefix, limit = q.get("prefix", [""])[0], int(q.get("max-keys", ["1000"])[0])
             n = 0
             for d, _, files in os.walk(root):
@@ -190,7 +193,12 @@ mkdir -p "$tmp/live"
 python3 -I "$tmp/fake_r2.py" "$tmp/live" "$port" >"$tmp/fake_r2.log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null; rm -rf "$tmp"' EXIT
-sleep 1
+i=0
+until curl -s -o /dev/null "http://127.0.0.1:$port/"; do
+    i=$((i + 1))
+    [ "$i" -lt 50 ] || { cat "$tmp/fake_r2.log"; fail "the stand-in for R2 did not start on port $port"; }
+    sleep 0.1
+done
 # The landing page with the throwaway key's fingerprint, as the script
 # requires the page to name the key it publishes with.
 sed "s/\(id=\"fingerprint\">\)[^<]*/\1$fpr/" "$repo_dir/packaging/apt/index.html" > "$tmp/page.html"
@@ -316,7 +324,20 @@ r2() { PBP_R2_CREDENTIALS="$tmp/creds" PBP_R2_ENDPOINT="http://127.0.0.1:$port/b
 rm -rf "$tmp/live"; mkdir -p "$tmp/live"
 r2 --first --dry-run v0.10.0 >"$tmp/first.log" 2>&1 || { cat "$tmp/first.log"; fail "--first on an empty bucket failed"; }
 grep -q "dry run: nothing uploaded" "$tmp/first.log" || { cat "$tmp/first.log"; fail "--first on an empty bucket did not finish"; }
+kept=$(sed -n 's/^work directory kept: //p' "$tmp/first.log")
+[ ! -e "$kept/curl.cfg" ] || fail "--first --dry-run left R2 credentials on disk"
 kept_rm "$tmp/first.log"
+# A listing that fails is reported as such, not as a full bucket.
+touch "$tmp/live/.list-fail"
+if r2 --first --dry-run v0.10.0 >"$tmp/first.log" 2>&1; then cat "$tmp/first.log"; fail "--first went ahead although the listing failed"; fi
+grep -q "listing dists/ in R2 failed" "$tmp/first.log" || { cat "$tmp/first.log"; fail "--first: a failed listing was not reported as such"; }
+grep -q "already holds" "$tmp/first.log" && { cat "$tmp/first.log"; fail "--first: a failed listing was reported as a full bucket"; }
+kept_rm "$tmp/first.log"
+rm "$tmp/live/.list-fail"
+# A real first publish into the empty bucket.
+r2 --first v0.10.0 >"$tmp/first.log" 2>&1 || { cat "$tmp/first.log"; fail "a first publish failed"; }
+grep -q "^published and verified: v0.10.0$" "$tmp/first.log" || { cat "$tmp/first.log"; fail "a first publish did not verify"; }
+rm -rf "$tmp/live"; mkdir -p "$tmp/live"
 cp -a "$tmp/repo.orig/." "$tmp/live/"
 touch "$tmp/live/.public-404"
 if r2 --first --dry-run v0.10.0 >"$tmp/first.log" 2>&1; then cat "$tmp/first.log"; fail "--first went ahead although the bucket holds an index"; fi
@@ -324,6 +345,13 @@ grep -q "the bucket already holds" "$tmp/first.log" || { cat "$tmp/first.log"; f
 kept_rm "$tmp/first.log"
 rm "$tmp/live/.public-404"
 echo "PASS: --first trusts the bucket, not the public 404"
+
+# PBP_R2_ENDPOINT, a test hook, never sends anything to another host.
+if PBP_R2_CREDENTIALS="$tmp/creds" PBP_R2_ENDPOINT="https://r2.example.invalid/bucket" live --page >"$tmp/endpoint.log" 2>&1; then
+    cat "$tmp/endpoint.log"; fail "a non-local PBP_R2_ENDPOINT was used"
+fi
+grep -q "PBP_R2_ENDPOINT" "$tmp/endpoint.log" || { cat "$tmp/endpoint.log"; fail "a non-local PBP_R2_ENDPOINT failed for another reason"; }
+echo "PASS: PBP_R2_ENDPOINT is refused unless it is local"
 
 # A real publish and page upload against the stand-in: everything is read
 # back, the page from the bucket byte for byte and through the domain with
