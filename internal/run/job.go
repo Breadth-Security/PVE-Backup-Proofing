@@ -170,6 +170,16 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 	j.restoreTried = true
+	// A container's bind mounts are root@pam's alone to restore: the copy
+	// is restored without them (issue #129), and the log says which.
+	var bind []model.MissingPiece
+	if kind == model.KindLXC {
+		_, bind, _ = sanitize.RestoreMounts(j.orig, d.Cfg.Restore.Storage)
+		if len(bind) > 0 {
+			j.log.Info("restoring without its bind mounts " + pieceList(bind, true) +
+				": only root@pam can restore them, and the backup does not hold them")
+		}
+	}
 	j.log.Info(fmt.Sprintf("restore to %d …", j.vmid))
 	t0 := d.Now()
 	err = d.Target.Restore(ctx, b, j.vmid, j.orig)
@@ -187,9 +197,12 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		}
 		// Otherwise a guest may exist, untagged; the InFlight entry
 		// (stage restored) makes it PBP's, and teardown removes it.
-		if priv, ok := permissionDenied(err); ok {
+		switch priv, ok := permissionDenied(err); {
+		case errors.Is(err, target.ErrNeedsGrant) && len(bind) > 0:
+			fail(model.Error, "%s", lacksPrivilege("restore without bind mounts "+pieceList(bind, false), "VM.Config.Disk"))
+		case ok:
 			fail(model.Error, "%s", lacksPrivilege("restore refused", priv))
-		} else {
+		default:
 			fail(target.ClassifyRestoreError(err), "restore failed: %s", scrub(detail, j.vmid, j.b.Key.Label()))
 		}
 		return
@@ -360,7 +373,28 @@ func (j *job) logProbe(r model.GuestResult, os probe.OSFamily) {
 // missingPieces is what the proof cannot cover: the pieces Sanitize removed,
 // then those the backup excludes, judged from its original config.
 func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
-	return append(slices.Clone(removed), sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig)...)
+	out := slices.Clone(removed)
+	for _, p := range sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig) {
+		// A bind mount is reported from the original; Sanitize reports it
+		// too when the copy still had it. Count it once.
+		if !slices.ContainsFunc(out, func(q model.MissingPiece) bool { return q.Kind == p.Kind && q.Key == p.Key }) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// pieceList lists mount points as "mp0, mp1", or with their paths as
+// "mp0 (/a), mp1 (/b)".
+func pieceList(pieces []model.MissingPiece, paths bool) string {
+	out := make([]string, len(pieces))
+	for i, p := range pieces {
+		out[i] = p.Key
+		if paths {
+			out[i] += " (" + p.Path + ")"
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // originalIdentity is the guest's name and tags from the config stored in

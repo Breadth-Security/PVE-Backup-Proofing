@@ -715,9 +715,8 @@ func (n *ExistingNode) mayRestoreWithoutBindMounts(ctx context.Context, vmid int
 	for i, p := range bind {
 		mps[i] = fmt.Sprintf("%s (%s)", p.Key, p.Path)
 	}
-	return fmt.Errorf("%w: bind mounts %s, which only root@pam can restore; PBP restores the container without them, "+
-		"which needs %s, and its token lacks it: grant it, or see docs/security.md#guests-pbp-cannot-proof",
-		ErrNeedsGrant, strings.Join(mps, ", "), privConfigDisk)
+	return fmt.Errorf("%w: bind mounts %s are root@pam's alone to restore, and restoring the container without them "+
+		"needs %s (docs/security.md#guests-pbp-cannot-proof)", ErrNeedsGrant, strings.Join(mps, ", "), privConfigDisk)
 }
 
 // mayRemoveDrives checks, when plan removes drives (a host disk, or one the

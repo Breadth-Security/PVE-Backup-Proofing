@@ -21,7 +21,7 @@ var (
 	ErrUnsafe = errors.New("guest cannot be sanitized safely")
 	// ErrNeedsGrant: restoring this guest needs a privilege PBP's token
 	// lacks and that pbp node setup does not grant by default.
-	ErrNeedsGrant = errors.New("PBP's token lacks an optional privilege this guest needs")
+	ErrNeedsGrant = errors.New("PBP's token lacks an optional privilege")
 	// ErrNoFreeVMID: every VMID in the reserved range is taken.
 	ErrNoFreeVMID = errors.New("no free VMID in range")
 	// ErrNotIsolated: the configured bridge has uplinks or addresses.
