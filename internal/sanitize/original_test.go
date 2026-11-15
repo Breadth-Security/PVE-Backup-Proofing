@@ -26,7 +26,12 @@ func TestMissingFromOriginalLXC(t *testing.T) {
 		"mp1": "local-zfs:subvol-1-disk-2,mp=/ok,backup=1",
 		"mp2": "/mnt/media,mp=/media",
 	})
-	want := []model.MissingPiece{{Kind: "excluded-mountpoint", Key: "mp0", Path: "/srv/pgdata", Detail: "backup not enabled"}}
+	// A bind mount is recorded from the original too: PBP restores the
+	// copy without it (issue #129), so the restored config never has it.
+	want := []model.MissingPiece{
+		{Kind: "excluded-mountpoint", Key: "mp0", Path: "/srv/pgdata", Detail: "backup not enabled"},
+		{Kind: "bind-mount", Key: "mp2", Path: "/media"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v", got)
 	}
