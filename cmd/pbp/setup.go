@@ -69,6 +69,16 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 	l := hostsetup.Layout{Dir: *dir, Deb: *deb}
+	// On a Proxmox VE node, a .deb host can set the node up in this same
+	// run: no second shell, no paste, and the token secret never shown.
+	onNode := l.Deb && a.onPVENode != nil && a.onPVENode()
+	// --rotate-token acts only when this run sets the node up itself; a
+	// separate host refuses it rather than ignore it (issue #134).
+	if *rotate && (!onNode || a.nodeGateReason(true) != "") {
+		fprintf(a.stderr, "pbp setup: --rotate-token applies only when pbp setup sets up the Proxmox VE node it runs on, as root; "+
+			"for a separate PBP host, add --rotate-token to the pbp node setup line on the node\n%s", setupUsage)
+		return exitUsage
+	}
 	in := bufio.NewReader(a.stdin)
 	var flagAnswers *hostsetup.Flags
 	lineOut := a.stdout
@@ -85,9 +95,6 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		return exitFail
 	}
 
-	// On a Proxmox VE node, a .deb host can set the node up in this same
-	// run: no second shell, no paste, and the token secret never shown.
-	onNode := l.Deb && a.onPVENode != nil && a.onPVENode()
 	cfg, pending, err := hostsetup.LoadState(l)
 	if errors.Is(err, fs.ErrNotExist) {
 		if code := a.askAndWrite(ctx, in, l, onNode, flagAnswers); code != exitOK {
@@ -134,8 +141,8 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		}
 		fprintf(a.stdout, "The existing setup does not pass the check:\n%s", buf.String())
 		if rejected {
-			a.rotateHint(cfg, pub, l)
-			return exitFail
+			a.rotateHint(cfg, pub, l, lineOut, *unattended)
+			return exitNeedRotate
 		}
 		if storageOnly {
 			fprintln(a.stdout, "\n"+msgFixStorages)
@@ -179,14 +186,16 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 		fprintf(a.stderr, "pbp setup: warning: %s\n", warning)
 	}
 	if needRotate {
-		sa := hostsetup.SetupArgs(cfg, pub, version, false)
-		sa.RotateToken = true
+		line := rotateLine(cfg, pub)
 		fprintf(a.stdout, "\nThe token %s already exists on the node and its secret cannot be read back, "+
 			"and this host has no token secret. Nothing was written.\n"+
 			"Run this on the node instead. It replaces the token with a new secret: any other daemon "+
 			"using that token loses access until it gets the new secret.\n\n%s\n\nThen run pbp setup again.\n",
-			hostsetup.TokenID, sa.Line())
-		return exitFail
+			hostsetup.TokenID, line)
+		if *unattended {
+			fprintln(lineOut, line)
+		}
+		return exitNeedRotate
 	}
 	for _, c := range changes {
 		fprintf(a.stdout, "Changed %s\n", c)
@@ -202,7 +211,8 @@ func (a *app) setupMain(ctx context.Context, args []string) int {
 	if code, rejected, storageOnly := a.setupCheck(ctx, l, done, a.stdout); code != exitOK {
 		switch {
 		case rejected:
-			a.rotateHint(done, pub, l)
+			a.rotateHint(done, pub, l, lineOut, *unattended)
+			return exitNeedRotate
 		case storageOnly:
 			fprintln(a.stdout, "\n"+msgFixStorages)
 		}
@@ -316,15 +326,25 @@ func (a *app) setupCheck(ctx context.Context, l hostsetup.Layout, cfg config.Con
 	return code, co.tokenRejected, co.storageOnly()
 }
 
-// rotateHint tells the admin to replace a token whose secret this host
-// has wrong: the node rejected it, so no reply without a new secret can
-// fix the setup (code review 3.6).
-func (a *app) rotateHint(cfg config.Config, pub string, l hostsetup.Layout) {
+// rotateLine is the pbp node setup line that replaces the API token.
+func rotateLine(cfg config.Config, pub string) string {
 	sa := hostsetup.SetupArgs(cfg, pub, version, false)
 	sa.RotateToken = true
+	return sa.Line()
+}
+
+// rotateHint tells the admin to replace a token whose secret this host
+// has wrong: the node rejected it, so no reply without a new secret can
+// fix the setup (code review 3.6). Unattended, the line alone also goes
+// to lineOut (stdout), for automation.
+func (a *app) rotateHint(cfg config.Config, pub string, l hostsetup.Layout, lineOut io.Writer, unattended bool) {
+	line := rotateLine(cfg, pub)
+	if unattended {
+		defer fprintln(lineOut, line)
+	}
 	fprintf(a.stdout, "\nThe node rejects this host's token secret (%s): it was probably replaced elsewhere, or the file is wrong.\n"+
 		"Run this on the node. It replaces the token with a new secret: any other daemon using that token loses access "+
-		"until it gets the new secret.\n\n%s\n\nThen run pbp setup again and paste its reply.\n", l.TokenPath(), sa.Line())
+		"until it gets the new secret.\n\n%s\n\nThen run pbp setup again and paste its reply.\n", l.TokenPath(), line)
 }
 
 // exists reports whether p exists.
@@ -416,7 +436,7 @@ func (a *app) setUpLocalNode(ctx context.Context, in *bufio.Reader, l hostsetup.
 	switch {
 	case unattended && !rotate:
 		fprintln(a.stdout, msgNothingChanged+" on the token; pbp setup needs a token secret to finish: pass --rotate-token to replace it")
-		return nodeproto.SetupReply{}, exitFail
+		return nodeproto.SetupReply{}, exitNeedRotate
 	case !unattended && !nodesetup.Confirm(in, a.stdout, "Replace the token?"):
 		fprintln(a.stdout, msgNothingChanged+" on the token; pbp setup needs a token secret to finish")
 		return nodeproto.SetupReply{}, exitFail

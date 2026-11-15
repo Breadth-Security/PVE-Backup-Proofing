@@ -297,7 +297,7 @@ func TestSetupNeedRotate(t *testing.T) {
 	e := newSetupEnv(t)
 	code := e.run(answers + e.reply(func(r *nodeproto.SetupReply) { r.TokenSecret = "" }))
 	out := e.out.String() + e.errOut.String()
-	if code != exitFail {
+	if code != exitNeedRotate {
 		t.Fatalf("exit %d out %s", code, out)
 	}
 	for _, want := range []string{"pbp@pve!proof already exists on the node and its secret cannot be read back",
@@ -493,7 +493,7 @@ func TestSetupTokenRejectedOffersRotate(t *testing.T) {
 	}
 	code := e.run("")
 	out := e.out.String()
-	if code != exitFail || !strings.Contains(out, "rejects this host's token secret") || !strings.Contains(out, "--rotate-token") {
+	if code != exitNeedRotate || !strings.Contains(out, "rejects this host's token secret") || !strings.Contains(out, "--rotate-token") {
 		t.Errorf("exit %d, out:\n%s", code, out)
 	}
 	if strings.Contains(out, msgPasteReply) {

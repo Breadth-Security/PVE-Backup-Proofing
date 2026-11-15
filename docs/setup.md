@@ -239,7 +239,7 @@ The bridge still has to exist ([step 2](#2-create-the-isolated-bridge)); setup c
 pbp setup --deb --unattended --storages pbs-main
 ```
 
-- **An API token** that already exists on the node while this host has no secret for it is replaced only with `--rotate-token` (a rotation cuts off any other daemon using the token).
+- **An API token** that already exists on the node while this host has no secret for it is replaced only with `--rotate-token` (a rotation cuts off any other daemon using the token). Without it, setup exits with code **5**.
 - **A node file** that differs from what setup writes still needs `--replace`.
 
 **On a separate PBP host**, it takes two runs, with the node in between:
@@ -259,6 +259,7 @@ shred -u /root/pbp-reply      # on both hosts: it holds the token secret
 
 - **The first run** prints only the `pbp node setup …` line on stdout, with every other message on stderr, and exits with code **4**: waiting for the node's reply. Installing the package on the node is up to your automation (for example [with APT](install-apt.md)).
 - **`--node-reply FILE`** (or `-` for stdin) reads the reply instead of a paste.
+- **A token that must be replaced** (it exists on the node and the reply carries no secret, or the node rejects this host's secret) ends the run with code **5**, and stdout holds only the `pbp node setup … --rotate-token` line: run it on the node with the flags above, then `--node-reply` again. `pbp setup --rotate-token` itself is refused on a separate host (code 2), since only the node can replace its token.
 
 **On the node,** `pbp node setup --unattended` (and `pbp node uninstall --unattended`) runs without a terminal and requires `--yes`.
 - That flag lifts only the terminal check. The other refusals stay: over an SSH forced command, through the `pbp` account's sudo rule, or not as root. So neither the `pbp` account nor a stolen PBP key can drive setup.

@@ -57,6 +57,10 @@ const (
 	// its config and printed the node line; it finishes when run again
 	// with --node-reply (issue #131).
 	exitWaitReply = 4
+	// exitNeedRotate: pbp setup cannot finish until the node's API token
+	// is replaced (pbp node setup --rotate-token), because this host has
+	// no secret for it or the node rejects the one it has (issue #134).
+	exitNeedRotate = 5
 	// exitConfig is the daemon's exit for a config it cannot use (sysexits
 	// EX_CONFIG). pbp.service does not restart on it: restarting cannot fix
 	// a config, and pbp setup is what finishes one.
