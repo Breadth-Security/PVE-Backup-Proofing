@@ -53,12 +53,12 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: w
 <h1>PBP APT repository</h1>
 <p class="sub">The signed Debian package repository for <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing">PBP (PVE Backup Proofing)</a>, by <a href="https://breadthsecurity.com">Breadth Security</a>.</p>
 
-<p>PBP takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it and checks that it is healthy, on a schedule. This repository carries its final releases for <code>amd64</code> and <code>arm64</code>.</p>
+<p>PBP takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it and checks that it is healthy, on a schedule. This repository carries its final releases for <code>amd64</code> and <code>arm64</code>, from 0.10.0 on.</p>
 <p>There is nothing to browse here: APT reads the repository directly. Add it with the steps below.</p>
 
 <h2>Add the repository</h2>
 <p>As root, on the Proxmox VE node and on a separate PBP host alike:</p>
-<pre><code id="setup">curl -fsSLo /usr/share/keyrings/pbp-archive-keyring.gpg https://apt.breadthsecurity.com/pbp-archive-keyring.gpg
+<pre tabindex="0" aria-label="Commands to add the repository"><code id="setup">curl -fsSLo /usr/share/keyrings/pbp-archive-keyring.gpg https://apt.breadthsecurity.com/pbp-archive-keyring.gpg
 cat &gt; /etc/apt/sources.list.d/pbp.sources &lt;&lt;'EOF'
 Types: deb
 URIs: https://apt.breadthsecurity.com
@@ -67,7 +67,7 @@ Components: main
 Signed-By: /usr/share/keyrings/pbp-archive-keyring.gpg
 EOF
 apt update &amp;&amp; apt install pbp</code></pre>
-<p>Then set PBP up with <code>pbp setup</code>: see <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/setup.md">Setup</a>.</p>
+<p>Then run <code>pbp setup</code> where PBP runs, on the node itself or on its own host; on its own host, it prints the <code>pbp node setup</code> command to run on the node. See <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/setup.md">Setup</a>.</p>
 
 <h2>The signing key</h2>
 <p>APT checks every download against this key. Its fingerprint:</p>

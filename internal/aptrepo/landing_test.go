@@ -83,7 +83,7 @@ func v4Fingerprint(t *testing.T, armored string) string {
 			t.Fatalf("unsupported old-format length type %d", data[0]&3)
 		}
 	}
-	if tag != 6 || len(data) < hdr+n || data[hdr] != 4 {
+	if tag != 6 || n < 1 || len(data) < hdr+n || data[hdr] != 4 {
 		t.Fatalf("first packet is not a v4 public key (tag %d)", tag)
 	}
 	// #nosec G401 -- the v4 fingerprint is SHA-1 by definition
@@ -123,12 +123,15 @@ func TestLandingPageSetupMatchesDocs(t *testing.T) {
 
 func TestLandingPageSelfContained(t *testing.T) {
 	page := strings.ToLower(readFile(t, landingPage))
-	for _, bad := range []string{"<script", "<link", "<img", "<iframe", "src=", "@import", "url("} {
+	for _, bad := range []string{"<script", "<link", "<img", "<iframe", "<object", "<embed", "<form", "<base",
+		"src=", "srcset=", `http-equiv="refresh"`, "@import", "url(", "image-set("} {
 		if strings.Contains(page, bad) {
 			t.Errorf("the landing page contains %q: it must load nothing", bad)
 		}
 	}
-	if !strings.Contains(page, `http-equiv="content-security-policy" content="default-src 'none'`) {
-		t.Error("the landing page lacks its default-src 'none' Content-Security-Policy")
+	// The whole policy, so that a later edit cannot widen it unnoticed.
+	csp := `<meta http-equiv="content-security-policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">`
+	if !strings.Contains(page, csp) {
+		t.Errorf("the landing page's Content-Security-Policy is not exactly\n%s", csp)
 	}
 }
