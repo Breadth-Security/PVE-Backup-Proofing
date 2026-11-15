@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>PBP APT repository</title>
+<meta name="description" content="The signed APT repository for PBP (PVE Backup Proofing).">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa;
+  --fg: #1f2328;
+  --muted: #59636e;
+  --line: #d8dee4;
+  --code-bg: #f0f2f4;
+  --accent: #0b5cad;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181c;
+    --fg: #e4e7eb;
+    --muted: #9aa4ae;
+    --line: #2d333b;
+    --code-bg: #1e2329;
+    --accent: #6cb6ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 16px 3rem; }
+h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 .25rem; }
+.sub { color: var(--muted); margin: 0 0 2rem; }
+h2 { font-size: 1.1rem; margin: 2.25rem 0 .5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+p { margin: .5rem 0; }
+a { color: var(--accent); }
+code, pre, .fpr { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: .9em; }
+:not(pre) > code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: .9rem 1rem; overflow-x: auto; line-height: 1.45; }
+.fpr { display: inline-block; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: .35rem .6rem; font-size: 1rem; white-space: pre-wrap; word-break: break-word; }
+footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+footer ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>PBP APT repository</h1>
+<p class="sub">The signed Debian package repository for <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing">PBP (PVE Backup Proofing)</a>, by <a href="https://breadthsecurity.com">Breadth Security</a>.</p>
+
+<p>PBP takes the newest backup of every guest from your Proxmox Backup Server storage, restores it into a temporary guest on an isolated network, boots it and checks that it is healthy, on a schedule. This repository carries its final releases for <code>amd64</code> and <code>arm64</code>.</p>
+<p>There is nothing to browse here: APT reads the repository directly. Add it with the steps below.</p>
+
+<h2>Add the repository</h2>
+<p>As root, on the Proxmox VE node and on a separate PBP host alike:</p>
+<pre><code id="setup">curl -fsSLo /usr/share/keyrings/pbp-archive-keyring.gpg https://apt.breadthsecurity.com/pbp-archive-keyring.gpg
+cat &gt; /etc/apt/sources.list.d/pbp.sources &lt;&lt;'EOF'
+Types: deb
+URIs: https://apt.breadthsecurity.com
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/pbp-archive-keyring.gpg
+EOF
+apt update &amp;&amp; apt install pbp</code></pre>
+<p>Then set PBP up with <code>pbp setup</code>: see <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/setup.md">Setup</a>.</p>
+
+<h2>The signing key</h2>
+<p>APT checks every download against this key. Its fingerprint:</p>
+<p><span class="fpr" id="fingerprint">0D9A 64A2 3F04 1588 DE11  EE36 9B29 93CB 6BBA 9833</span></p>
+<p>The key file is also signed with PBP's release key, the one that signs every release's checksums. To check both, see <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/install-apt.md#check-the-key-optional">Check the key</a>.</p>
+
+<h2>Upgrading</h2>
+<p>To upgrade only PBP: <code>apt update &amp;&amp; apt install --only-upgrade pbp</code>. On a Proxmox VE node, a plain <code>apt upgrade</code> also upgrades Proxmox VE itself.</p>
+<p>Upgrade the node and a separate PBP host in the same sitting: the daemon and the node helper must share their major.minor version. For the same reason, don't add this repository to <code>unattended-upgrades</code>. More in <a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/upgrading.md">Upgrading</a>.</p>
+
+<footer>
+<ul>
+<li><a href="https://github.com/Breadth-Security/PVE-Backup-Proofing">Project</a></li>
+<li><a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/docs/install-apt.md">Install with APT</a></li>
+<li><a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/releases">Releases</a></li>
+<li><a href="https://github.com/Breadth-Security/PVE-Backup-Proofing/blob/main/SECURITY.md">Report a security issue</a></li>
+</ul>
+<p>Proxmox is a registered trademark of Proxmox Server Solutions GmbH. PBP is an independent project, not affiliated with or endorsed by Proxmox.</p>
+</footer>
+</main>
+</body>
+</html>
