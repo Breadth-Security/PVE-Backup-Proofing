@@ -26,8 +26,9 @@
 # --page publishes only the landing page (packaging/apt/index.html, served
 # at the domain's root through a Cloudflare rewrite of / to /index.html),
 # when it differs from the live one, so a fix to it needs no release. The
-# page must name the published key's fingerprint, and the script warns
-# when the root does not serve it.
+# page must name the published key's fingerprint. It is read back from R2
+# byte for byte; through the domain, markup a CDN adds right before
+# </body> is allowed. The script warns when the root does not serve it.
 #
 # --init exports the APT key's public half (packaging/apt/, to commit),
 # signs the binary keyring with the SSH release key, and uploads both.
@@ -175,10 +176,33 @@ put() {
 }
 immutable="public, max-age=31536000, immutable"
 
+# served_page FILE: FILE, as the domain served it, is the landing page.
+# Markup a CDN inserted right before the page's </body> line is allowed
+# (Cloudflare's bot detection adds a script there); any other difference
+# is not. What R2 stores is checked byte for byte instead (r2_get).
+served_page() {
+    cmp -s "$1" "$page" && return 0
+    n=$(grep -n '^</body>$' "$page" | head -n 1 | cut -d: -f1)
+    [ -n "$n" ] || return 1
+    after=$(( $(wc -l < "$page") - n ))
+    head -n $((n - 1)) "$page" > "$work/page-head"; head -n $((n - 1)) "$1" > "$work/served-head"
+    tail -n "$after" "$page" > "$work/page-tail"; tail -n "$after" "$1" > "$work/served-tail"
+    cmp -s "$work/page-head" "$work/served-head" && cmp -s "$work/page-tail" "$work/served-tail" || return 1
+    [ "$(wc -l < "$1")" -ge "$(wc -l < "$page")" ] || return 1
+    tail -n $((after + 1)) "$1" | head -n 1 | grep -q '</body>$'
+}
+
+# r2_get KEY FILE downloads KEY from R2 itself, past the CDN, into FILE.
+r2_get() {
+    r2_login
+    curl -sS --fail --proto =https -K "$curlcfg" --aws-sigv4 "aws:amz:auto:s3" -o "$2" "$endpoint/$1" \
+        || die "reading back $1 from R2 failed"
+}
+
 # check_root warns when the domain's root does not serve the landing page:
 # the Cloudflare rewrite of / to /index.html is missing.
 check_root() {
-    if curl -fsS --proto "$proto" -o "$work/root.html" "$base_url/" 2>/dev/null && cmp -s "$work/root.html" "$page"; then
+    if curl -fsS --proto "$proto" -o "$work/root.html" "$base_url/" 2>/dev/null && served_page "$work/root.html"; then
         return 0
     fi
     echo "apt-publish: warning: $base_url/ does not serve the landing page: add the Cloudflare rewrite of / to /index.html (docs/development.md)" >&2
@@ -196,14 +220,16 @@ publish_page() {
     pstatus=$(curl -sS --proto "$proto" -o "$work/live-index.html" -w '%{http_code}' "$base_url/index.html") \
         || die "fetching the live landing page failed"
     case "$pstatus" in
-        200) if cmp -s "$work/live-index.html" "$page"; then echo "landing page is current"; check_root; return 0; fi ;;
+        200) if served_page "$work/live-index.html"; then echo "landing page is current"; check_root; return 0; fi ;;
         404) ;;
         *) die "fetching the live landing page: HTTP $pstatus" ;;
     esac
     if $dry; then echo "landing page differs from the live one: would upload"; return 0; fi
     put index.html "$page" no-cache
+    r2_get index.html "$work/stored-index.html"
+    cmp -s "$work/stored-index.html" "$page" || die "the index.html in R2 differs from the upload"
     curl -fsS --proto "$proto" -o "$work/back-index.html" "$base_url/index.html" || die "reading back index.html failed"
-    cmp -s "$work/back-index.html" "$page" || die "the served index.html differs from the upload (a cache?)"
+    served_page "$work/back-index.html" || die "the served index.html is not the uploaded page (a cache?)"
     check_root
 }
 

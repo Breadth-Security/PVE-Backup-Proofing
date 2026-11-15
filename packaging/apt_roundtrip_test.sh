@@ -152,6 +152,24 @@ grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log"
 kept_rm "$tmp/page.log"
 echo "PASS: the landing page is compared with the live one; --page works alone"
 
+# A CDN's markup right before </body> (Cloudflare's bot detection adds a
+# script there) still counts as the page, at /index.html and at the root;
+# markup anywhere else does not.
+sed 's#^</body>$#<script>(function(){cdn()})();</script></body>#' "$live_page" > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a page with CDN markup failed"; }
+grep -q "^landing page is current$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: CDN markup before </body> made the page differ"; }
+grep -q "warning" "$tmp/page.log" && { cat "$tmp/page.log"; fail "--page: CDN markup before </body> made the root warn"; }
+kept_rm "$tmp/page.log"
+sed 's#^<body>$#<body><script>cdn()</script>#' "$live_page" > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a page with markup after <body> failed"; }
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: markup elsewhere than before </body> was accepted"; }
+kept_rm "$tmp/page.log"
+{ cat "$live_page"; printf '<p>extra</p>\n'; } > "$tmp/live/index.html"
+live --page --dry-run >"$tmp/page.log" 2>&1 || { cat "$tmp/page.log"; fail "--page --dry-run on a page with a trailer failed"; }
+grep -q "^landing page differs from the live one: would upload$" "$tmp/page.log" || { cat "$tmp/page.log"; fail "--page: markup after </html> was accepted"; }
+kept_rm "$tmp/page.log"
+echo "PASS: CDN markup right before </body> is tolerated, nowhere else"
+
 # --page refuses every other mode, before doing any of their work.
 for combo in "v0.10.0" "--init" "--first" "--local $tmp/x --key-file $tmp/key.asc" "--key-file $tmp/key.asc"; do
     rc=0
