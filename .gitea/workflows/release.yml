@@ -124,10 +124,12 @@ jobs:
           # has signed SHA256SUMS and publishes it (issue #37).
           # Its description is the tag's CHANGELOG section (release-notes.md);
           # sign-release.sh adds the signature note below it.
-          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" --rawfile n release-notes.md \
-            '{tag_name:$t,name:$t,prerelease:$p,draft:true,body:$n}')
+          # The JSON goes to curl from a file: a command-line argument is
+          # limited in size, release notes are not.
+          jq -nc --arg t "$TAG" --argjson p "$prerelease" --rawfile n release-notes.md \
+            '{tag_name:$t,name:$t,prerelease:$p,draft:true,body:$n}' > create.json
           code=$(curl -sS -o release.json -w '%{http_code}' -X POST "$API/releases" \
-            -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$body")
+            -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' --data-binary @create.json)
           reused=false
           case "$code" in
             201) ;;
@@ -162,9 +164,9 @@ jobs:
             # The notes may have changed since the first run, and the old
             # signature note no longer holds: write the description afresh,
             # and hide the release again until it is re-signed.
-            patch=$(jq -nc --rawfile n release-notes.md '{draft:true,body:$n}')
+            jq -nc --rawfile n release-notes.md '{draft:true,body:$n}' > patch.json
             code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH "$API/releases/$id" \
-              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$patch")
+              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' --data-binary @patch.json)
             case "$code" in
               200) echo "release notes rewritten; the release stays a draft until it is signed" ;;
               401|403) fail_auth "$code" ;;

@@ -77,6 +77,49 @@ check "tag without v"                "$tmp/CHANGELOG.md" 1.2.0 FAIL "not a relea
 check "no tag"                       "$tmp/CHANGELOG.md" "" FAIL "usage"
 check "missing changelog"            "$tmp/none.md" v1.2.0 FAIL "none.md"
 
+# Code fences, link forms and the guard (review of #105). mk writes a
+# CHANGELOG whose v3.0.0 section is the given text, with a later section.
+mk() { # file text
+    printf '# Changelog\n\n## v3.0.0\n\n%s\n\n## v2.0.0\n\nOlder.\n' "$2" > "$1"
+}
+t3=$gh/v3.0.0
+fence='```'
+mk "$tmp/fence.md" "Before [a](docs/a.md).
+
+${fence}sh
+## a shell comment, not a heading
+echo \"[fenced](docs/fenced.md)\"
+$fence
+
+After [b](docs/b.md)."
+printf '%s\n' "Before [a]($t3/docs/a.md)." "" "${fence}sh" "## a shell comment, not a heading" \
+    'echo "[fenced](docs/fenced.md)"' "$fence" "" "After [b]($t3/docs/b.md)." > "$tmp/want-fence"
+check "fenced code is kept as is"        "$tmp/fence.md" v3.0.0 "$tmp/want-fence"
+mk "$tmp/open-fence.md" "Text.
+
+$fence
+never closed"
+check "unclosed fence"                   "$tmp/open-fence.md" v3.0.0 FAIL "code fence"
+hb="Hard break  " # Markdown hard break: two trailing spaces kept
+mk "$tmp/forms.md" "Module \`git.breadthanalytics.com/x\`, one \` tick then [u](docs/u.md); [sp](<docs/a b.md>); [root](/docs/r.md)
+${hb}
+next line"
+printf '%s\n' "Module \`git.breadthanalytics.com/x\`, one \` tick then [u]($t3/docs/u.md); [sp](<$t3/docs/a b.md>); [root]($t3/docs/r.md)" \
+    "$hb" "next line" > "$tmp/want-forms"
+check "unbalanced tick, <>, root, code"  "$tmp/forms.md" v3.0.0 "$tmp/want-forms"
+mk "$tmp/up.md" "See [up](../x.md)."
+check "link out of the repository"       "$tmp/up.md" v3.0.0 FAIL "relative link"
+mk "$tmp/refdef.md" "See [r].
+
+[r]: docs/ref.md"
+check "reference definition"             "$tmp/refdef.md" v3.0.0 FAIL "reference"
+mk "$tmp/href.md" 'See <a href="docs/h.md">here</a>.'
+check "html link"                        "$tmp/href.md" v3.0.0 FAIL "HTML"
+mk "$tmp/gitea.md" "See [it](https://git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/issues/1)."
+check "link to the private Gitea"        "$tmp/gitea.md" v3.0.0 FAIL "git.breadthanalytics.com"
+mk "$tmp/gitea-bare.md" "See https://git.breadthanalytics.com/x for it."
+check "bare private Gitea URL"           "$tmp/gitea-bare.md" v3.0.0 FAIL "git.breadthanalytics.com"
+
 # The repository's own CHANGELOG has notes for the VERSION file's release (or
 # Unreleased ones while it is being written), with no relative link left.
 v=$(cat ../VERSION)
