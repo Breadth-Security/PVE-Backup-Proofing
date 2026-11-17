@@ -17,6 +17,12 @@
 # fail instead of shipping when, outside code, a link is still relative (such
 # as ../x), a reference-style link definition or an HTML link is used, or the
 # private Gitea host is named.
+#
+# Issue numbers in the CHANGELOG are Gitea's, which public readers cannot
+# open, and GitHub would link "#N" to its own, unrelated issue or PR. So
+# parentheses citing only Gitea issues ("(issue #140)", "(issues #1, #2)",
+# "(#63)", "(part of #127)") are dropped, "GitHub #N" is kept, and any other
+# "#N" outside code fails the notes.
 set -u
 repo=https://github.com/Breadth-Security/PVE-Backup-Proofing
 gitea=git.breadthanalytics.com
@@ -103,6 +109,14 @@ out=$(printf '%s\n' "$notes" | awk -v base="$repo/blob/$tag" -v gitea="$gitea" "
         }
         return angle ? "<" t ">" : t
     }
+    # Drops parentheses citing only Gitea issues, and the Gitea part of one
+    # that also cites a GitHub issue: GitHub would link #N to its own item.
+    function refs(s) {
+        gsub(/\((issues?|PRs?) #[0-9]+(, #[0-9]+)*(,| and) /, "(", s)
+        gsub(/ ?\((issues?|PRs?|part of|see) #[0-9]+((,| and|, and) #[0-9]+)*\)/, "", s)
+        gsub(/ ?\(#[0-9]+((,| and|, and) #[0-9]+)*\)/, "", s)
+        return s
+    }
     # Rewrites the targets of inline links and images in s.
     function links(s,   out, t) {
         out = ""
@@ -125,13 +139,20 @@ out=$(printf '%s\n' "$notes" | awk -v base="$repo/blob/$tag" -v gitea="$gitea" "
             if (i % 2 == 0 && !(i == n && n % 2 == 0)) {
                 line = line part[i]
             } else {
-                p = links(part[i])
+                p = links(refs(part[i]))
                 line = line p; plain = plain " " p
             }
         }
         if (plain ~ /^ ? ? ? ?\[[^]]*\]:/) bad("reference-style link definition: use an inline link")
         if (tolower(plain) ~ /href=|src=/) bad("HTML link or image: use Markdown")
         if (index(plain, gitea)) bad("names the private Gitea host " gitea " outside code: " $0)
+        # Any other #N would link to an unrelated GitHub item (link targets
+        # and GitHub references aside).
+        rest = plain
+        gsub(/\]\([^)]*\)/, "]()", rest)
+        gsub(/GitHub #[0-9]+/, "", rest)
+        if (rest ~ /(^|[^A-Za-z0-9&\/])#[0-9]/)
+            bad("Gitea issue reference outside \"(issue #N)\": reword it, or cite it as (issue #N) to drop it: " $0)
         print line
     }
     END { exit err ? 3 : 0 }') || die "no notes for $tag: fix the CHANGELOG as said above"

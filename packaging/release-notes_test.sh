@@ -120,6 +120,16 @@ check "link to the private Gitea"        "$tmp/gitea.md" v3.0.0 FAIL "git.breadt
 mk "$tmp/gitea-bare.md" "See https://git.breadthanalytics.com/x for it."
 check "bare private Gitea URL"           "$tmp/gitea-bare.md" v3.0.0 FAIL "git.breadthanalytics.com"
 
+# Gitea issue references: GitHub would link #N to its own, unrelated item,
+# so parentheses that only cite Gitea issues are dropped, GitHub ones kept,
+# and any other bare #N fails.
+mk "$tmp/refs.md" "**Fix A** (issue #12). Fix B (issues #3, #4); C (#5) and D (part of #6): x.
+E (issue #7, from GitHub #2) keeps \`#9\` and [x](docs/x.md#y)."
+printf '%s\n' "**Fix A**. Fix B; C and D: x." "E (from GitHub #2) keeps \`#9\` and [x]($t3/docs/x.md#y)." > "$tmp/want-refs"
+check "Gitea issue references dropped"   "$tmp/refs.md" v3.0.0 "$tmp/want-refs"
+mk "$tmp/bare-ref.md" "The findings in #50 are fixed."
+check "bare issue reference"             "$tmp/bare-ref.md" v3.0.0 FAIL "issue reference"
+
 # The repository's own CHANGELOG has notes for the VERSION file's release (or
 # Unreleased ones while it is being written), with no relative link left.
 v=$(cat ../VERSION)
