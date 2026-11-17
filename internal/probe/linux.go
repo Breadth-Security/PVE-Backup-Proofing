@@ -404,10 +404,10 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
-			return r.fail(ctx, "check timed out: "+checkLabel(c.Name))
+			return r.fail(ctx, withHint("check timed out: "+checkLabel(c.Name), devicesNote(r.in.Missing)))
 		}
 		if !c.OK {
-			return r.fail(ctx, "check failed: "+checkLabel(c.Name))
+			return r.fail(ctx, withHint("check failed: "+checkLabel(c.Name), devicesNote(r.in.Missing)))
 		}
 	}
 	r.out.Verdict = model.Proven

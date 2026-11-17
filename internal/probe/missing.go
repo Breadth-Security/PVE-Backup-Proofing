@@ -288,12 +288,24 @@ func traceDevice(ctx context.Context, ex Executor, unit string, devices []model.
 	return model.MissingPiece{}, false
 }
 
-// deviceHint is appended to a FAILED reason when the copy was restored
-// without the devices of raw lxc lines: units that need them fail, and
-// tracing cannot always tell. It names the devices (or "device rules" when
-// only allow rules were dropped) and how to ignore such a unit; "" when no
-// raw device lines were dropped.
+// deviceHint is appended to a FAILED reason for failed units when the copy
+// was restored without the devices of raw lxc lines: units that need them
+// fail, and tracing cannot always tell. It is devicesNote and how to ignore
+// such a unit; "" when no raw device lines were dropped.
 func deviceHint(missing []model.MissingPiece) string {
+	if note := devicesNote(missing); note != "" {
+		return note + "; if a unit needs them: checks.guests ignore_units"
+	}
+	return ""
+}
+
+// devicesNote names the devices (or "device rules" when only allow rules
+// were dropped) a copy was restored without; "" when no raw device lines
+// were dropped. On its own it is appended to a failed or timed-out check,
+// which can fail for lack of a device before any unit has (a daemon still
+// restarting): ignore_units would not skip the check, so it names no
+// remedy.
+func devicesNote(missing []model.MissingPiece) string {
 	var paths []string
 	dropped := false
 	for _, m := range missing {
@@ -308,7 +320,7 @@ func deviceHint(missing []model.MissingPiece) string {
 	if !dropped {
 		return ""
 	}
-	return " · copy has no " + devicesNamed(paths) + " (raw lxc lines); if a unit needs them: checks.guests ignore_units"
+	return " · copy has no " + devicesNamed(paths) + " (raw lxc lines)"
 }
 
 // hintDeviceRunes bounds the devices a hint names, so the hint (at most

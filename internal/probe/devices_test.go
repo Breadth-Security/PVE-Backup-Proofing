@@ -6,7 +6,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/config"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/probe/probetest"
@@ -191,5 +193,54 @@ func TestDeviceHintLongPaths(t *testing.T) {
 		if n := len([]rune(o.Reason)); n > 160 {
 			t.Errorf("%s: %d runes: %q", name, n, o.Reason)
 		}
+	}
+}
+
+// A check can fail for lack of a dropped device before any unit has failed
+// (CT101 on the owner's node: a Docker plugin needs /dev/net/tun, dockerd
+// is still restarting when the probe looks, and the docker profile's
+// `docker info` fails). The reason names the devices the copy lacks; it
+// gives no ignore_units pointer, which would not skip the check.
+func TestCheckFailedDeviceHint(t *testing.T) {
+	tun := devPiece("/dev/net/tun", "")
+	ex := healthy()
+	ex[enabledC] = out("docker.service enabled enabled\n")
+	ex["sh -c docker info"] = probe.ExecResult{ExitCode: 1}
+	o := runMissing(ex, tun)
+	if want := "check failed: docker (command docker info) · copy has no /dev/net/tun (raw lxc lines)"; o.Verdict != model.Failed || o.Reason != want {
+		t.Fatalf("got %s %q\nwant %q", o.Verdict, o.Reason, want)
+	}
+
+	ck := config.Checks{CommandTimeout: 20 * time.Millisecond, Guests: []config.GuestChecks{
+		{Match: config.GuestMatch{VMID: 7}, CheckSet: config.CheckSet{Commands: []string{"hang-cmd"}}},
+	}}
+	o = probe.Run(context.Background(), hanging(healthy(), "sh -c hang-cmd"),
+		probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 7}, Missing: []model.MissingPiece{allowPiece}})
+	if want := "check timed out: command hang-cmd · copy has no device rules (raw lxc lines)"; o.Reason != want {
+		t.Fatalf("got %q\nwant %q", o.Reason, want)
+	}
+
+	// Without dropped raw lines the reason is unchanged.
+	if o := runMissing(ex, model.MissingPiece{Kind: "passthrough", Key: "dev0"}); o.Reason != "check failed: docker (command docker info)" {
+		t.Fatalf("hint without dropped raw lines: %q", o.Reason)
+	}
+}
+
+// A long check label is cut so the hint still fits the notes line.
+func TestCheckFailedDeviceHintFits(t *testing.T) {
+	cmd := "/opt/app/bin/healthcheck --endpoint http://127.0.0.1:8080/api/v1/health --timeout 30 --retries 5 --expect-status 200"
+	ck := config.Checks{Guests: []config.GuestChecks{
+		{Match: config.GuestMatch{VMID: 7}, CheckSet: config.CheckSet{Commands: []string{cmd}}},
+	}}
+	ex := healthy()
+	ex["sh -c "+cmd] = probe.ExecResult{ExitCode: 1}
+	long := "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_0123456789abcdef-if00-port0"
+	o := probe.Run(context.Background(), ex, probe.Input{OS: probe.Linux, Checks: ck, Guest: probe.GuestInfo{VMID: 7},
+		Missing: []model.MissingPiece{devPiece(long, ""), devPiece("/dev/ttyUSB0", "")}})
+	if !strings.HasPrefix(o.Reason, "check failed: command /opt/app") || !strings.HasSuffix(o.Reason, " and 1 more (raw lxc lines)") {
+		t.Fatalf("reason %q", o.Reason)
+	}
+	if n := len([]rune(o.Reason)); n > 160 {
+		t.Fatalf("%d runes: %q", n, o.Reason)
 	}
 }
