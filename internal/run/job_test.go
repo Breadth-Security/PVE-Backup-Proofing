@@ -1092,3 +1092,36 @@ func TestMissingPiecesDeduplicated(t *testing.T) {
 		t.Errorf("got %+v\nwant %+v", got, want)
 	}
 }
+
+// Dropped device lines share a key (lxc.mount.entry): each distinct one is
+// its own piece, never collapsed into the first (issue #141).
+func TestMissingPiecesKeepsDeviceLines(t *testing.T) {
+	j := &job{b: model.Backup{Key: model.GuestKey{Kind: model.KindLXC, VMID: 101}},
+		orig: sanitize.ParseConfigText("lxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind\nlxc.mount.entry: /dev/ttyACM0 dev/ttyACM0 none bind\n")}
+	got := j.missingPieces(nil)
+	want := []model.MissingPiece{
+		{Kind: "passthrough", Key: "lxc.mount.entry", Path: "/dev/ttyUSB0"},
+		{Kind: "passthrough", Key: "lxc.mount.entry", Path: "/dev/ttyACM0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+}
+
+// A container with device-only raw lines and a virtual devN: the run log
+// says what PVE dropped and what the copy keeps (issue #141).
+func TestDevicesLogged(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	f.api.BackupConfigs[volid] = "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\nunprivileged: 1\ndev0: /dev/net/tun,mode=0666\n" +
+		"lxc.cgroup2.devices.allow: c 188:* rwm\nlxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind,optional,create=file\n"
+	f.run(context.Background())
+	for _, want := range []string{
+		"restored without its raw lxc lines (lxc.cgroup2.devices.allow c 188:* rwm, lxc.mount.entry /dev/ttyUSB0): only root@pam can restore them",
+		"kept dev0 (/dev/net/tun) in the copy: a virtual device",
+	} {
+		if !strings.Contains(f.logBuf.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, f.logBuf)
+		}
+	}
+}

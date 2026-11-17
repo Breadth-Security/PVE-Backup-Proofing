@@ -208,6 +208,9 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		j.log.Info("restored without its bind mounts " + pieceList(bind) +
 			": only root@pam can restore them, and the backup does not hold them")
 	}
+	if dropped := droppedLines(kind, j.orig); dropped != "" {
+		j.log.Info("restored without its raw lxc lines (" + dropped + "): only root@pam can restore them; they only pass devices through")
+	}
 
 	guest := j.originalIdentity()
 	// checks.guests may turn the agent on for a VM copy whose backup has it
@@ -226,6 +229,19 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		return
 	}
 	j.logSanitized(sanitized)
+	if kind == model.KindLXC {
+		if kept := sanitize.KeptDevices(j.orig); len(kept) > 0 {
+			named := make([]string, len(kept))
+			for i, k := range kept {
+				named[i] = k.Key + " (" + k.Detail + ")"
+			}
+			what := "a virtual device"
+			if len(kept) > 1 {
+				what = "virtual devices"
+			}
+			j.log.Info("kept " + strings.Join(named, ", ") + " in the copy: " + what)
+		}
+	}
 	if sanitized.Agent != "" {
 		j.log.Info("guest agent turned on for this copy (checks.guests enable_guest_agent): " + sanitized.Agent)
 	}
@@ -377,11 +393,33 @@ func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
 	for _, p := range sanitize.MissingFromOriginal(j.b.Key.Kind, j.orig) {
 		// A bind mount is reported from the original; Sanitize reports it
 		// too when the copy still had it. Count it once.
-		if !slices.ContainsFunc(out, func(q model.MissingPiece) bool { return q.Kind == p.Kind && q.Key == p.Key }) {
+		// Dropped raw lines share their keys (lxc.mount.entry): they are
+		// the same piece only when wholly equal (issue #141).
+		same := func(q model.MissingPiece) bool { return q.Kind == p.Kind && q.Key == p.Key }
+		if strings.HasPrefix(p.Key, "lxc.") {
+			same = func(q model.MissingPiece) bool { return q == p }
+		}
+		if !slices.ContainsFunc(out, same) {
 			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// droppedLines lists the device-only raw lxc lines PVE drops when PBP's
+// token restores a container (issue #141), at most three and a count of
+// the rest: "lxc.mount.entry /dev/ttyUSB0, …". It is "" when there are none.
+func droppedLines(kind model.GuestKind, orig map[string]string) string {
+	if kind != model.KindLXC {
+		return ""
+	}
+	var lines []string
+	for _, p := range sanitize.MissingFromOriginal(kind, orig) {
+		if strings.HasPrefix(p.Key, "lxc.") {
+			lines = append(lines, p.Key+" "+cmp.Or(p.Path, p.Detail))
+		}
+	}
+	return firstOf(lines, 3)
 }
 
 // pieceList lists mount points with their paths: "mp0 (/a), mp1 (/b)".
