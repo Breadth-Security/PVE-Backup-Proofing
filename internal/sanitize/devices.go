@@ -52,7 +52,7 @@ var keptDevices = map[string]bool{
 var charDevices = []string{
 	"/dev/tty*", "/dev/serial/", "/dev/dri/", "/dev/bus/usb/", "/dev/usb/",
 	"/dev/net/tun", "/dev/fuse", "/dev/apex_*", "/dev/accel/", "/dev/video*",
-	"/dev/snd/", "/dev/hidraw*", "/dev/input/", "/dev/nvidia*", "/dev/kfd",
+	"/dev/snd/", "/dev/hidraw*", "/dev/input/", "/dev/nvidia*", "/dev/nvidia-caps/", "/dev/kfd",
 	"/dev/ppp", "/dev/i2c-*", "/dev/gpiochip*",
 }
 

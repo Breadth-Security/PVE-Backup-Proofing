@@ -32,7 +32,9 @@ func TestNotCoveredLogLineVariants(t *testing.T) {
 	}{
 		{MissingPiece{Kind: "excluded-mountpoint", Key: "mp0", Path: "/data"}, "Found u.service depends on /data (mount point mp0): not backed up, skipped"},
 		{MissingPiece{Kind: "bind-mount", Key: "mp1"}, "Found u.service depends on mp1 (bind mount mp1): not backed up, skipped"},
-		{MissingPiece{Kind: "passthrough", Key: "hostpci0", Path: "/dev/x", Detail: "gpu"}, "Found u.service depends on /dev/x (device hostpci0, gpu): not backed up, skipped"},
+		// A device is never in a backup: the copy was made without it.
+		{MissingPiece{Kind: "passthrough", Key: "hostpci0", Path: "/dev/x", Detail: "gpu"}, "Found u.service depends on /dev/x (device hostpci0, gpu): not in the copy, skipped"},
+		{MissingPiece{Kind: "passthrough", Key: "lxc.mount.entry", Path: "/dev/ttyS0"}, "Found u.service depends on /dev/ttyS0 (device lxc.mount.entry): not in the copy, skipped"},
 		{MissingPiece{Kind: "network-storage", Path: "/mnt/nfs"}, "Found u.service depends on /mnt/nfs (network storage): not backed up, skipped"},
 		{MissingPiece{Kind: "future-kind", Key: "x1", Path: "/p", Detail: "d"}, "Found u.service depends on /p (future-kind x1, d): not backed up, skipped"},
 		{MissingPiece{Kind: "network-storage"}, "Found u.service depends on network-storage (network storage): not backed up, skipped"},

@@ -11,6 +11,8 @@ Changes:
   - Disks and partitions bound with raw lines, `devices.deny`, `lxc.autodev` and `lxc.hook.*` still end `ERROR`. Privileged containers still need `Sys.Modify` on `/`.
 
   See [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof).
+- **Device wording in guest logs.** A unit that fails for lack of a device now reads `…: not in the copy, skipped` instead of `not backed up`: a device is never part of a backup.
+- **NVIDIA capability devices.** A raw line that binds a file under `/dev/nvidia-caps/` (such as `/dev/nvidia-caps/nvidia-cap1`) counts as device-only, like the rest of an NVIDIA container's device lines, so such a container is proofed without its GPU instead of ending `ERROR`.
 
 ## v0.11.1
 

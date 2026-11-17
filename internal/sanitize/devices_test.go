@@ -31,6 +31,8 @@ func TestDeviceOnly(t *testing.T) {
 		"lxc.mount.entry: /dev/dri dev/dri none rbind,optional,create=dir",
 		"lxc.mount.entry: /dev/bus/usb/001 dev/bus/usb/001 none bind,optional,create=dir",
 		"lxc.mount.entry: /dev/apex_0 dev/apex_0 none optional,bind,create=file",
+		"lxc.mount.entry: /dev/nvidia-caps dev/nvidia-caps none bind,optional,create=dir",
+		"lxc.mount.entry: /dev/nvidia-caps/nvidia-cap1 dev/nvidia-caps/nvidia-cap1 none bind,optional,create=file",
 	}
 	no := []string{
 		"lxc.cgroup2.devices.deny: c 10:200 rwm",
