@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Changes:
+
+- **Guests that only `root@pam` could proof are refused before restoring** (issue #140). A container with `devN` passthrough or a hookscript, or a VM with a raw host device (`hostpciN`, `usbN`, a `serialN` that is not a socket, `parallelN`, `ivshmem`) or a hookscript, used to be restored in full and then end `ERROR` with "cannot make the copy safe", or have the restore refused. PBP now reads the backed-up config and ends `ERROR` at once, before reserving or restoring anything, with a reason that names the keys: `PBP cannot proof dev0 (/dev/ttyUSB0): only root@pam can (…)`. The reason for raw `lxc.*` lines now reads `PBP cannot proof raw lxc settings (…): only root@pam can (…)`.
+- **Containers with virtual devices or device-only raw lines can be proofed** (issue #141).
+  - A `devN` of `/dev/net/tun`, `/dev/fuse` or a standard pseudo-device (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`) stays in the copy; it reaches nothing outside the container. A container whose only device is such a one, a VPN container with `/dev/net/tun` for example, is no longer refused.
+  - A container whose raw `lxc.*` lines all only pass character devices through (`devices.allow` rules, and bind mounts of serial and USB adapters, GPUs, `/dev/net/tun` and the like) is restored; PVE drops the lines, so the copy has none of those devices. The run log names the dropped lines, and the guest's log lists the devices under "not covered by the proof". A failed unit whose journal names a missing device is not counted against the guest; for one PBP cannot tie to a device, the `FAILED` reason names the devices and points to `checks.guests` `ignore_units`.
+  - Disks and partitions bound with raw lines, `devices.deny`, `lxc.autodev` and `lxc.hook.*` still end `ERROR`. Privileged containers still need `Sys.Modify` on `/`.
+
+  See [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof).
+
 ## v0.11.1
 
 **A patch release: upgrade the daemon and the node helper in either order** (they share major.minor 0.11), outside a scheduled run, since the upgrade restarts the service. With APT, `apt update && apt install --only-upgrade pbp` on each host; otherwise see [Upgrading](docs/upgrading.md). Configs need no change.
