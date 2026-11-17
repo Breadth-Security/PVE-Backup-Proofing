@@ -70,12 +70,22 @@ jobs:
           packaging/debversion_test.sh
           packaging/versionfile_test.sh
           packaging/postinst_test.sh
+          packaging/release-notes_test.sh
       - name: Check the tag against the VERSION file
         if: github.event_name == 'push' && github.ref_type == 'tag'
         # v0.2.0 and v0.2.0-rc1 both need VERSION 0.2.0: the Docker image is
         # stamped from VERSION, so a disagreement would ship a daemon whose
         # version differs from the packages'.
         run: packaging/versionfile.sh "${{ steps.version.outputs.version }}"
+      - name: Write the release notes
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        # The tag's CHANGELOG section becomes the release's description
+        # (issue #105). It fails before anything is built when the section is
+        # missing or empty. Kept out of dist/, whose files are all uploaded.
+        run: |
+          packaging/release-notes.sh "$GITHUB_REF_NAME" > release-notes.md
+          echo "Release notes for $GITHUB_REF_NAME:"
+          cat release-notes.md
       - name: go vet
         run: |
           go vet ./...
@@ -112,13 +122,18 @@ jobs:
           case "$TAG" in *-*) prerelease=true ;; esac
           # A draft: only the maintainer sees it until packaging/sign-release.sh
           # has signed SHA256SUMS and publishes it (issue #37).
-          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" '{tag_name:$t,name:$t,prerelease:$p,draft:true}')
+          # Its description is the tag's CHANGELOG section (release-notes.md);
+          # sign-release.sh adds the signature note below it.
+          body=$(jq -nc --arg t "$TAG" --argjson p "$prerelease" --rawfile n release-notes.md \
+            '{tag_name:$t,name:$t,prerelease:$p,draft:true,body:$n}')
           code=$(curl -sS -o release.json -w '%{http_code}' -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$body")
+          reused=false
           case "$code" in
             201) ;;
             401|403) fail_auth "$code" ;;
             409)
+              reused=true
               # A re-run: reuse the release that already exists for this tag.
               code=$(curl -sS -o release.json -w '%{http_code}' "$API/releases/tags/$TAG" \
                 -H "Authorization: token $TOKEN")
@@ -143,13 +158,17 @@ jobs:
               *) echo "deleting the old SHA256SUMS.sig failed (HTTP $code)"; exit 1 ;;
             esac
           done
-          if [ "$(jq -r .draft release.json)" != true ]; then
+          if [ "$reused" = true ]; then
+            # The notes may have changed since the first run, and the old
+            # signature note no longer holds: write the description afresh,
+            # and hide the release again until it is re-signed.
+            patch=$(jq -nc --rawfile n release-notes.md '{draft:true,body:$n}')
             code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH "$API/releases/$id" \
-              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d '{"draft":true}')
+              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d "$patch")
             case "$code" in
-              200) echo "release set back to draft until it is signed" ;;
+              200) echo "release notes rewritten; the release stays a draft until it is signed" ;;
               401|403) fail_auth "$code" ;;
-              *) echo "setting the release to draft failed (HTTP $code)"; exit 1 ;;
+              *) echo "updating the release failed (HTTP $code)"; exit 1 ;;
             esac
           fi
           # Assets are named with the Debian version (1.2.0~rc1), not the tag.
