@@ -75,7 +75,11 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
 		case kind == model.KindLXC && reDev.MatchString(k):
-			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			// A virtual device stays: removing it is root@pam's alone, and
+			// it reaches nothing outside the container (issue #141).
+			if !KeptDevice(DevicePath(v)) {
+				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			}
 		case kind == model.KindLXC && reMP.MatchString(k):
 			if hostPathMount(v) {
 				path, _ := optValue(v, "mp")
@@ -99,22 +103,6 @@ func Nesting(cfg map[string]string) bool {
 		}
 	}
 	return false
-}
-
-// RawLXCKeys lists, sorted, the raw lxc.* keys of a container config read
-// by ParseConfigText (which gathers those lines under "lxc"). PVE restores
-// them only for root@pam and silently drops them for PBP's token, so the
-// restored copy would differ from the guest it stands for; Sanitize's own
-// "lxc" check never sees them in the restored config.
-func RawLXCKeys(cfg map[string]string) []string {
-	var keys []string
-	for _, line := range strings.Split(cfg["lxc"], "\n") {
-		if k, _, ok := strings.Cut(line, ":"); ok && !slices.Contains(keys, strings.TrimSpace(k)) {
-			keys = append(keys, strings.TrimSpace(k))
-		}
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // SplitList splits a PVE list value (tags, storage content) on ';', ',' or

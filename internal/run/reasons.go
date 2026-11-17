@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // maxReasonRunes keeps a reason within the backup's notes line (200 runes
@@ -89,4 +91,35 @@ const maxNotedRunes = 170
 // note survives the notes line's cut.
 func withSuffix(reason, suffix string) string {
 	return cutRunes(reason, maxNotedRunes-utf8.RuneCountInString(suffix)) + suffix
+}
+
+// rootOnlyReason is the reason for a guest whose copy needs something only
+// root@pam can restore or remove (issue #140): the raw lxc.* keys first,
+// then the config keys with what they name, at most three of each. A list
+// too long for the notes line is cut; the docs pointer always stays.
+func rootOnlyReason(raw []string, keys []sanitize.KeyDetail) string {
+	var parts []string
+	if len(raw) > 0 {
+		parts = append(parts, "raw lxc settings ("+firstOf(raw, 3)+")")
+	}
+	if len(keys) > 0 {
+		named := make([]string, len(keys))
+		for i, k := range keys {
+			named[i] = k.Key
+			if k.Detail != "" {
+				named[i] += " (" + k.Detail + ")"
+			}
+		}
+		parts = append(parts, firstOf(named, 3))
+	}
+	tail := ": only root@pam can (" + docsToken + ")"
+	return cutRunes("PBP cannot proof "+strings.Join(parts, ", "), maxReasonRunes-utf8.RuneCountInString(tail)) + tail
+}
+
+// firstOf joins at most max items and counts the rest ("a, b, c and 2 more").
+func firstOf(items []string, max int) string {
+	if len(items) <= max {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:max], ", ") + fmt.Sprintf(" and %d more", len(items)-max)
 }

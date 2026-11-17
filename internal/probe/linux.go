@@ -404,10 +404,10 @@ func (r *linuxRun) finish(ctx context.Context) Outcome {
 	}
 	for _, c := range r.out.Checks {
 		if !c.OK && c.Detail == timedOutDetail {
-			return r.fail(ctx, "check timed out: "+checkLabel(c.Name))
+			return r.fail(ctx, withHint("check timed out: "+checkLabel(c.Name), devicesNote(r.in.Missing)))
 		}
 		if !c.OK {
-			return r.fail(ctx, "check failed: "+checkLabel(c.Name))
+			return r.fail(ctx, withHint("check failed: "+checkLabel(c.Name), devicesNote(r.in.Missing)))
 		}
 	}
 	r.out.Verdict = model.Proven
@@ -526,7 +526,7 @@ func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) 
 		r.nesting, untraced = nestingFailures(ctx, r.ex, untraced)
 	}
 	if len(untraced) > 0 {
-		return r.fail(ctx, "failed: "+nameList(untraced)), true
+		return r.fail(ctx, withHint("failed: "+nameList(untraced), deviceHint(r.in.Missing))), true
 	}
 	return Outcome{}, false
 }

@@ -620,11 +620,15 @@ func (p *pool) admit(ctx context.Context, glog *slog.Logger, b model.Backup) (le
 		res.Template, res.Name = true, p.nameOf(b, orig)
 		return l, res
 	}
-	// PVE drops raw lxc.* lines unless root@pam restores, so the copy would
-	// not be the guest it stands for. Like an unreadable config, this is the
-	// backup's own condition: its notes record it.
-	if keys := sanitize.RawLXCKeys(orig); b.Key.Kind == model.KindLXC && len(keys) > 0 {
-		l, res := fail(model.Error, "PBP cannot restore containers with raw lxc settings ("+strings.Join(keys, ", ")+"): only root@pam can ("+docsToken+")")
+	// A copy that needs something only root@pam can restore or remove can
+	// never be proofed by PBP's token (issue #140): raw lxc.* lines that are
+	// not device-only, which PVE drops (the copy would not be the guest it
+	// stands for); a container's real devices and hookscript; a VM's raw
+	// host devices. Refuse before reserving or restoring anything. Like an
+	// unreadable config, this is the backup's own condition: its notes
+	// record it.
+	if raw, keys := sanitize.RootOnly(b.Key.Kind, orig); len(raw)+len(keys) > 0 {
+		l, res := fail(model.Error, rootOnlyReason(raw, keys))
 		annotate(d, glog, b, *res, noteName(b.Key, orig))
 		return l, res
 	}

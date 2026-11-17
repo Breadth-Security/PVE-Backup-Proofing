@@ -23,6 +23,7 @@ import (
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/report"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target/targetfake"
@@ -926,27 +927,65 @@ func TestRunExcludedGuestStatus(t *testing.T) {
 	}
 }
 
-// A container whose backed-up config has raw lxc.* lines cannot be restored
-// as it is: PVE drops those lines unless root@pam restores (issue #34, CT111
-// lost lxc.apparmor.profile). It is ERROR before anything is reserved or
-// restored, and its notes say why.
-func TestRunRawLXCConfigIsError(t *testing.T) {
+// A guest whose copy needs something only root@pam can restore or remove
+// is ERROR before anything is reserved or restored, and its notes say why
+// (issue #140): raw lxc.* lines PVE drops unless root@pam restores (issue
+// #34), a container's real devices and hookscript, a VM's raw host devices.
+func TestRunRootOnlyIsError(t *testing.T) {
+	kd := func(k, d string) sanitize.KeyDetail { return sanitize.KeyDetail{Key: k, Detail: d} }
+	tests := []struct {
+		name  string
+		kind  model.GuestKind
+		lines string
+		raw   []string
+		keys  []sanitize.KeyDetail
+	}{
+		{"raw lxc", model.KindLXC, "lxc.apparmor.profile: unconfined\n", []string{"lxc.apparmor.profile"}, nil},
+		{"real device", model.KindLXC, "dev0: /dev/ttyUSB0\n", nil, []sanitize.KeyDetail{kd("dev0", "/dev/ttyUSB0")}},
+		{"hookscript", model.KindLXC, "hookscript: local:snippets/x.sh\n", nil, []sanitize.KeyDetail{kd("hookscript", "")}},
+		{"device and raw lxc", model.KindLXC, "dev0: /dev/ttyUSB0\nlxc.idmap: u 0 100000 65536\nlxc.cgroup2.devices.allow: a\n",
+			[]string{"lxc.idmap"}, []sanitize.KeyDetail{kd("dev0", "/dev/ttyUSB0")}},
+		{"vm raw pci", model.KindQEMU, "hostpci0: 0000:01:00.0\n", nil, []sanitize.KeyDetail{kd("hostpci0", "0000:01:00.0")}},
+		{"vm serial device", model.KindQEMU, "serial0: /dev/ttyS0\n", nil, []sanitize.KeyDetail{kd("serial0", "/dev/ttyS0")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRunFixture(t, 990000, 990009)
+			b := f.add("pbs", tc.kind, 101, 1024, "")
+			f.api.BackupConfigs[b.VolID] += tc.lines
+			f.add("pbs", tc.kind, 102, 1024, "")
+
+			s := f.run(context.Background(), Options{Trigger: "manual"})
+
+			want := rootOnlyReason(tc.raw, tc.keys)
+			if r := byVMID(t, s)[101]; r.Verdict != model.Error || r.Reason != want {
+				t.Errorf("got %s %q, want ERROR %q", r.Verdict, r.Reason, want)
+			}
+			if rs := f.tgt.restores(); len(rs) != 1 || strings.Contains(rs[0], "/101/") {
+				t.Errorf("restores = %q, want only guest 102", rs)
+			}
+			if got := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(got, " · "+want) {
+				t.Errorf("notes = %q", got)
+			}
+		})
+	}
+}
+
+// A container whose raw lines only pass devices through, with a virtual
+// devN the copy keeps, is restored and proofed (issue #141).
+func TestRunDeviceContainerIsProofed(t *testing.T) {
 	f := newRunFixture(t, 990000, 990009)
-	raw := f.add("pbs", model.KindLXC, 101, 1024, "")
-	f.api.BackupConfigs[raw.VolID] += "lxc.apparmor.profile: unconfined\n"
-	f.add("pbs", model.KindLXC, 102, 1024, "")
+	b := f.add("pbs", model.KindLXC, 101, 1024, "")
+	f.api.BackupConfigs[b.VolID] += "dev0: /dev/net/tun\nlxc.cgroup2.devices.allow: c 188:* rwm\n" +
+		"lxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind,optional,create=file\n"
 
 	s := f.run(context.Background(), Options{Trigger: "manual"})
 
-	const want = "PBP cannot restore containers with raw lxc settings (lxc.apparmor.profile): only root@pam can (" + docsToken + ")"
-	if r := byVMID(t, s)[101]; r.Verdict != model.Error || r.Reason != want {
-		t.Errorf("got %s %q, want ERROR %q", r.Verdict, r.Reason, want)
+	if rs := f.tgt.restores(); len(rs) != 1 || !strings.Contains(rs[0], "/101/") {
+		t.Errorf("restores = %q, want guest 101", rs)
 	}
-	if rs := f.tgt.restores(); len(rs) != 1 || strings.Contains(rs[0], "/101/") {
-		t.Errorf("restores = %q, want only guest 102", rs)
-	}
-	if got := f.api.Backups["pbs"][0].Notes; !strings.HasSuffix(got, " · "+want) {
-		t.Errorf("notes = %q", got)
+	if r := byVMID(t, s)[101]; r.Verdict != model.Proven {
+		t.Errorf("got %s %q, want PROVEN", r.Verdict, r.Reason)
 	}
 }
 
@@ -961,6 +1000,11 @@ func TestRunPrivilegedContainer(t *testing.T) {
 		refused bool
 	}{
 		{"no Sys.Modify", func(f *runFixture) {}, true},
+		// Device-only raw lines do not lift the privileged check.
+		{"device lines, no Sys.Modify", func(f *runFixture) {
+			v := f.api.Backups["pbs"][0].VolID
+			f.api.BackupConfigs[v] += "lxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n"
+		}, true},
 		{"Sys.Modify granted", func(f *runFixture) { f.api.Privs = map[string][]string{"/": {"Sys.Modify"}} }, false},
 		{"privileges unreadable", func(f *runFixture) {
 			// Only the read on /: preflight reads the core paths first.
