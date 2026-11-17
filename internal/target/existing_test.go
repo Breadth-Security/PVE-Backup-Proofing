@@ -1581,3 +1581,40 @@ func TestRemoveNotInBackupEdges(t *testing.T) {
 		t.Errorf("both privileges: %v", err)
 	}
 }
+
+// A container with a virtual devN and device-only raw lines (issue #141):
+// PVE's restore drops the raw lines, and Sanitize leaves the kept device
+// in place, since removing it is root@pam's alone.
+func TestSanitizeKeepsVirtualDevice(t *testing.T) {
+	ctx := context.Background()
+	f := healthyFake()
+	f.BackupConfigs[ctVol] = "hostname: vpn\nostype: debian\nrootfs: local-lvm:subvol-201-disk-0,size=8G\n" +
+		"net0: name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=dhcp\nunprivileged: 1\ndev0: /dev/net/tun,mode=0666\n" +
+		"lxc.cgroup2.devices.allow: c 188:* rwm\nlxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind,optional,create=file\n"
+	n := newTarget(t, f, f, nil)
+	b := model.Backup{VolID: ctVol, Key: model.GuestKey{Kind: model.KindLXC, VMID: 201}}
+	if err := n.Restore(ctx, b, 990001, origConfig(f, ctVol)); err != nil {
+		t.Fatal(err)
+	}
+	san, err := n.Sanitize(ctx, model.KindLXC, 990001, SanitizeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.Configs[990001]
+	if cfg["dev0"] != "/dev/net/tun,mode=0666" {
+		t.Errorf("dev0 = %q, want it kept", cfg["dev0"])
+	}
+	for k := range cfg {
+		if strings.HasPrefix(k, "lxc") {
+			t.Errorf("raw line %s in the copy", k)
+		}
+	}
+	if len(san.Removed) != 0 {
+		t.Errorf("Removed = %+v, want nothing", san.Removed)
+	}
+	for _, c := range f.CallLog() {
+		if strings.HasPrefix(c, "SetGuestConfig") && strings.Contains(c, "dev0") {
+			t.Errorf("the copy's dev0 was changed: %q", c)
+		}
+	}
+}

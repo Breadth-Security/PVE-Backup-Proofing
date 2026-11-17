@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 )
 
 // Reasons go into the notes and the notification: they name the guest by
@@ -79,5 +80,44 @@ func TestWithSuffixKeepsSuffix(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "; backup left protected until the next run") {
 		t.Errorf("suffix lost: %q", got)
+	}
+}
+
+// The up-front refusal names what only root@pam can restore or remove,
+// raw lines first, at most three per group (issue #140). A list too long
+// for the notes line is cut; the docs pointer always stays.
+func TestRootOnlyReason(t *testing.T) {
+	kd := func(k, d string) sanitize.KeyDetail { return sanitize.KeyDetail{Key: k, Detail: d} }
+	tail := ": only root@pam can (" + docsToken + ")"
+	tests := []struct {
+		raw  []string
+		keys []sanitize.KeyDetail
+		want string // exact, or the prefix before a cut ("…") when cut
+		cut  bool
+	}{
+		{nil, []sanitize.KeyDetail{kd("dev1", "/dev/ttyUSB0"), kd("hookscript", "")},
+			"PBP cannot proof dev1 (/dev/ttyUSB0), hookscript" + tail, false},
+		{[]string{"lxc.apparmor.profile"}, nil,
+			"PBP cannot proof raw lxc settings (lxc.apparmor.profile)" + tail, false},
+		{[]string{"lxc.apparmor.profile", "lxc.idmap"}, []sanitize.KeyDetail{kd("dev0", "/dev/ttyUSB0")},
+			"PBP cannot proof raw lxc settings (lxc.apparmor.profile, lxc.idmap), dev0 (/dev/ttyUSB0)" + tail, false},
+		{[]string{"lxc.a", "lxc.b", "lxc.c", "lxc.d"}, nil,
+			"PBP cannot proof raw lxc settings (lxc.a, lxc.b, lxc.c and 1 more)" + tail, false},
+		{nil, []sanitize.KeyDetail{kd("usb0", "1-1"), kd("usb1", "1-2"), kd("usb2", "1-3"), kd("usb3", "1-4"), kd("usb4", "1-5")},
+			"PBP cannot proof usb0 (1-1), usb1 (1-2), usb2 (1-3) and 2 more" + tail, false},
+		{[]string{"lxc.cgroup2.devices.deny", "lxc.apparmor.profile", "lxc.idmap"}, []sanitize.KeyDetail{kd("dev0", "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge-if00-port0")},
+			"PBP cannot proof raw lxc settings (lxc.cgroup2.devices.deny, lxc.apparmor.profile, lxc.idmap), d", true},
+	}
+	for _, tc := range tests {
+		got := rootOnlyReason(tc.raw, tc.keys)
+		if n := utf8.RuneCountInString(got); n > maxReasonRunes {
+			t.Errorf("%d runes, over the cap: %q", n, got)
+		}
+		if !tc.cut && got != tc.want {
+			t.Errorf("rootOnlyReason(%q, %v)\n got  %q\n want %q", tc.raw, tc.keys, got, tc.want)
+		}
+		if tc.cut && (!strings.HasPrefix(got, tc.want) || !strings.HasSuffix(got, "…"+tail)) {
+			t.Errorf("rootOnlyReason(%q, %v) = %q, want %q…%s", tc.raw, tc.keys, got, tc.want, tail)
+		}
 	}
 }

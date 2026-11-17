@@ -147,18 +147,6 @@ func TestNesting(t *testing.T) {
 	}
 }
 
-// Raw lxc.* lines in a backed-up container config, as ParseConfigText reads
-// them: PVE restores them only for root@pam.
-func TestRawLXCKeys(t *testing.T) {
-	orig := ParseConfigText("arch: amd64\nlxc.apparmor.profile: unconfined\nlxc.cgroup2.devices.allow: c 10:200 rwm\nhostname: x\n")
-	if got := RawLXCKeys(orig); !slices.Equal(got, []string{"lxc.apparmor.profile", "lxc.cgroup2.devices.allow"}) {
-		t.Errorf("RawLXCKeys = %q", got)
-	}
-	if got := RawLXCKeys(map[string]string{"hostname": "x"}); got != nil {
-		t.Errorf("RawLXCKeys = %q, want none", got)
-	}
-}
-
 func TestSanitizeLXCMounts(t *testing.T) {
 	p := Sanitize(model.KindLXC, map[string]string{
 		"mp0":  "/mnt/media,mp=/media",

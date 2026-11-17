@@ -326,6 +326,13 @@ func (f *Fake) Restore(ctx context.Context, node string, kind model.GuestKind, v
 	}
 	cfg := parseConfig(raw)
 	if kind == model.KindLXC {
+		// Like PVE for any caller but root@pam (sanitize_and_merge_config):
+		// every raw lxc.* line is dropped; devN is merged unchecked.
+		for k := range cfg {
+			if strings.HasPrefix(k, "lxc.") {
+				delete(cfg, k)
+			}
+		}
 		if mounts == nil {
 			for _, k := range mountKeys(cfg) {
 				if fakeHostPath(cfg[k]) {
@@ -457,6 +464,11 @@ func (f *Fake) SetGuestConfig(ctx context.Context, node string, kind model.Guest
 	if err != nil {
 		return err
 	}
+	if kind == model.KindLXC {
+		if err := rootOnlyLXC(node, vmid, set, del); err != nil {
+			return err
+		}
+	}
 	for _, k := range del {
 		delete(cfg, k)
 	}
@@ -466,6 +478,30 @@ func (f *Fake) SetGuestConfig(ctx context.Context, node string, kind model.Guest
 	f.syncListing(vmid)
 	return nil
 }
+
+// rootOnlyLXC refuses what pve-container's check_ct_modify_config_perm
+// keeps for root@pam: changing or deleting a container's devN or hookscript.
+func rootOnlyLXC(node string, vmid int, set map[string]string, del []string) error {
+	keys := slices.Clone(del)
+	for k := range set {
+		keys = append(keys, k)
+	}
+	for _, k := range keys {
+		msg := ""
+		switch {
+		case reDevKey.MatchString(k):
+			msg = "configuring device passthrough is only allowed for root@pam"
+		case k == "hookscript":
+			msg = "changing the hookscript is only allowed for root@pam"
+		default:
+			continue
+		}
+		return &pve.APIError{Status: 403, Path: fmt.Sprintf("/nodes/%s/lxc/%d/config", node, vmid), Message: "Permission check failed (" + msg + ")"}
+	}
+	return nil
+}
+
+var reDevKey = regexp.MustCompile(`^dev\d+$`)
 
 func (f *Fake) OriginalConfig(ctx context.Context, node, volid string) (string, error) {
 	f.mu.Lock()

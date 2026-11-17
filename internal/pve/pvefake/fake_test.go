@@ -505,3 +505,48 @@ func TestRestoreLXCMountsValidated(t *testing.T) {
 		t.Errorf("mp2 %q mp10 %q", cfg["mp2"], cfg["mp10"])
 	}
 }
+
+// Like PVE for any caller but root@pam: a container restore drops every raw
+// lxc.* line and keeps devN (pve-container's sanitize_and_merge_config), and
+// changing devN or the hookscript afterwards is refused (issue #141).
+func TestLXCRootOnlyKeys(t *testing.T) {
+	ctx := context.Background()
+	const ctVol = "PBS:backup/ct/150/2026-11-17T02:00:00Z"
+	f := New()
+	f.BackupConfigs[ctVol] = "hostname: vpn\nrootfs: local-zfs:subvol-150-disk-0,size=8G\nunprivileged: 1\n" +
+		"dev0: /dev/net/tun\nhookscript: local:snippets/x.sh\n" +
+		"lxc.cgroup2.devices.allow: c 188:* rwm\nlxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind\n"
+	if _, err := f.Restore(ctx, "pve1", model.KindLXC, 9300, ctVol, "scratch", nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.Configs[9300]
+	for k := range cfg {
+		if strings.HasPrefix(k, "lxc") {
+			t.Errorf("raw line %s restored", k)
+		}
+	}
+	if cfg["dev0"] != "/dev/net/tun" || cfg["hookscript"] != "local:snippets/x.sh" {
+		t.Errorf("dev0 %q hookscript %q, want both restored", cfg["dev0"], cfg["hookscript"])
+	}
+	for _, tc := range []struct {
+		set  map[string]string
+		del  []string
+		want string
+	}{
+		{nil, []string{"dev0"}, "Permission check failed (configuring device passthrough is only allowed for root@pam)"},
+		{map[string]string{"dev1": "/dev/fuse"}, nil, "Permission check failed (configuring device passthrough is only allowed for root@pam)"},
+		{nil, []string{"hookscript"}, "Permission check failed (changing the hookscript is only allowed for root@pam)"},
+	} {
+		err := f.SetGuestConfig(ctx, "pve1", model.KindLXC, 9300, tc.set, append([]string{"onboot"}, tc.del...))
+		var ae *pve.APIError
+		if !errors.As(err, &ae) || ae.Status != 403 || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("set %v del %v: err %v, want 403 %q", tc.set, tc.del, err, tc.want)
+		}
+	}
+	if cfg := f.Configs[9300]; cfg["dev0"] == "" || cfg["onboot"] != "0" {
+		t.Errorf("a refused change was applied: %v", cfg)
+	}
+	if err := f.SetGuestConfig(ctx, "pve1", model.KindLXC, 9300, map[string]string{"tags": "pbp"}, nil); err != nil {
+		t.Errorf("an ordinary change was refused: %v", err)
+	}
+}
