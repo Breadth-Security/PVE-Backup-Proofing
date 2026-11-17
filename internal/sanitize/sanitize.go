@@ -75,7 +75,11 @@ func Sanitize(kind model.GuestKind, restored map[string]string, bridge string) P
 				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
 			}
 		case kind == model.KindLXC && reDev.MatchString(k):
-			p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			// A virtual device stays: removing it is root@pam's alone, and
+			// it reaches nothing outside the container (issue #141).
+			if !KeptDevice(DevicePath(v)) {
+				p.remove(k, model.MissingPiece{Kind: "passthrough", Key: k})
+			}
 		case kind == model.KindLXC && reMP.MatchString(k):
 			if hostPathMount(v) {
 				path, _ := optValue(v, "mp")

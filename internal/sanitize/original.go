@@ -11,8 +11,10 @@ var reDisk = regexp.MustCompile(`^(scsi|virtio|sata|ide)\d+$`)
 
 // MissingFromOriginal reports pieces the backup excludes, judged from the
 // original (live) config: qemu disks with backup=0, storage-backed LXC
-// mount points without backup=1, and LXC bind (or device) mount points,
-// which the copy is restored without (RestoreMounts, issue #129). Sanitize
+// mount points without backup=1, LXC bind (or device) mount points,
+// which the copy is restored without (RestoreMounts, issue #129), and the
+// devices of LXC raw lines PVE drops on restore when all are device-only
+// (issue #141). Sanitize
 // would report a bind mount still in the restored config too; the run
 // drops such duplicates.
 //
@@ -35,6 +37,10 @@ func MissingFromOriginal(kind model.GuestKind, original map[string]string) []mod
 			if !backupEnabled(v, true) {
 				out = append(out, model.MissingPiece{Kind: "excluded-disk", Key: k, Detail: "backup=0"})
 			}
+		case kind == model.KindLXC && k == "lxc":
+			// PVE drops raw lines when PBP's token restores; device-only
+			// ones are proofed without their devices (issue #141).
+			out = append(out, droppedDevices(original)...)
 		case kind == model.KindLXC && reMP.MatchString(k):
 			if hostPathMount(v) {
 				// PBP restores the copy without it (RestoreMounts, issue
