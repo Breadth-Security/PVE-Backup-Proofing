@@ -526,7 +526,7 @@ func (r *linuxRun) triage(ctx context.Context, failed []string) (Outcome, bool) 
 		r.nesting, untraced = nestingFailures(ctx, r.ex, untraced)
 	}
 	if len(untraced) > 0 {
-		return r.fail(ctx, "failed: "+nameList(untraced)), true
+		return r.fail(ctx, withHint("failed: "+nameList(untraced), deviceHint(r.in.Missing))), true
 	}
 	return Outcome{}, false
 }

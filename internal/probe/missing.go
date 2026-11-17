@@ -2,9 +2,12 @@ package probe
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 )
@@ -52,6 +55,21 @@ func traceMissing(ctx context.Context, ex Executor, failed []string, missing []m
 			pieceOf[u] = piece
 			mountWheres = append(mountWheres, p.Where)
 			mountPieces = append(mountPieces, piece)
+		}
+	}
+
+	// Devices PVE dropped with a container's raw lxc lines (issue #141):
+	// a unit whose own journal names one is covered by it. Units covered
+	// here can explain their dependents below.
+	if devices := droppedDevicePaths(missing); len(devices) > 0 {
+		absent := map[string]bool{}
+		for _, u := range failed {
+			if _, done := pieceOf[u]; done {
+				continue
+			}
+			if piece, ok := traceDevice(ctx, ex, u, devices, absent); ok {
+				pieceOf[u] = piece
+			}
 		}
 	}
 
@@ -221,4 +239,97 @@ func resolveSource(what string) string {
 		return p
 	}
 	return ""
+}
+
+// reDevPath finds device paths in journal text, ending before characters
+// that cannot be part of one: `open("/dev/ttyUSB0"): …` yields /dev/ttyUSB0.
+var reDevPath = regexp.MustCompile(`/dev/[^\s"'()<>\[\]{}:,;=]+`)
+
+// droppedDevicePaths returns the device pieces of raw lxc lines PVE dropped
+// that carry a path inside the container (bind mounts of devices; allow
+// rules have none).
+func droppedDevicePaths(missing []model.MissingPiece) []model.MissingPiece {
+	var out []model.MissingPiece
+	for _, m := range missing {
+		if m.Kind == "passthrough" && strings.HasPrefix(m.Key, "lxc.") && m.Path != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// traceDevice decides whether a failed unit is explained by a dropped
+// device: a path its recent journal names must equal a device's path or
+// lie under it, and be absent in the copy (`test -e` exits 1, as for
+// disks). It is conservative: a journal that cannot be read, or a path
+// that exists, explains nothing. absent caches test -e results by path.
+func traceDevice(ctx context.Context, ex Executor, unit string, devices []model.MissingPiece, absent map[string]bool) (model.MissingPiece, bool) {
+	res, err := ex.Exec(ctx, []string{"journalctl", "-u", unit, "-b", "--no-pager", "-n", "50", "-o", "cat"})
+	if err != nil || res.ExitCode != 0 {
+		return model.MissingPiece{}, false
+	}
+	for _, p := range reDevPath.FindAllString(res.Stdout, -1) {
+		p = path.Clean(strings.TrimRight(p, "."))
+		for _, d := range devices {
+			if !pathWithin(p, d.Path) {
+				continue
+			}
+			gone, seen := absent[p]
+			if !seen {
+				r, err := ex.Exec(ctx, []string{"test", "-e", p})
+				gone = err == nil && r.ExitCode == 1
+				absent[p] = gone
+			}
+			if gone {
+				return d, true
+			}
+		}
+	}
+	return model.MissingPiece{}, false
+}
+
+// deviceHint is appended to a FAILED reason when the copy was restored
+// without the devices of raw lxc lines: units that need them fail, and
+// tracing cannot always tell. It names the devices (or "device rules" when
+// only allow rules were dropped) and how to ignore such a unit; "" when no
+// raw device lines were dropped.
+func deviceHint(missing []model.MissingPiece) string {
+	var paths []string
+	dropped := false
+	for _, m := range missing {
+		if m.Kind != "passthrough" || !strings.HasPrefix(m.Key, "lxc.") {
+			continue
+		}
+		dropped = true
+		if m.Path != "" && !slices.Contains(paths, m.Path) {
+			paths = append(paths, m.Path)
+		}
+	}
+	if !dropped {
+		return ""
+	}
+	what := "device rules"
+	switch {
+	case len(paths) > 2:
+		what = fmt.Sprintf("%s and %d more", strings.Join(paths[:2], ", "), len(paths)-2)
+	case len(paths) > 0:
+		what = strings.Join(paths, ", ")
+	}
+	return " · copy has no " + what + " (raw lxc lines); to skip a unit that needs them, use checks.guests ignore_units"
+}
+
+// notedReasonRunes is the reason's share of the backup's notes line (the
+// run cuts reasons to it): a hint appended to a reason must fit within it.
+const notedReasonRunes = 160
+
+// withHint appends hint to reason, cutting reason first so the hint stays
+// within the notes line.
+func withHint(reason, hint string) string {
+	if hint == "" {
+		return reason
+	}
+	if room := notedReasonRunes - utf8.RuneCountInString(hint); utf8.RuneCountInString(reason) > room {
+		reason = string([]rune(reason)[:room-1]) + "…"
+	}
+	return reason + hint
 }
