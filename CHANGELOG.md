@@ -13,6 +13,7 @@ Changes:
   See [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof).
 - **Device wording in guest logs.** A unit that fails for lack of a device now reads `…: not in the copy, skipped` instead of `not backed up`: a device is never part of a backup.
 - **NVIDIA capability devices.** A raw line that binds a file under `/dev/nvidia-caps/` (such as `/dev/nvidia-caps/nvidia-cap1`) counts as device-only, like the rest of an NVIDIA container's device lines, so such a container is proofed without its GPU instead of ending `ERROR`.
+- **Dependencies:** `golang.org/x/crypto` v0.59.0 (from v0.58.0) and `golang.org/x/sys` v0.50.0 (issue #103). The Trivy exception for GO-2026-5932 is gone: that advisory concerns x/crypto's `openpgp` packages, which PBP never imported, and v0.59.0 is the first tagged release with the fix.
 
 ## v0.11.1
 
