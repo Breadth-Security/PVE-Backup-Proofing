@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.11.2
+
+**A patch release: upgrade the daemon and the node helper in either order** (they share major.minor 0.11), outside a scheduled run, since the upgrade restarts the service. With APT, `apt update && apt install --only-upgrade pbp` on each host; otherwise see [Upgrading](docs/upgrading.md). Configs need no change.
+
+**Containers with devices:** some that used to end `ERROR` are now restored and proofed, so a run can restore more guests than before: those whose only devices are `/dev/net/tun`, `/dev/fuse` or pseudo-devices, and those whose raw `lxc.*` lines only pass devices through. A copy gets none of the devices of raw lines; a container that passes `/dev/net/tun` with a raw line can give it as `dev0: /dev/net/tun` instead, which the copy keeps. Guests that only `root@pam` could proof now end `ERROR` before anything is restored, with a reason that names what blocks them.
 
 Changes:
 
