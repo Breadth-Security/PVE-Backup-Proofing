@@ -228,7 +228,7 @@ func (j *job) prove(ctx context.Context, res *model.GuestResult) {
 		fail(model.Error, "%s", plainErr("cannot make the copy safe", err))
 		return
 	}
-	j.logSanitized(sanitized)
+	j.logSanitized(sanitized, droppedPieces(kind, j.orig))
 	if kind == model.KindLXC {
 		if kept := sanitize.KeptDevices(j.orig); len(kept) > 0 {
 			named := make([]string, len(kept))
@@ -338,17 +338,18 @@ func (j *job) stepFailed(step string, took time.Duration, err error) string {
 
 // logSanitized logs the config edits that made the guest safe and what the
 // proof can no longer cover.
-func (j *job) logSanitized(s target.Sanitized) {
+func (j *job) logSanitized(s target.Sanitized, dropped []model.MissingPiece) {
 	if len(s.Changes) == 0 {
 		j.log.Info("made safe: nothing to change")
 	} else {
 		j.log.Info("made safe: " + strings.Join(s.Changes, "; "))
 	}
-	if len(s.Removed) == 0 {
+	removed := append(slices.Clone(s.Removed), dropped...)
+	if len(removed) == 0 {
 		return
 	}
-	pieces := make([]string, len(s.Removed))
-	for i, p := range s.Removed {
+	pieces := make([]string, len(removed))
+	for i, p := range removed {
 		what := strings.TrimSpace(p.Kind + " " + p.Path)
 		if p.Detail != "" {
 			what += ", " + p.Detail
@@ -406,20 +407,31 @@ func (j *job) missingPieces(removed []model.MissingPiece) []model.MissingPiece {
 	return out
 }
 
-// droppedLines lists the device-only raw lxc lines PVE drops when PBP's
-// token restores a container (issue #141), at most three and a count of
-// the rest: "lxc.mount.entry /dev/ttyUSB0, …". It is "" when there are none.
-func droppedLines(kind model.GuestKind, orig map[string]string) string {
+// droppedPieces are the device pieces of a container's raw lxc lines, which
+// PVE drops when PBP's token restores (issue #141).
+func droppedPieces(kind model.GuestKind, orig map[string]string) []model.MissingPiece {
 	if kind != model.KindLXC {
-		return ""
+		return nil
 	}
-	var lines []string
+	var out []model.MissingPiece
 	for _, p := range sanitize.MissingFromOriginal(kind, orig) {
 		if strings.HasPrefix(p.Key, "lxc.") {
-			lines = append(lines, p.Key+" "+cmp.Or(p.Path, p.Detail))
+			out = append(out, p)
 		}
 	}
-	return firstOf(lines, 3)
+	return out
+}
+
+// droppedLines lists the device-only raw lxc lines PVE drops when PBP's
+// token restores a container (issue #141), all of them, since the guest's
+// log has no length cap: "lxc.mount.entry /dev/ttyUSB0, …". It is "" when
+// there are none.
+func droppedLines(kind model.GuestKind, orig map[string]string) string {
+	var lines []string
+	for _, p := range droppedPieces(kind, orig) {
+		lines = append(lines, p.Key+" "+cmp.Or(p.Path, p.Detail))
+	}
+	return strings.Join(lines, ", ")
 }
 
 // pieceList lists mount points with their paths: "mp0 (/a), mp1 (/b)".

@@ -143,12 +143,12 @@ func TestJournalExecErrorUntraced(t *testing.T) {
 func TestDeviceHint(t *testing.T) {
 	ex := zigbee("crashed\n")
 	o := runMissing(ex, allowPiece, devPiece("/dev/ttyUSB0", ""), devPiece("/dev/ttyACM0", ""))
-	want := "failed: z2m.service · copy has no /dev/ttyUSB0, /dev/ttyACM0 (raw lxc lines); to skip a unit that needs them, use checks.guests ignore_units"
+	want := "failed: z2m.service · copy has no /dev/ttyUSB0, /dev/ttyACM0 (raw lxc lines); if a unit needs them: checks.guests ignore_units"
 	if o.Verdict != model.Failed || o.Reason != want {
 		t.Fatalf("got %s %q\nwant %q", o.Verdict, o.Reason, want)
 	}
 	o = runMissing(zigbee("crashed\n"), allowPiece)
-	want = "failed: z2m.service · copy has no device rules (raw lxc lines); to skip a unit that needs them, use checks.guests ignore_units"
+	want = "failed: z2m.service · copy has no device rules (raw lxc lines); if a unit needs them: checks.guests ignore_units"
 	if o.Reason != want {
 		t.Fatalf("got %q\nwant %q", o.Reason, want)
 	}
@@ -165,11 +165,31 @@ func TestDeviceHintFitsTheNotes(t *testing.T) {
 		props[u+".service"] = "Type=simple\n"
 	}
 	o := runMissing(failing(props), devPiece("/dev/ttyUSB0", ""), devPiece("/dev/ttyACM0", ""), devPiece("/dev/serial/by-id", ""))
-	tail := " · copy has no /dev/ttyUSB0, /dev/ttyACM0 and 1 more (raw lxc lines); to skip a unit that needs them, use checks.guests ignore_units"
+	tail := " · copy has no /dev/ttyUSB0 and 2 more (raw lxc lines); if a unit needs them: checks.guests ignore_units"
 	if !strings.HasPrefix(o.Reason, "failed: ") || !strings.HasSuffix(o.Reason, "…"+tail) {
 		t.Fatalf("reason %q", o.Reason)
 	}
 	if n := len([]rune(o.Reason)); n > 160 {
 		t.Fatalf("%d runes: %q", n, o.Reason)
+	}
+}
+
+// A device path as long as a real by-id serial adapter's must not break the
+// reason: it is shortened so the units and the pointer still fit.
+func TestDeviceHintLongPaths(t *testing.T) {
+	long := "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_0123456789abcdef-if00-port0"
+	for name, pieces := range map[string][]model.MissingPiece{
+		"one long":      {devPiece(long, "")},
+		"two medium":    {devPiece("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", ""), devPiece("/dev/serial/by-id/usb-ITead_Sonoff_Zigbee-if00-port0", "")},
+		"three and one": {devPiece(long, ""), devPiece("/dev/ttyUSB0", ""), devPiece("/dev/ttyACM0", "")},
+	} {
+		o := runMissing(zigbee("crashed\n"), pieces...)
+		if o.Verdict != model.Failed || !strings.HasPrefix(o.Reason, "failed: z2m.service · ") ||
+			!strings.HasSuffix(o.Reason, "; if a unit needs them: checks.guests ignore_units") {
+			t.Errorf("%s: got %s %q", name, o.Verdict, o.Reason)
+		}
+		if n := len([]rune(o.Reason)); n > 160 {
+			t.Errorf("%s: %d runes: %q", name, n, o.Reason)
+		}
 	}
 }

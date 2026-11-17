@@ -308,14 +308,43 @@ func deviceHint(missing []model.MissingPiece) string {
 	if !dropped {
 		return ""
 	}
-	what := "device rules"
-	switch {
-	case len(paths) > 2:
-		what = fmt.Sprintf("%s and %d more", strings.Join(paths[:2], ", "), len(paths)-2)
-	case len(paths) > 0:
-		what = strings.Join(paths, ", ")
+	return " · copy has no " + devicesNamed(paths) + " (raw lxc lines); if a unit needs them: checks.guests ignore_units"
+}
+
+// hintDeviceRunes bounds the devices a hint names, so the hint (at most
+// 120 runes) leaves the reason at least 40 of the notes line's 160.
+const hintDeviceRunes = 39
+
+// devicesNamed names dropped devices within hintDeviceRunes: up to two in
+// full, else the first and a count, a long path shortened in the middle
+// (by-id names run to 100 runes), or only the count.
+func devicesNamed(paths []string) string {
+	if len(paths) == 0 {
+		return "device rules"
 	}
-	return " · copy has no " + what + " (raw lxc lines); to skip a unit that needs them, use checks.guests ignore_units"
+	if len(paths) <= 2 {
+		if s := strings.Join(paths, ", "); utf8.RuneCountInString(s) <= hintDeviceRunes {
+			return s
+		}
+	}
+	more := ""
+	if len(paths) > 1 {
+		more = fmt.Sprintf(" and %d more", len(paths)-1)
+	}
+	if room := hintDeviceRunes - len(more); room >= 15 {
+		return middleCut(paths[0], room) + more
+	}
+	return fmt.Sprintf("%d devices", len(paths))
+}
+
+// middleCut shortens s to n runes by replacing its middle with "…".
+func middleCut(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	head := (n - 1) / 2
+	return string(r[:head]) + "…" + string(r[len(r)-(n-1-head):])
 }
 
 // notedReasonRunes is the reason's share of the backup's notes line (the
@@ -328,7 +357,11 @@ func withHint(reason, hint string) string {
 	if hint == "" {
 		return reason
 	}
-	if room := notedReasonRunes - utf8.RuneCountInString(hint); utf8.RuneCountInString(reason) > room {
+	room := notedReasonRunes - utf8.RuneCountInString(hint)
+	if room < 2 {
+		return reason // cannot happen with devicesNamed's bound; never panic
+	}
+	if utf8.RuneCountInString(reason) > room {
 		reason = string([]rune(reason)[:room-1]) + "…"
 	}
 	return reason + hint

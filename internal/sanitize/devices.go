@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -57,15 +58,26 @@ var charDevices = []string{
 
 // RawLXCLines returns a container config's raw lxc.* lines, as
 // ParseConfigText gathers them under "lxc", in config order.
+//
+// PVE reads "lxc.key: value" and "lxc.key = value" alike; a line in neither
+// form is returned whole as its Key, so it is never device-only and blocks.
 func RawLXCLines(cfg map[string]string) []RawLine {
+	if cfg["lxc"] == "" {
+		return nil
+	}
 	var out []RawLine
 	for _, line := range strings.Split(cfg["lxc"], "\n") {
-		if k, v, ok := strings.Cut(line, ":"); ok {
-			out = append(out, RawLine{Key: strings.TrimSpace(k), Value: strings.TrimSpace(v)})
+		if m := reRawLine.FindStringSubmatch(line); m != nil {
+			out = append(out, RawLine{Key: m[1], Value: m[2]})
+		} else if line = strings.TrimSpace(line); line != "" {
+			out = append(out, RawLine{Key: line})
 		}
 	}
 	return out
 }
+
+// reRawLine is PVE's reading of a raw lxc line (PVE::LXC::Config).
+var reRawLine = regexp.MustCompile(`^\s*(lxc\.[a-z0-9_\-.]+)(?::|\s*=)\s*(.*?)\s*$`)
 
 // DeviceOnly reports whether a raw line only grants or bind-mounts
 // character devices: a cgroup devices.allow rule (on its own it mounts
@@ -166,8 +178,11 @@ func droppedDevices(cfg map[string]string) []model.MissingPiece {
 			return nil
 		}
 		p := model.MissingPiece{Kind: "passthrough", Key: l.Key, Detail: l.Value}
-		if l.Key == "lxc.mount.entry" {
-			src, target, _ := deviceMount(l.Value)
+		// Only a target under /dev/ is a device path the guest's services
+		// can name; any other piece keeps the raw value and no Path, so it
+		// never covers a unit (a target of "dev" would cover every absent
+		// /dev path).
+		if src, target, _ := deviceMount(l.Value); l.Key == "lxc.mount.entry" && strings.HasPrefix(target, "/dev/") {
 			p.Path, p.Detail = target, ""
 			if src != target {
 				p.Detail = src

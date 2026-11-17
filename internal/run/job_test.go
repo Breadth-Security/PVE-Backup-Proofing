@@ -1125,3 +1125,22 @@ func TestDevicesLogged(t *testing.T) {
 		}
 	}
 }
+
+// Every dropped device is listed under "not covered by the proof" in the
+// guest's log, which has no length cap (review finding).
+func TestDroppedDevicesNotCoveredLogged(t *testing.T) {
+	f := newFixture(t)
+	f.b.Key = model.GuestKey{Kind: model.KindLXC, VMID: 101}
+	f.api.BackupConfigs[volid] = "hostname: web01\nrootfs: s:subvol-101-disk-0,size=8G\nunprivileged: 1\n" +
+		"lxc.cgroup2.devices.allow: c 188:* rwm\nlxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind\n" +
+		"lxc.mount.entry: /dev/ttyUSB1 dev/ttyUSB1 none bind\nlxc.mount.entry: /dev/ttyACM0 dev/ttyACM0 none bind\n"
+	f.run(context.Background())
+	want := "not covered by the proof: lxc.cgroup2.devices.allow (passthrough, c 188:* rwm), lxc.mount.entry (passthrough /dev/ttyUSB0), " +
+		"lxc.mount.entry (passthrough /dev/ttyUSB1), lxc.mount.entry (passthrough /dev/ttyACM0)"
+	if !strings.Contains(f.logBuf.String(), want) {
+		t.Errorf("log lacks %q:\n%s", want, f.logBuf)
+	}
+	if !strings.Contains(f.logBuf.String(), "restored without its raw lxc lines (lxc.cgroup2.devices.allow c 188:* rwm, lxc.mount.entry /dev/ttyUSB0, lxc.mount.entry /dev/ttyUSB1, lxc.mount.entry /dev/ttyACM0)") {
+		t.Errorf("restore line cut:\n%s", f.logBuf)
+	}
+}

@@ -164,3 +164,38 @@ func TestMissingFromOriginalDroppedDevices(t *testing.T) {
 		t.Errorf("with a non-device line: got %v, want none", got)
 	}
 }
+
+// PVE also reads "lxc.key = value"; such a line is classified like the
+// colon form, and a raw line PBP cannot parse blocks (review finding).
+func TestRawLXCLinesEqualsForm(t *testing.T) {
+	got := RawLXCLines(ParseConfigText("lxc.apparmor.profile = unconfined\nlxc.mount.entry = /dev/sdb1 mnt/data none bind\nlxc.cgroup2.devices.allow= c 10:200 rwm\nlxc.garbage\n"))
+	want := []RawLine{
+		{Key: "lxc.apparmor.profile", Value: "unconfined"},
+		{Key: "lxc.mount.entry", Value: "/dev/sdb1 mnt/data none bind"},
+		{Key: "lxc.cgroup2.devices.allow", Value: "c 10:200 rwm"},
+		{Key: "lxc.garbage"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RawLXCLines = %q\nwant %q", got, want)
+	}
+	raw, _ := RootOnly(model.KindLXC, ParseConfigText("lxc.mount.entry = /dev/sdb1 mnt/data none bind\nlxc.garbage\n"))
+	if !reflect.DeepEqual(raw, []string{"lxc.garbage", "lxc.mount.entry"}) {
+		t.Errorf("RootOnly raw = %q", raw)
+	}
+}
+
+// Only a target under /dev/ is a path the guest's services can name; any
+// other target gives the piece no Path, so it can never cover a unit
+// (a target of "dev" would otherwise cover every absent /dev path).
+func TestDroppedDeviceTargetOutsideDev(t *testing.T) {
+	got := MissingFromOriginal(model.KindLXC, ParseConfigText(
+		"lxc.mount.entry: /dev/dri dev none rbind,create=dir\nlxc.mount.entry: /dev/dri mnt/gpu none bind\nlxc.mount.entry: /dev/ttyUSB0 dev/ttyUSB0 none bind\n"))
+	want := []model.MissingPiece{
+		{Kind: "passthrough", Key: "lxc.mount.entry", Detail: "/dev/dri dev none rbind,create=dir"},
+		{Kind: "passthrough", Key: "lxc.mount.entry", Detail: "/dev/dri mnt/gpu none bind"},
+		{Kind: "passthrough", Key: "lxc.mount.entry", Path: "/dev/ttyUSB0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %v\nwant %v", got, want)
+	}
+}
