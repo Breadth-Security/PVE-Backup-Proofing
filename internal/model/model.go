@@ -91,7 +91,11 @@ func (n NotCovered) LogLine() string {
 	if p.Detail != "" {
 		what += ", " + p.Detail
 	}
-	return fmt.Sprintf("Found %s depends on %s (%s): not backed up, skipped", n.Unit, name, what)
+	why := "not backed up"
+	if p.Kind == "passthrough" {
+		why = "not in the copy" // a device is never in a backup
+	}
+	return fmt.Sprintf("Found %s depends on %s (%s): %s, skipped", n.Unit, name, what, why)
 }
 
 type GuestResult struct {

@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.11.2
+
+**A patch release: upgrade the daemon and the node helper in either order** (they share major.minor 0.11), outside a scheduled run, since the upgrade restarts the service. With APT, `apt update && apt install --only-upgrade pbp` on each host; otherwise see [Upgrading](docs/upgrading.md). Configs need no change.
+
+**Containers with devices:** some that used to end `ERROR` are now restored and proofed, so a run can restore more guests than before: those whose only devices are `/dev/net/tun`, `/dev/fuse` or pseudo-devices, and those whose raw `lxc.*` lines only pass devices through. A copy gets none of the devices of raw lines; a container that passes `/dev/net/tun` with a raw line can give it as `dev0: /dev/net/tun` instead, which the copy keeps. Guests that only `root@pam` could proof now end `ERROR` before anything is restored, with a reason that names what blocks them.
 
 Changes:
 
@@ -11,6 +15,10 @@ Changes:
   - Disks and partitions bound with raw lines, `devices.deny`, `lxc.autodev` and `lxc.hook.*` still end `ERROR`. Privileged containers still need `Sys.Modify` on `/`.
 
   See [Guests PBP cannot proof](docs/security.md#guests-pbp-cannot-proof).
+- **Device wording in guest logs, the run summary and the notification.** A unit that fails for lack of a device now reads `…: not in the copy, skipped` instead of `not backed up`: a device is never part of a backup.
+- **NVIDIA capability devices.** A raw line that binds a file under `/dev/nvidia-caps/` (such as `/dev/nvidia-caps/nvidia-cap1`) counts as device-only, like the rest of an NVIDIA container's device lines, so such a container is proofed without its GPU instead of ending `ERROR`.
+- **Dependencies:** `golang.org/x/crypto` v0.59.0 (from v0.58.0) and `golang.org/x/sys` v0.50.0 (issue #103). The Trivy exception for GO-2026-5932 is gone: that advisory concerns x/crypto's `openpgp` packages, which PBP never imported, and v0.59.0 is the first tagged release with the fix.
+- **Release notes come from the CHANGELOG** (issue #105). The release workflow sets each release's description to its section of `CHANGELOG.md`, with relative links turned into links to that tag's files on GitHub and Gitea issue references left out, and fails before building when the section is missing or empty. The signature note is still added below it when the release is signed.
 
 ## v0.11.1
 
