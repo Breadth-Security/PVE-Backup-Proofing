@@ -397,8 +397,9 @@ func (n *ExistingNode) Start(ctx context.Context, kind model.GuestKind, vmid int
 // on the node may lock a stopped container for a moment, as "pct df" does),
 // Destroy waits lockPoll and runs the whole sequence again, checks
 // included, for up to lockWait; a lock that outlasts it fails as before,
-// with an error that names it. PBP never clears or skips a lock (issue
-// #144).
+// with an error that names it. A "create" lock fails at once, since only
+// the restore that set it would clear it. The wait is logged to the logger
+// WithLog put in ctx. PBP never clears or skips a lock (issue #144).
 func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec Recorded) error {
 	start := time.Now()
 	last := "" // the lock of the last refusal
@@ -408,8 +409,13 @@ func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid i
 		waited := time.Since(start).Round(time.Second)
 		if !locked {
 			if err == nil && last != "" {
-				slog.Info("destroy waited for a lock", "vmid", vmid, "lock", last, "waited", waited)
+				logFrom(ctx).Info("destroy waited for a lock", "vmid", vmid, "lock", last, "waited", waited)
 			}
+			return err
+		}
+		if lock == "create" {
+			// A restore's lock, which no other tool releases: a leftover
+			// of a restore cut short keeps it, so waiting only delays.
 			return err
 		}
 		last = lock
@@ -806,4 +812,26 @@ func (n *ExistingNode) mayRemoveDrives(ctx context.Context, plan sanitize.Plan, 
 	return fmt.Errorf("%w: drives not in the backup (%s); PBP's token lacks %s to remove them: "+
 		"remove them from the guest, or see docs/security.md#guests-pbp-cannot-proof",
 		ErrUnsafe, strings.Join(drives, ", "), m)
+}
+
+type logKey struct{}
+
+// WithLog returns ctx carrying log, the guest's or the janitor's logger, so
+// that Destroy notes there that it waited for a lock.
+func WithLog(ctx context.Context, log *slog.Logger) context.Context {
+	return context.WithValue(ctx, logKey{}, log)
+}
+
+// logFrom returns the logger WithLog put in ctx, else slog's default.
+func logFrom(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(logKey{}).(*slog.Logger); ok && l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
+// SetLockWait sets how long Destroy waits for a lock, trying every poll;
+// for tests of callers outside this package.
+func (n *ExistingNode) SetLockWait(wait, poll time.Duration) {
+	n.lockWait, n.lockPoll = wait, poll
 }

@@ -607,6 +607,36 @@ func TestLocks(t *testing.T) {
 			t.Error("stopped despite the lock")
 		}
 	})
+	t.Run("lock checked before the scan for unreferenced disks", func(t *testing.T) {
+		// PVE runs check_lock before the task whose scan can die.
+		f := New()
+		lxc(f, 990000, "stopped")
+		f.UnreferencedScanErr = errors.New("no such logical volume pve/data")
+		f.Locks[990000] = &Lock{Name: "mounted", Calls: 1}
+		_, err := f.Destroy(ctx, "pve1", model.KindLXC, 990000, true)
+		var ae *pve.APIError
+		if !errors.As(err, &ae) || ae.Message != "CT is locked (mounted)" {
+			t.Fatalf("err = %v, want the lock refusal", err)
+		}
+	})
+	t.Run("locked stop of a missing guest", func(t *testing.T) {
+		f := New()
+		f.Locks[990005] = &Lock{Name: "backup", Calls: 1}
+		if _, err := f.Stop(ctx, "pve1", model.KindQEMU, 990005); err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("err = %v", err)
+		}
+		if f.Locks[990005].Calls != 1 {
+			t.Error("lock used up by a missing guest")
+		}
+	})
+	t.Run("locked stop on another node", func(t *testing.T) {
+		f := New()
+		f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990006}, Status: "running"}}
+		f.Locks[990006] = &Lock{Name: "backup", Calls: 1}
+		if _, err := f.Stop(ctx, "pve9", model.KindQEMU, 990006); err == nil {
+			t.Fatal("stop on an unknown node accepted")
+		}
+	})
 	t.Run("container stop ignores a mounted lock", func(t *testing.T) {
 		f := New()
 		lxc(f, 990002, "running")

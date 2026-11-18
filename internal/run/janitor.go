@@ -23,6 +23,7 @@ import (
 // returned error joins every failure.
 func Janitor(ctx context.Context, d Deps) error {
 	log := logger(d)
+	ctx = target.WithLog(ctx, log) // Destroy notes a wait for a lock here
 	var errs []error
 
 	inFlight := d.Store.Snapshot().InFlight

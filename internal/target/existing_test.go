@@ -1,9 +1,11 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -1744,6 +1746,74 @@ func TestDestroyWaitsForLock(t *testing.T) {
 		err := n.Destroy(cctx, model.KindLXC, vmid, Recorded{})
 		if !errors.Is(err, context.DeadlineExceeded) || time.Since(t0) > time.Second {
 			t.Errorf("err = %v after %s", err, time.Since(t0))
+		}
+	})
+	t.Run("stop locked past lockWait", func(t *testing.T) {
+		f := setup("running")
+		f.Locks[vmid] = &pvefake.Lock{Name: "backup", Calls: 1000}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if lock, ok := pve.Locked(err); !ok || lock != "backup" || !strings.Contains(err.Error(), "still locked (backup) after") {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.GuestList) != 1 || len(calls(f, "Destroy")) != 0 {
+			t.Errorf("guests %v, destroys %q", f.GuestList, calls(f, "Destroy"))
+		}
+	})
+	t.Run("running container under mounted: stop passes, destroy waits", func(t *testing.T) {
+		f := setup("running")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if s, d := calls(f, "Stop"), calls(f, "Destroy"); len(s) != 1 || len(d) != 2 || len(f.GuestList) != 0 {
+			t.Errorf("stops %q, destroys %q, guests %v", s, d, f.GuestList)
+		}
+	})
+	t.Run("without-scan fallback refused on a lock", func(t *testing.T) {
+		f := setup("stopped")
+		f.UnreferencedScanErr = errors.New("no such logical volume pve/data")
+		seen := 0
+		f.FailOn = func(m string, _ []string) error {
+			if m == "Destroy" {
+				if seen++; seen == 2 {
+					return &pve.APIError{Status: 500, Message: "CT is locked (mounted)"}
+				}
+			}
+			return nil
+		}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		var ss *ScanSkipped
+		if !errors.As(err, &ss) || len(f.GuestList) != 0 {
+			t.Fatalf("err = %v, guests %v", err, f.GuestList)
+		}
+		want := []string{"Destroy pve1 lxc 990003 true", "Destroy pve1 lxc 990003 false", "Destroy pve1 lxc 990003 true", "Destroy pve1 lxc 990003 false"}
+		if got := calls(f, "Destroy"); !slices.Equal(got, want) {
+			t.Errorf("destroys = %q, want %q", got, want)
+		}
+	})
+	t.Run("a create lock is not waited for", func(t *testing.T) {
+		// A restore's own lock: no one else releases it, so waiting only
+		// delays the janitor (deferred minor 6).
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "create", Calls: 1000}
+		n := newTarget(t, f, f, nil)
+		n.lockWait = time.Hour
+		t0 := time.Now()
+		err := n.Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if lock, ok := pve.Locked(err); !ok || lock != "create" || len(calls(f, "Destroy")) != 1 || time.Since(t0) > time.Second {
+			t.Errorf("err = %v, destroys %q, after %s", err, calls(f, "Destroy"), time.Since(t0))
+		}
+	})
+	t.Run("the wait is logged to the caller's logger", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1}
+		var buf bytes.Buffer
+		lctx := WithLog(ctx, slog.New(slog.NewTextHandler(&buf, nil)))
+		if err := newTarget(t, f, f, nil).Destroy(lctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if got := buf.String(); !strings.Contains(got, "destroy waited for a lock") || !strings.Contains(got, "lock=mounted") {
+			t.Errorf("log = %q", got)
 		}
 	})
 	t.Run("non-lock refusal not retried", func(t *testing.T) {

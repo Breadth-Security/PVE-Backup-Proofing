@@ -487,6 +487,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		err := j.safely("destroy", func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
 			defer cancel()
+			ctx = target.WithLog(ctx, j.log)
 			kind := j.b.Key.Kind
 			rec := target.Recorded{VolID: j.b.VolID, Name: sanitize.GuestName(kind, j.orig)}
 			return j.d.Target.Destroy(ctx, kind, j.vmid, rec)

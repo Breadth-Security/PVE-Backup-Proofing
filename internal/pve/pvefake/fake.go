@@ -589,27 +589,9 @@ func (f *Fake) Shutdown(ctx context.Context, node string, kind model.GuestKind, 
 
 func (f *Fake) Stop(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
 	f.mu.Lock()
-	if l := f.Locks[vmid]; l != nil && l.Calls > 0 && (kind != model.KindLXC || l.Name != "mounted") {
-		defer f.mu.Unlock()
-		if err := f.begin("Stop", node, kind, vmid); err != nil {
-			return "", err
-		}
-		return f.failTask("vzstop", vmid, f.held(kind, vmid)), nil
-	}
-	f.mu.Unlock()
-	return f.setStatus("stop", "Stop", node, kind, vmid, "stopped")
-}
-
-func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (string, error) {
-	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.begin("Destroy", node, kind, vmid, unreferenced); err != nil {
+	if err := f.begin("Stop", node, kind, vmid); err != nil {
 		return "", err
-	}
-	if unreferenced && f.UnreferencedScanErr != nil {
-		// Like PVE: the task starts, its scan of every storage dies, and
-		// the guest stays; WaitTask reports the failed task.
-		return f.failTask("qmdestroy", vmid, f.UnreferencedScanErr.Error()), nil
 	}
 	if err := f.at(node); err != nil {
 		return "", err
@@ -618,12 +600,38 @@ func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, v
 	if i < 0 {
 		return "", fmt.Errorf("guest %d not found", vmid)
 	}
+	if l := f.Locks[vmid]; l != nil && l.Calls > 0 && (kind != model.KindLXC || l.Name != "mounted") {
+		return f.failTask("vzstop", vmid, f.held(kind, vmid)), nil
+	}
+	f.GuestList[i].Status = "stopped"
+	return upid("stop", vmid), nil
+}
+
+func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, vmid int, unreferenced bool) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin("Destroy", node, kind, vmid, unreferenced); err != nil {
+		return "", err
+	}
+	if err := f.at(node); err != nil {
+		return "", err
+	}
+	i := f.find(vmid)
+	if i < 0 {
+		return "", fmt.Errorf("guest %d not found", vmid)
+	}
+	// Like PVE: check_lock runs before the task starts.
 	if l := f.Locks[vmid]; l != nil && l.Calls > 0 {
 		inTask, msg := l.InTask, f.held(kind, vmid)
 		if inTask {
 			return f.failTask("destroy", vmid, msg), nil
 		}
 		return "", &pve.APIError{Status: 500, Path: fmt.Sprintf("/nodes/%s/%s/%d", node, kind, vmid), Message: msg}
+	}
+	if unreferenced && f.UnreferencedScanErr != nil {
+		// Like PVE: the task starts, its scan of every storage dies, and
+		// the guest stays; WaitTask reports the failed task.
+		return f.failTask("qmdestroy", vmid, f.UnreferencedScanErr.Error()), nil
 	}
 	if f.GuestList[i].Status == "running" {
 		return "", fmt.Errorf("VM %d is running - destroy failed", vmid)

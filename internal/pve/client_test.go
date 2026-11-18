@@ -441,6 +441,18 @@ func TestLocked(t *testing.T) {
 		{&TaskError{UPID: "u", ExitStatus: "no such logical volume pve/data"}, "", false},
 		{errors.New("CT is locked (mounted)"), "", false},
 		{nil, "", false},
+		// Only PVE's own wording and lock names (deferred minor 1).
+		{&APIError{Status: 500, Message: "CT is locked (snapshot-delete)"}, "snapshot-delete", true},
+		{&APIError{Status: 500, Message: "Something is locked (mounted)"}, "", false},
+		{&APIError{Status: 500, Message: "CT is locked (Mounted Weird)"}, "", false},
+		{&APIError{Status: 500, Message: "CT is locked (" + strings.Repeat("a", 40) + ")"}, "", false},
+		// A lock file is named by what it guards (deferred minor 2).
+		{&APIError{Status: 500, Message: "can't lock file '/var/lock/pve-manager/pve-storage-local' - got timeout"}, "storage", true},
+		{&APIError{Status: 500, Message: "can't lock file '/run/x.lck' - got timeout"}, "lock file", true},
+		// Every error in a join counts, not only the first of a type
+		// (deferred minor 4): a failed scan, then a lock on the fallback.
+		{errors.Join(&TaskError{UPID: "a", ExitStatus: "no such logical volume pve/data"}, &TaskError{UPID: "b", ExitStatus: "CT is locked (mounted)"}), "mounted", true},
+		{fmt.Errorf("%w; %w", &TaskError{UPID: "a", ExitStatus: "no such logical volume pve/data"}, fmt.Errorf("destroy 1: %w", &TaskError{UPID: "b", ExitStatus: "VM is locked (backup)"})), "backup", true},
 	}
 	for _, tc := range tests {
 		lock, ok := Locked(tc.err)

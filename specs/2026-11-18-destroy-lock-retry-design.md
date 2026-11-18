@@ -144,3 +144,25 @@ names the change that would make it fail.
 - Whether the job's teardown context leaves room for a 30 s wait. Check
   its deadline. If it is shorter, the wait must fit inside it, and that
   goes in the plan as a ruling.
+
+## Changes after the branch review
+
+The owner asked for every minor from the final review to be addressed:
+
+- `pve.Locked` matches only PVE's wording, `CT|VM is locked (<name>)`,
+  with a name of at most 24 lower-case letters or `-`. It names a lock file
+  by what it guards (`config file`, `storage`, else `lock file`). It looks
+  at every error in a join, not only the first of each type.
+- A `create` lock is not waited for: only the restore that set it would
+  clear it, so a leftover of a cut-short restore keeps it.
+- Destroy logs the wait to the logger the caller puts in its context
+  (`target.WithLog`): the guest's log for a job, the run log for the
+  janitor.
+- The fake checks a lock before the scan for unreferenced disks, as PVE
+  does, and a locked stop checks the node and the guest first.
+- More tests: a stop locked past the wait, a running container under
+  `mounted`, the without-scan fallback refused on a lock, and a job and
+  the janitor through the real target.
+- The troubleshooting row separates the lock case from the rest and says
+  what a lasting lock costs.
+
