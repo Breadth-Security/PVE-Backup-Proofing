@@ -443,31 +443,41 @@ func TestProbeFailedNotes(t *testing.T) {
 }
 
 func TestDestroyFailure(t *testing.T) {
+	// A lock that outlasted Destroy's wait, as ExistingNode wraps it (#144).
+	locked := fmt.Errorf("lxc %d still locked (mounted) after 30s: %w", tmpVMID, &pve.APIError{Status: 500, Message: "CT is locked (mounted)"})
+	failedPG := func(f *fixture) {
+		ex := healthy()
+		ex[failedC] = out("postgresql.service loaded failed failed PG\n")
+		f.tgt.Exec[tmpVMID] = ex
+	}
 	tests := []struct {
-		name    string
-		setup   func(f *fixture)
-		verdict model.Verdict
-		reason  string
-		stage   string
+		name       string
+		setup      func(f *fixture)
+		destroyErr error
+		verdict    model.Verdict
+		reason     string
+		stage      string
 	}{
-		{"proven becomes error", func(*fixture) {}, model.Error, "booted, but PBP could not remove its test copy (retried at the next run)", state.StageStarted},
-		{"failed kept", func(f *fixture) {
-			ex := healthy()
-			ex[failedC] = out("postgresql.service loaded failed failed PG\n")
-			f.tgt.Exec[tmpVMID] = ex
-		}, model.Failed, "failed: postgresql.service; test copy not removed (retried at the next run)", state.StageStarted},
+		{"proven becomes error", func(*fixture) {}, nil, model.Error, "booted, but PBP could not remove its test copy (retried at the next run)", state.StageStarted},
+		{"failed kept", failedPG, nil, model.Failed, "failed: postgresql.service; test copy not removed (retried at the next run)", state.StageStarted},
 		{"booted kept", func(f *fixture) {
 			f.tgt.Boot[tmpVMID] = target.BootInfo{AgentMissing: true}
-		}, model.Booted, "guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?; test copy not removed (retried at the next run)", state.StageStarted},
+		}, nil, model.Booted, "guest agent did not answer within 5m0s: is qemu-guest-agent installed and running?; test copy not removed (retried at the next run)", state.StageStarted},
 		{"error kept", func(f *fixture) {
 			f.tgt.SanitizeErr = map[int]error{tmpVMID: fmt.Errorf("%w: hostpci0", target.ErrUnsafe)}
-		}, model.Error, "unsafe copy: hostpci0; test copy not removed (retried at the next run)", state.StageRestored},
+		}, nil, model.Error, "unsafe copy: hostpci0; test copy not removed (retried at the next run)", state.StageRestored},
+		{"proven, locked", func(*fixture) {}, locked, model.Error, "booted, but PBP could not remove its test copy (locked: mounted; retried at the next run)", state.StageStarted},
+		{"failed kept, locked", failedPG, locked, model.Failed, "failed: postgresql.service; test copy not removed (locked: mounted; retried at the next run)", state.StageStarted},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			tc.setup(f)
-			f.tgt.DestroyErr = map[int]error{tmpVMID: errors.New("destroy timed out")}
+			derr := tc.destroyErr
+			if derr == nil {
+				derr = errors.New("destroy timed out")
+			}
+			f.tgt.DestroyErr = map[int]error{tmpVMID: derr}
 			res := f.run(context.Background())
 			if res.Verdict != tc.verdict || res.Reason != tc.reason {
 				t.Errorf("result %s %q", res.Verdict, res.Reason)
