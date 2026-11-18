@@ -550,3 +550,73 @@ func TestLXCRootOnlyKeys(t *testing.T) {
 		t.Errorf("an ordinary change was refused: %v", err)
 	}
 }
+
+// A held lock refuses Destroy and fails Stop's task as PVE 9.2 does, until
+// its calls are used up; a container stop ignores a "mounted" lock (#144).
+func TestLocks(t *testing.T) {
+	ctx := context.Background()
+	lxc := func(f *Fake, vmid int, status string) {
+		f.GuestList = append(f.GuestList, pve.GuestRef{Key: model.GuestKey{Kind: model.KindLXC, VMID: vmid}, Status: status})
+		f.Configs[vmid] = map[string]string{}
+	}
+	t.Run("destroy refused until the lock's calls are used up", func(t *testing.T) {
+		f := New()
+		lxc(f, 990000, "stopped")
+		f.Locks[990000] = &Lock{Name: "mounted", Calls: 2}
+		for i := 0; i < 2; i++ {
+			_, err := f.Destroy(ctx, "pve1", model.KindLXC, 990000, true)
+			var ae *pve.APIError
+			if lock, ok := pve.Locked(err); !ok || lock != "mounted" || !errors.As(err, &ae) || ae.Message != "CT is locked (mounted)" {
+				t.Fatalf("try %d: err = %v", i, err)
+			}
+		}
+		id, err := f.Destroy(ctx, "pve1", model.KindLXC, 990000, true)
+		if err != nil || f.WaitTask(ctx, "pve1", id) != nil || len(f.GuestList) != 0 {
+			t.Fatalf("third try: err = %v, guests %v", err, f.GuestList)
+		}
+	})
+	t.Run("lock inside the destroy task", func(t *testing.T) {
+		f := New()
+		lxc(f, 990000, "stopped")
+		f.Locks[990000] = &Lock{Name: "mounted", Calls: 1, InTask: true}
+		id, err := f.Destroy(ctx, "pve1", model.KindLXC, 990000, true)
+		if err != nil {
+			t.Fatalf("request refused: %v", err)
+		}
+		if lock, ok := pve.Locked(f.WaitTask(ctx, "pve1", id)); !ok || lock != "mounted" {
+			t.Fatalf("task: lock %q, %v", lock, ok)
+		}
+		if len(f.GuestList) != 1 {
+			t.Fatal("guest removed by a failed task")
+		}
+	})
+	t.Run("stop task fails on a VM lock", func(t *testing.T) {
+		f := New()
+		f.GuestList = []pve.GuestRef{{Key: model.GuestKey{Kind: model.KindQEMU, VMID: 990001}, Status: "running"}}
+		f.Configs[990001] = map[string]string{}
+		f.Locks[990001] = &Lock{Name: "backup", Calls: 1}
+		id, err := f.Stop(ctx, "pve1", model.KindQEMU, 990001)
+		if err != nil {
+			t.Fatalf("request refused: %v", err)
+		}
+		werr := f.WaitTask(ctx, "pve1", id)
+		if exit, _, ok := pve.TaskFailure(werr); !ok || exit != "VM is locked (backup)" {
+			t.Fatalf("task err = %v", werr)
+		}
+		if f.GuestList[0].Status != "running" {
+			t.Error("stopped despite the lock")
+		}
+	})
+	t.Run("container stop ignores a mounted lock", func(t *testing.T) {
+		f := New()
+		lxc(f, 990002, "running")
+		f.Locks[990002] = &Lock{Name: "mounted", Calls: 1}
+		id, err := f.Stop(ctx, "pve1", model.KindLXC, 990002)
+		if err != nil || f.WaitTask(ctx, "pve1", id) != nil || f.GuestList[0].Status != "stopped" {
+			t.Fatalf("err = %v, status %s", err, f.GuestList[0].Status)
+		}
+		if f.Locks[990002].Calls != 1 {
+			t.Errorf("calls = %d, want 1 (unused)", f.Locks[990002].Calls)
+		}
+	})
+}

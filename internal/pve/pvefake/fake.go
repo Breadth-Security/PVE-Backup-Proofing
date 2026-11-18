@@ -42,6 +42,9 @@ type Fake struct {
 	// test can fail, say, only the second SetGuestConfig of one VMID. It
 	// runs with the fake locked: it must not call the fake.
 	FailOn func(method string, args []string) error
+	// Locks holds a lock on a guest by VMID, as another tool on the node
+	// might (issue #144); see Lock.
+	Locks map[int]*Lock
 	// Privs are the token's privileges by ACL path. A path not listed has
 	// PBPProofer's privileges (privs.RolePrivs), as pbp node setup grants
 	// them; list a path with an empty slice for none. Privileges answers
@@ -70,7 +73,47 @@ func New() *Fake {
 		Ifaces:        map[string]pve.NetIface{},
 		VersionString: "9.2.18",
 		Fail:          map[string]error{},
+		Locks:         map[int]*Lock{},
 	}
+}
+
+// Lock is a lock held on a guest, refused as PVE 9.2 does while Calls is
+// above zero; each refused call uses one up. Destroy is refused with HTTP
+// 500 "CT is locked (<Name>)" ("VM" for a VM), or, with InTask, starts a
+// task that fails with that message (PVE checks again inside the task).
+// Stop starts a task that fails with it, except that a container's stop
+// ignores a "mounted" lock, as PVE's does.
+type Lock struct {
+	Name   string
+	Calls  int
+	InTask bool
+}
+
+// held uses up one call of vmid's lock and returns its message, or "" when
+// no lock is held. Callers hold f.mu.
+func (f *Fake) held(kind model.GuestKind, vmid int) string {
+	l := f.Locks[vmid]
+	if l == nil || l.Calls <= 0 {
+		return ""
+	}
+	l.Calls--
+	who := "VM"
+	if kind == model.KindLXC {
+		who = "CT"
+	}
+	return fmt.Sprintf("%s is locked (%s)", who, l.Name)
+}
+
+// failTask returns the UPID of a task that WaitTask reports as failed with
+// exit. Callers hold f.mu.
+func (f *Fake) failTask(op string, vmid int, exit string) string {
+	f.taskSeq++
+	id := fmt.Sprintf("UPID:%s:fake%04d:%s:%d:", fakeNode, f.taskSeq, op, vmid)
+	if f.failedTasks == nil {
+		f.failedTasks = map[string]*pve.TaskError{}
+	}
+	f.failedTasks[id] = &pve.TaskError{UPID: id, ExitStatus: exit, Log: []string{"TASK ERROR: " + exit}}
+	return id
 }
 
 // begin records the call and returns the injected failure, if any. Callers hold f.mu.
@@ -545,6 +588,15 @@ func (f *Fake) Shutdown(ctx context.Context, node string, kind model.GuestKind, 
 }
 
 func (f *Fake) Stop(ctx context.Context, node string, kind model.GuestKind, vmid int) (string, error) {
+	f.mu.Lock()
+	if l := f.Locks[vmid]; l != nil && l.Calls > 0 && (kind != model.KindLXC || l.Name != "mounted") {
+		defer f.mu.Unlock()
+		if err := f.begin("Stop", node, kind, vmid); err != nil {
+			return "", err
+		}
+		return f.failTask("vzstop", vmid, f.held(kind, vmid)), nil
+	}
+	f.mu.Unlock()
 	return f.setStatus("stop", "Stop", node, kind, vmid, "stopped")
 }
 
@@ -557,14 +609,7 @@ func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, v
 	if unreferenced && f.UnreferencedScanErr != nil {
 		// Like PVE: the task starts, its scan of every storage dies, and
 		// the guest stays; WaitTask reports the failed task.
-		f.taskSeq++
-		id := fmt.Sprintf("UPID:%s:fake%04d:qmdestroy:%d:", fakeNode, f.taskSeq, vmid)
-		if f.failedTasks == nil {
-			f.failedTasks = map[string]*pve.TaskError{}
-		}
-		f.failedTasks[id] = &pve.TaskError{UPID: id, ExitStatus: f.UnreferencedScanErr.Error(),
-			Log: []string{"TASK ERROR: " + f.UnreferencedScanErr.Error()}}
-		return id, nil
+		return f.failTask("qmdestroy", vmid, f.UnreferencedScanErr.Error()), nil
 	}
 	if err := f.at(node); err != nil {
 		return "", err
@@ -572,6 +617,13 @@ func (f *Fake) Destroy(ctx context.Context, node string, kind model.GuestKind, v
 	i := f.find(vmid)
 	if i < 0 {
 		return "", fmt.Errorf("guest %d not found", vmid)
+	}
+	if l := f.Locks[vmid]; l != nil && l.Calls > 0 {
+		inTask, msg := l.InTask, f.held(kind, vmid)
+		if inTask {
+			return f.failTask("destroy", vmid, msg), nil
+		}
+		return "", &pve.APIError{Status: 500, Path: fmt.Sprintf("/nodes/%s/%s/%d", node, kind, vmid), Message: msg}
 	}
 	if f.GuestList[i].Status == "running" {
 		return "", fmt.Errorf("VM %d is running - destroy failed", vmid)

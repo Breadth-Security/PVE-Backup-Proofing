@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -40,6 +41,10 @@ type ExistingNode struct {
 	agentPoll   time.Duration // AgentPing while waiting for the agent
 	lxcExecPoll time.Duration // "pct exec true" while a container boots
 	execPoll    time.Duration // AgentExecStatus while a command runs
+
+	// Destroy waits up to lockWait, trying every lockPoll, while PVE
+	// refuses because the guest is locked (issue #144).
+	lockWait, lockPoll time.Duration
 }
 
 var _ Target = (*ExistingNode)(nil)
@@ -60,6 +65,8 @@ func NewExistingNode(cfg config.Config, api pve.API, helper sshx.Helper) *Existi
 		agentPoll:    3 * time.Second,
 		lxcExecPoll:  2 * time.Second,
 		execPoll:     500 * time.Millisecond,
+		lockWait:     30 * time.Second,
+		lockPoll:     2 * time.Second,
 	}
 }
 
@@ -385,7 +392,42 @@ func (n *ExistingNode) Start(ctx context.Context, kind model.GuestKind, vmid int
 // destroys with purge, and confirms the guest is gone. Checks, in order:
 // range, existence, kind and node, then the "pbp" tag or else rec's
 // leftover rule (stopped, then identity; see notLeftover).
+//
+// When PVE refuses a step only because the guest is locked (another tool
+// on the node may lock a stopped container for a moment, as "pct df" does),
+// Destroy waits lockPoll and runs the whole sequence again, checks
+// included, for up to lockWait; a lock that outlasts it fails as before,
+// with an error that names it. PBP never clears or skips a lock (issue
+// #144).
 func (n *ExistingNode) Destroy(ctx context.Context, kind model.GuestKind, vmid int, rec Recorded) error {
+	start := time.Now()
+	last := "" // the lock of the last refusal
+	for {
+		err := n.destroyOnce(ctx, kind, vmid, rec)
+		lock, locked := pve.Locked(err)
+		waited := time.Since(start).Round(time.Second)
+		if !locked {
+			if err == nil && last != "" {
+				slog.Info("destroy waited for a lock", "vmid", vmid, "lock", last, "waited", waited)
+			}
+			return err
+		}
+		last = lock
+		if time.Since(start) >= n.lockWait {
+			return fmt.Errorf("%s %d still locked (%s) after %s: %w", kind, vmid, lock, waited, err)
+		}
+		t := time.NewTimer(n.lockPoll)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return errors.Join(ctx.Err(), err)
+		case <-t.C:
+		}
+	}
+}
+
+// destroyOnce is one try of Destroy.
+func (n *ExistingNode) destroyOnce(ctx context.Context, kind model.GuestKind, vmid int, rec Recorded) error {
 	if err := n.guard(vmid); err != nil {
 		return err
 	}
@@ -459,6 +501,11 @@ func (n *ExistingNode) destroy(ctx context.Context, kind model.GuestKind, vmid i
 	first := n.task(ctx, kind, vmid, "destroy", op(true))
 	if first == nil {
 		return nil
+	}
+	// A lock, even inside the task, is no broken storage: Destroy waits
+	// for it instead.
+	if _, locked := pve.Locked(first); locked {
+		return first
 	}
 	// The scan dies inside PVE's destroy task. A request PVE refused or
 	// that never arrived is not that, and is not retried: the warning would

@@ -62,6 +62,7 @@ func newTarget(t *testing.T, api pve.API, fake *pvefake.Fake, ssh sshx.Runner) *
 	}
 	n := NewExistingNode(testConfig(), api, sshx.Helper{R: ssh})
 	n.statusPoll, n.agentPoll, n.lxcExecPoll, n.execPoll = time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond
+	n.lockWait, n.lockPoll = 50*time.Millisecond, time.Millisecond
 	t.Cleanup(func() { assertNoMutationOutsideRange(t, fake.CallLog()) })
 	return n
 }
@@ -1617,4 +1618,140 @@ func TestSanitizeKeepsVirtualDevice(t *testing.T) {
 			t.Errorf("the copy's dev0 was changed: %q", c)
 		}
 	}
+}
+
+// Destroy waits out a short lock on the copy, retrying its whole sequence,
+// and gives up as before once the lock outlasts lockWait (issue #144).
+func TestDestroyWaitsForLock(t *testing.T) {
+	const vmid = 990003
+	setup := func(status string) *pvefake.Fake {
+		f := healthyFake()
+		f.GuestList = []pve.GuestRef{guest(model.KindLXC, vmid, status, "pbp")}
+		f.Configs[vmid] = map[string]string{"tags": "pbp"}
+		return f
+	}
+	calls := func(f *pvefake.Fake, method string) []string {
+		var out []string
+		for _, c := range f.CallLog() {
+			if strings.HasPrefix(c, method+" ") {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	// nth returns a FailOn that runs act on the nth call of method.
+	nth := func(method string, n int, act func()) func(string, []string) error {
+		seen := 0
+		return func(m string, _ []string) error {
+			if m == method {
+				if seen++; seen == n {
+					act()
+				}
+			}
+			return nil
+		}
+	}
+	ctx := context.Background()
+
+	t.Run("destroy refused twice, then gone", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 2}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		want := []string{"Destroy pve1 lxc 990003 true", "Destroy pve1 lxc 990003 true", "Destroy pve1 lxc 990003 true"}
+		if got := calls(f, "Destroy"); !slices.Equal(got, want) || len(f.GuestList) != 0 {
+			t.Errorf("destroys = %q, guests %v", got, f.GuestList)
+		}
+	})
+	t.Run("stop task fails on a lock once", func(t *testing.T) {
+		f := setup("running")
+		f.Locks[vmid] = &pvefake.Lock{Name: "backup", Calls: 1}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if got := calls(f, "Stop"); len(got) != 2 || len(f.GuestList) != 0 {
+			t.Errorf("stops = %q, guests %v", got, f.GuestList)
+		}
+	})
+	t.Run("lock outlasts lockWait", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1000}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if lock, ok := pve.Locked(err); !ok || lock != "mounted" || !strings.Contains(err.Error(), "still locked (mounted) after") {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.GuestList) != 1 {
+			t.Error("guest removed")
+		}
+	})
+	t.Run("lock inside the destroy task takes no without-scan fallback", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1, InTask: true}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		want := []string{"Destroy pve1 lxc 990003 true", "Destroy pve1 lxc 990003 true"}
+		if got := calls(f, "Destroy"); !slices.Equal(got, want) {
+			t.Errorf("destroys = %q, want %q", got, want)
+		}
+	})
+	t.Run("tag removed between tries", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1}
+		f.FailOn = nth("GuestConfig", 2, func() { delete(f.Configs[vmid], "tags") })
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if !errors.Is(err, ErrNotOwned) || len(f.GuestList) != 1 || len(calls(f, "Destroy")) != 1 {
+			t.Errorf("err = %v, guests %v, destroys %q", err, f.GuestList, calls(f, "Destroy"))
+		}
+	})
+	t.Run("guest removed between tries", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1}
+		f.FailOn = nth("Guests", 2, func() { f.GuestList = nil })
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if err != nil || len(calls(f, "Destroy")) != 1 {
+			t.Errorf("err = %v, destroys %q", err, calls(f, "Destroy"))
+		}
+	})
+	t.Run("protection clear refused on a lock", func(t *testing.T) {
+		f := setup("stopped")
+		f.Configs[vmid]["protection"] = "1"
+		seen := 0
+		f.FailOn = func(m string, _ []string) error {
+			if m == "SetGuestConfig" {
+				if seen++; seen == 1 {
+					return &pve.APIError{Status: 500, Message: "CT is locked (backup)"}
+				}
+			}
+			return nil
+		}
+		if err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{}); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.GuestList) != 0 {
+			t.Error("guest not removed")
+		}
+	})
+	t.Run("context cancelled while waiting", func(t *testing.T) {
+		f := setup("stopped")
+		f.Locks[vmid] = &pvefake.Lock{Name: "mounted", Calls: 1000}
+		n := newTarget(t, f, f, nil)
+		n.lockPoll, n.lockWait = time.Hour, 2*time.Hour
+		cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		t0 := time.Now()
+		err := n.Destroy(cctx, model.KindLXC, vmid, Recorded{})
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(t0) > time.Second {
+			t.Errorf("err = %v after %s", err, time.Since(t0))
+		}
+	})
+	t.Run("non-lock refusal not retried", func(t *testing.T) {
+		f := setup("stopped")
+		f.Fail["Destroy"] = &pve.APIError{Status: 500, Message: "got timeout"}
+		err := newTarget(t, f, f, nil).Destroy(ctx, model.KindLXC, vmid, Recorded{})
+		if err == nil || len(calls(f, "Destroy")) != 1 {
+			t.Errorf("err = %v, destroys %q", err, calls(f, "Destroy"))
+		}
+	})
 }
