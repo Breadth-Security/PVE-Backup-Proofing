@@ -4,7 +4,7 @@ Short design, 2026-11-18.
 
 ## Why
 
-In the 2026-11-18 scheduled run, CT118's copy booted and passed its checks.
+In a scheduled run on the test node, a container's copy booted and passed its checks.
 PBP stopped it, and 0.7 s later PVE refused to delete it with
 `CT is locked (mounted)`. Something else on the node had locked the stopped
 copy for about a second; `pct df` and `pct mount` both do this. The guest
@@ -85,7 +85,7 @@ So a lock refusal is either a `*pve.APIError` with status 500, or a
 4. **Errors and logs:**
    - When the lock is still there at the end, `Destroy` returns an error
      that wraps the last refusal and says how long it waited, for example
-     `CT 990000 still locked (mounted) after 30s: …`.
+     `CT <vmid> still locked (mounted) after 30s: …`.
    - When a retry succeeds, one line is logged at Info:
      `destroy waited 4s for a lock (mounted)`.
 5. **The reason in `internal/run/job.go`:** when a destroy fails on a
