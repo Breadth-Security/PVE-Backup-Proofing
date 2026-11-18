@@ -487,6 +487,7 @@ func (j *job) teardown(res *model.GuestResult) {
 		err := j.safely("destroy", func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), destroyTimeout)
 			defer cancel()
+			ctx = target.WithLog(ctx, j.log)
 			kind := j.b.Key.Kind
 			rec := target.Recorded{VolID: j.b.VolID, Name: sanitize.GuestName(kind, j.orig)}
 			return j.d.Target.Destroy(ctx, kind, j.vmid, rec)
@@ -501,10 +502,14 @@ func (j *job) teardown(res *model.GuestResult) {
 		}
 		if err != nil {
 			j.log.Error("destroy temporary guest failed; left for the janitor", "vmid", j.vmid, "err", err)
+			note := "retried at the next run"
+			if lock, ok := pve.Locked(err); ok {
+				note = "locked: " + lock + "; " + note // it outlasted Destroy's wait (#144)
+			}
 			if res.Verdict == model.Proven {
-				res.Verdict, res.Reason = model.Error, "booted, but PBP could not remove its test copy (retried at the next run)"
+				res.Verdict, res.Reason = model.Error, "booted, but PBP could not remove its test copy ("+note+")"
 			} else {
-				res.Reason = withSuffix(res.Reason, "; test copy not removed (retried at the next run)")
+				res.Reason = withSuffix(res.Reason, "; test copy not removed ("+note+")")
 			}
 			clean = false
 		} else {

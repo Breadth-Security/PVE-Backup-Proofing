@@ -9,9 +9,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/model"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve"
+	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/pve/pvefake"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/sanitize"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/state"
 	"git.breadthanalytics.com/tdiana/PVE-Backup-Proofing/internal/target"
@@ -77,6 +79,29 @@ func TestRestoreFailureLeavingGuestIsDestroyedViaState(t *testing.T) {
 		t.Error("backup left protected")
 	}
 	assertNoStrayMutation(t, f.api.CallLog(), f.d.Cfg.Target.VMIDRange, nil)
+}
+
+// A lock that clears while the real target waits leaves the job's verdict
+// as it was, removes the copy, and notes the wait in the guest's log
+// (issue #144).
+func TestLockedCopyRemovedAfterWait(t *testing.T) {
+	f := newJanitorFixture(t)
+	f.isolatedNode(restoreTaskFails{f.api})
+	f.tgt.Target.(*target.ExistingNode).SetLockWait(time.Second, time.Millisecond)
+	f.api.Locks[990000] = &pvefake.Lock{Name: "mounted", Calls: 2}
+	b := f.ownBackup()
+
+	res := proofOne(context.Background(), f.d, b, 990000, sanitize.ParseConfigText(f.api.BackupConfigs[ownVol]), guestLogger(f.d, b.Key))
+
+	if res.Verdict != model.Failed || !strings.HasPrefix(res.Reason, "restore failed: ") || strings.Contains(res.Reason, "test copy not removed") {
+		t.Errorf("result %s %q", res.Verdict, res.Reason)
+	}
+	if f.exists(990000) || !f.destroyed(990000) {
+		t.Error("copy not removed")
+	}
+	if log := f.logBuf.String(); !strings.Contains(log, "destroy waited for a lock") || !strings.Contains(log, "lock=mounted") {
+		t.Errorf("wait not in the guest's log: %q", log)
+	}
 }
 
 // If the node refuses the restore request, no guest of PBP's exists: a guest

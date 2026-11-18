@@ -339,3 +339,21 @@ func TestJanitorCountsDestroyWithoutScan(t *testing.T) {
 		t.Errorf("log:\n%s", f.logBuf)
 	}
 }
+
+// The janitor waits out a short lock on a leftover like a job does, and the
+// wait shows in the run log (issue #144).
+func TestJanitorWaitsForLockedLeftover(t *testing.T) {
+	f := newJanitorFixture(t)
+	f.tgt.Target.(*target.ExistingNode).SetLockWait(time.Second, time.Millisecond)
+	f.guest(model.KindQEMU, 990005, true)
+	f.api.Locks[990005] = &pvefake.Lock{Name: "backup", Calls: 1}
+	if err := Janitor(context.Background(), f.d); err != nil {
+		t.Fatalf("Janitor: %v", err)
+	}
+	if f.exists(990005) {
+		t.Error("leftover not removed")
+	}
+	if log := f.logBuf.String(); !strings.Contains(log, "destroy waited for a lock") || !strings.Contains(log, "lock=backup") {
+		t.Errorf("wait not in the run log: %q", log)
+	}
+}

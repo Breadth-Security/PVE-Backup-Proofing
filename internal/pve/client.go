@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,61 @@ func PermissionDenied(err error) bool {
 	return ae.Status == http.StatusForbidden ||
 		strings.Contains(ae.Message, "403 Forbidden") ||
 		strings.Contains(ae.Message, "permission check failed")
+}
+
+// Locked reports whether err is PVE refusing a guest because it is locked
+// (issue #144): "CT is locked (mounted)" or "VM is locked (backup)" from
+// check_lock, or "can't lock file …" when a lock file (the guest's config,
+// a storage) could not be taken in time. PVE says so either as an HTTP 500
+// refusal or as a failed task (exit status or log). lock is the lock's name,
+// or what the lock file guards: "config file", "storage", else "lock file".
+// Every error in err's tree counts, so a lock joined after another failure
+// is found; errors of other types never match.
+func Locked(err error) (lock string, ok bool) {
+	switch e := err.(type) {
+	case nil:
+		return "", false
+	case *APIError:
+		if e.Status == http.StatusInternalServerError {
+			return lockIn(e.Message)
+		}
+		return "", false
+	case *TaskError:
+		for _, s := range append([]string{e.ExitStatus}, e.Log...) {
+			if lock, ok := lockIn(s); ok {
+				return lock, true
+			}
+		}
+		return "", false
+	case interface{ Unwrap() []error }:
+		for _, w := range e.Unwrap() {
+			if lock, ok := Locked(w); ok {
+				return lock, true
+			}
+		}
+		return "", false
+	}
+	return Locked(errors.Unwrap(err))
+}
+
+// reLocked is check_lock's message, with PVE's lock names (lower case and
+// "-", such as "snapshot-delete"); a longer name is no lock name.
+var reLocked = regexp.MustCompile(`\b(?:CT|VM) is locked \(([a-z-]{1,24})\)`)
+
+func lockIn(s string) (string, bool) {
+	if m := reLocked.FindStringSubmatch(s); m != nil {
+		return m[1], true
+	}
+	if !strings.Contains(s, "can't lock file") {
+		return "", false
+	}
+	switch {
+	case strings.Contains(s, "pve-config-"):
+		return "config file", true
+	case strings.Contains(s, "pve-storage-"):
+		return "storage", true
+	}
+	return "lock file", true
 }
 
 // TaskError is returned by WaitTask when a task finishes with a non-OK status.

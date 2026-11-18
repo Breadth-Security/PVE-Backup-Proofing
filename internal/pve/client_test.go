@@ -420,6 +420,48 @@ func TestPermissionDenied(t *testing.T) {
 	}
 }
 
+// Locked recognises PVE refusing a locked guest, as an API refusal or a
+// failed task, through wraps and joins, and nothing else (issue #144).
+func TestLocked(t *testing.T) {
+	tests := []struct {
+		err  error
+		lock string
+		ok   bool
+	}{
+		{&APIError{Status: 500, Message: "CT is locked (mounted)"}, "mounted", true},
+		{&APIError{Status: 500, Message: "VM is locked (backup)\n"}, "backup", true},
+		{&TaskError{UPID: "u", ExitStatus: "CT is locked (snapshot)"}, "snapshot", true},
+		{&TaskError{UPID: "u", ExitStatus: "unexpected status", Log: []string{"TASK ERROR: VM is locked (clone)"}}, "clone", true},
+		{&APIError{Status: 500, Message: "can't lock file '/run/lock/lxc/pve-config-1.conf' - got timeout"}, "config file", true},
+		{fmt.Errorf("destroy 1: %w", &APIError{Status: 500, Message: "CT is locked (mounted)"}), "mounted", true},
+		{errors.Join(errors.New("x"), &APIError{Status: 500, Message: "CT is locked (disk)"}), "disk", true},
+		{&APIError{Status: 403, Message: "CT is locked (mounted)"}, "", false},
+		{&APIError{Status: 500, Message: "got timeout"}, "", false},
+		{&APIError{Status: 500, Message: "resource is locked by another user"}, "", false},
+		{&TaskError{UPID: "u", ExitStatus: "no such logical volume pve/data"}, "", false},
+		{errors.New("CT is locked (mounted)"), "", false},
+		{nil, "", false},
+		// Only PVE's own wording and lock names (deferred minor 1).
+		{&APIError{Status: 500, Message: "CT is locked (snapshot-delete)"}, "snapshot-delete", true},
+		{&APIError{Status: 500, Message: "Something is locked (mounted)"}, "", false},
+		{&APIError{Status: 500, Message: "CT is locked (Mounted Weird)"}, "", false},
+		{&APIError{Status: 500, Message: "CT is locked (" + strings.Repeat("a", 40) + ")"}, "", false},
+		// A lock file is named by what it guards (deferred minor 2).
+		{&APIError{Status: 500, Message: "can't lock file '/var/lock/pve-manager/pve-storage-local' - got timeout"}, "storage", true},
+		{&APIError{Status: 500, Message: "can't lock file '/run/x.lck' - got timeout"}, "lock file", true},
+		// Every error in a join counts, not only the first of a type
+		// (deferred minor 4): a failed scan, then a lock on the fallback.
+		{errors.Join(&TaskError{UPID: "a", ExitStatus: "no such logical volume pve/data"}, &TaskError{UPID: "b", ExitStatus: "CT is locked (mounted)"}), "mounted", true},
+		{fmt.Errorf("%w; %w", &TaskError{UPID: "a", ExitStatus: "no such logical volume pve/data"}, fmt.Errorf("destroy 1: %w", &TaskError{UPID: "b", ExitStatus: "VM is locked (backup)"})), "backup", true},
+	}
+	for _, tc := range tests {
+		lock, ok := Locked(tc.err)
+		if lock != tc.lock || ok != tc.ok {
+			t.Errorf("Locked(%v) = %q, %v; want %q, %v", tc.err, lock, ok, tc.lock, tc.ok)
+		}
+	}
+}
+
 // The default backoff rides out about two minutes of failed polls, each wait
 // at most 30s (code review 4.5).
 func TestDefaultRetryBackoff(t *testing.T) {
