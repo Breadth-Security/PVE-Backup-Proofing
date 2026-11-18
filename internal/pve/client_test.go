@@ -420,6 +420,36 @@ func TestPermissionDenied(t *testing.T) {
 	}
 }
 
+// Locked recognises PVE refusing a locked guest, as an API refusal or a
+// failed task, through wraps and joins, and nothing else (issue #144).
+func TestLocked(t *testing.T) {
+	tests := []struct {
+		err  error
+		lock string
+		ok   bool
+	}{
+		{&APIError{Status: 500, Message: "CT is locked (mounted)"}, "mounted", true},
+		{&APIError{Status: 500, Message: "VM is locked (backup)\n"}, "backup", true},
+		{&TaskError{UPID: "u", ExitStatus: "CT is locked (snapshot)"}, "snapshot", true},
+		{&TaskError{UPID: "u", ExitStatus: "unexpected status", Log: []string{"TASK ERROR: VM is locked (clone)"}}, "clone", true},
+		{&APIError{Status: 500, Message: "can't lock file '/run/lock/lxc/pve-config-1.conf' - got timeout"}, "config file", true},
+		{fmt.Errorf("destroy 1: %w", &APIError{Status: 500, Message: "CT is locked (mounted)"}), "mounted", true},
+		{errors.Join(errors.New("x"), &APIError{Status: 500, Message: "CT is locked (disk)"}), "disk", true},
+		{&APIError{Status: 403, Message: "CT is locked (mounted)"}, "", false},
+		{&APIError{Status: 500, Message: "got timeout"}, "", false},
+		{&APIError{Status: 500, Message: "resource is locked by another user"}, "", false},
+		{&TaskError{UPID: "u", ExitStatus: "no such logical volume pve/data"}, "", false},
+		{errors.New("CT is locked (mounted)"), "", false},
+		{nil, "", false},
+	}
+	for _, tc := range tests {
+		lock, ok := Locked(tc.err)
+		if lock != tc.lock || ok != tc.ok {
+			t.Errorf("Locked(%v) = %q, %v; want %q, %v", tc.err, lock, ok, tc.lock, tc.ok)
+		}
+	}
+}
+
 // The default backoff rides out about two minutes of failed polls, each wait
 // at most 30s (code review 4.5).
 func TestDefaultRetryBackoff(t *testing.T) {

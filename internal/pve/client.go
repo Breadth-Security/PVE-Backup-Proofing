@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,42 @@ func PermissionDenied(err error) bool {
 	return ae.Status == http.StatusForbidden ||
 		strings.Contains(ae.Message, "403 Forbidden") ||
 		strings.Contains(ae.Message, "permission check failed")
+}
+
+// Locked reports whether err is PVE refusing a guest because it is locked
+// (issue #144): "CT is locked (mounted)" or "VM is locked (backup)" from
+// check_lock, or "can't lock file …" when the guest's config file lock
+// could not be taken in time. PVE says so either as an HTTP 500 refusal or
+// as a failed task (exit status or log). lock is the lock's name, or
+// "config file" for the latter. Errors of other types never match.
+func Locked(err error) (lock string, ok bool) {
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusInternalServerError {
+		if lock, ok := lockIn(ae.Message); ok {
+			return lock, true
+		}
+	}
+	var te *TaskError
+	if errors.As(err, &te) {
+		for _, s := range append([]string{te.ExitStatus}, te.Log...) {
+			if lock, ok := lockIn(s); ok {
+				return lock, true
+			}
+		}
+	}
+	return "", false
+}
+
+var reLocked = regexp.MustCompile(`is locked \(([^)]*)\)`)
+
+func lockIn(s string) (string, bool) {
+	if m := reLocked.FindStringSubmatch(s); m != nil {
+		return m[1], true
+	}
+	if strings.Contains(s, "can't lock file") {
+		return "config file", true
+	}
+	return "", false
 }
 
 // TaskError is returned by WaitTask when a task finishes with a non-OK status.
