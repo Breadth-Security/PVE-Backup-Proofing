@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.11.3
+
+**A patch release: upgrade the daemon and the node helper in either order** (they share major.minor 0.11), outside a scheduled run, since the upgrade restarts the service. With APT, `apt update && apt install --only-upgrade pbp` on each host; otherwise see [Upgrading](docs/upgrading.md). Configs need no change.
+
+Changes:
 
 - **A test copy that another tool briefly locks is still removed** (issue #144). Another tool on the node can lock a stopped container for a moment (`pct df` and `pct mount` do). When that happened just as PBP removed its test copy, PVE refused, and a guest that had passed its checks ended `ERROR · booted, but PBP could not remove its test copy`, with the copy left for the next run. PBP now waits up to 30 seconds while PVE refuses because the copy is locked, checking each time that the copy is still its own, and never clears a lock itself. A lock that lasts longer ends as before, and the reason names it: `(locked: backup; retried at the next run)`. A `create` lock, left by a restore that was cut short, is not waited for. The wait is noted in the guest's log, or in the run log for the janitor.
 
